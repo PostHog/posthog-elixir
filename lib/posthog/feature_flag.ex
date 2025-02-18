@@ -28,7 +28,6 @@ defmodule Posthog.FeatureFlag do
         enabled: "variant-a"
       }
   """
-
   defstruct [:name, :value, :enabled]
 
   @typedoc """

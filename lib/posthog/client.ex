@@ -212,14 +212,11 @@ defmodule Posthog.Client do
 
     case post!("/decide", body, headers(opts[:headers])) do
       {:ok, %{body: body}} ->
-        flag_fields = %{
-          feature_flags: body["featureFlags"],
-          feature_flag_payloads:
-            body["featureFlagPayloads"]
-            |> Enum.reduce(%{}, fn {k, v}, map -> Map.put(map, k, Jason.decode!(v)) end)
-        }
-
-        {:ok, flag_fields}
+        {:ok,
+         %{
+           feature_flags: Map.get(body, "featureFlags", %{}),
+           feature_flag_payloads: decode_feature_flag_payloads(body)
+         }}
 
       err ->
         err
@@ -256,7 +253,7 @@ defmodule Posthog.Client do
 
     url = api_url() <> path <> "?v=#{api_version()}"
 
-    :hackney.post(url, headers, body)
+    :hackney.post(url, headers, body, [])
     |> handle()
   end
 
@@ -349,5 +346,20 @@ defmodule Posthog.Client do
       "$lib" => @lib_name,
       "$lib_version" => @lib_version
     }
+  end
+
+  defp decode_feature_flag_payloads(data) do
+    data
+    |> Map.get("featureFlagPayloads", %{})
+    |> Enum.reduce(%{}, fn {k, v}, map ->
+      Map.put(map, k, decode_feature_flag_payload(v))
+    end)
+  end
+
+  defp decode_feature_flag_payload(payload) do
+    case Jason.decode(payload) do
+      {:ok, decoded} -> decoded
+      {:error, _} -> payload
+    end
   end
 end

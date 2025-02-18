@@ -4,17 +4,20 @@ defmodule Posthog.MixProject do
   def project do
     [
       app: :posthog,
-      version: "0.4.0",
-      elixir: "~> 1.12",
-      start_permanent: Mix.env() == :prod,
       deps: deps(),
       description: description(),
-      package: package()
+      elixir: "~> 1.12",
+      elixirc_paths: elixirc_paths(Mix.env()),
+      package: package(),
+      start_permanent: Mix.env() == :prod,
+      version: "0.4.0"
     ]
   end
 
   def application do
-    []
+    [
+      extra_applications: [:logger]
+    ]
   end
 
   defp description do
@@ -22,6 +25,9 @@ defmodule Posthog.MixProject do
     Official PostHog Elixir HTTP client.
     """
   end
+
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
 
   defp package do
     [
@@ -35,10 +41,11 @@ defmodule Posthog.MixProject do
 
   defp deps do
     [
+      {:dialyxir, "~> 1.3", only: [:dev, :test], runtime: false},
+      {:ex_doc, ">= 0.0.0", only: [:doc]},
       {:hackney, "~> 1.20"},
       {:jason, "~> 1.4", optional: true},
-      {:ex_doc, ">= 0.0.0", only: [:doc]},
-      {:dialyxir, "~> 1.3", only: [:dev, :test], runtime: false}
+      {:mimic, "~> 1.11", only: :test}
     ]
   end
 end
