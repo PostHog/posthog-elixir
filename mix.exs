@@ -9,6 +9,7 @@ defmodule Posthog.MixProject do
       elixir: "~> 1.12",
       elixirc_paths: elixirc_paths(Mix.env()),
       package: package(),
+      source_url: "https://github.com/posthog/posthog-elixir",
       start_permanent: Mix.env() == :prod,
       version: "0.4.2"
     ]
