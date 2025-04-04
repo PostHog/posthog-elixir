@@ -33,10 +33,8 @@ defmodule Posthog do
       # Event with properties
       Posthog.capture("purchase", [
         distinct_id: "user_123",
-        properties: %{
-          product_id: "prod_123",
-          price: 99.99
-        }
+        product_id: "prod_123",
+        price: 99.99
       ])
 
       # Event with custom timestamp
@@ -74,7 +72,7 @@ defmodule Posthog do
 
       events = [
         {"page_view", [distinct_id: "user_123"], nil},
-        {"button_click", [distinct_id: "user_123", properties: %{button: "signup"}], nil}
+        {"button_click", [distinct_id: "user_123", button: "signup"], nil}
       ]
 
       Posthog.batch(events)
@@ -107,10 +105,8 @@ defmodule Posthog do
       # Event with properties
       Posthog.capture("purchase", [
         distinct_id: "user_123",
-        properties: %{
-          product_id: "prod_123",
-          price: 99.99
-        }
+        product_id: "prod_123",
+        price: 99.99
       ])
 
       # Event with timestamp
@@ -140,7 +136,7 @@ defmodule Posthog do
 
       events = [
         {"page_view", [distinct_id: "user_123"], nil},
-        {"button_click", [distinct_id: "user_123", properties: %{button: "signup"}], nil}
+        {"button_click", [distinct_id: "user_123", button: "signup"], nil}
       ]
 
       Posthog.batch(events)

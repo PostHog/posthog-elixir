@@ -132,7 +132,8 @@ defmodule Posthog.Client do
       Posthog.Client.capture("purchase",
         %{
           distinct_id: "user_123",
-          properties: %{product_id: "123", price: 99.99}
+          product_id: "123",
+          price: 99.99
         },
         timestamp: DateTime.utc_now()
       )
@@ -166,7 +167,7 @@ defmodule Posthog.Client do
 
       events = [
         {"page_view", %{distinct_id: "user_123"}, nil},
-        {"click", %{distinct_id: "user_123", properties: %{button: "signup"}}, DateTime.utc_now()}
+        {"click", %{distinct_id: "user_123", button: "signup"}, DateTime.utc_now()}
       ]
 
       Posthog.Client.batch(events)
