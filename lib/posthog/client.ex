@@ -148,7 +148,7 @@ defmodule Posthog.Client do
   @spec capture(event(), properties(), opts() | timestamp()) ::
           {:ok, response()} | {:error, response() | term()}
   def capture(event, params, opts) when is_list(opts) do
-    uuid = Keyword.get(opts, :uuid, &UUIDv7.generate/0)
+    uuid = Keyword.get_lazy(opts, :uuid, &UUIDv7.generate/0)
 
     timestamp =
       Keyword.get_lazy(opts, :timestamp, fn ->
