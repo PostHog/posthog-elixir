@@ -92,7 +92,8 @@ defmodule Posthog.Client do
           groups: map(),
           group_properties: map(),
           person_properties: map(),
-          timestamp: timestamp()
+          timestamp: timestamp(),
+          uuid: UUIDv7.t()
         ]
 
   @lib_version Mix.Project.config()[:version]
@@ -147,9 +148,17 @@ defmodule Posthog.Client do
   @spec capture(event(), properties(), opts() | timestamp()) ::
           {:ok, response()} | {:error, response() | term()}
   def capture(event, params, opts) when is_list(opts) do
-    post!("/capture", build_event(event, params, opts[:timestamp]), headers(opts[:headers]))
+    uuid = Keyword.get(opts, :uuid, &UUIDv7.generate/0)
+
+    timestamp =
+      Keyword.get_lazy(opts, :timestamp, fn ->
+        DateTime.to_iso8601(DateTime.utc_now())
+      end)
+
+    post!("/capture", build_event(event, params, timestamp, uuid), headers(opts[:headers]))
   end
 
+  @deprecated "Use capture/3 with keyword list opts instead"
   def capture(event, params, timestamp) when is_bitstring(event) or is_atom(event) do
     post!("/capture", build_event(event, params, timestamp), headers())
   end
@@ -232,6 +241,7 @@ defmodule Posthog.Client do
     * `event` - The name of the event
     * `properties` - Event properties
     * `timestamp` - Optional timestamp for the event
+    * `uuid` - Optional UUID for the event
 
   ## Examples
 
@@ -239,9 +249,9 @@ defmodule Posthog.Client do
       build_event("purchase", %{distinct_id: "user_123", price: 99.99}, DateTime.utc_now())
   """
   @spec build_event(event(), properties(), timestamp()) :: map()
-  def build_event(event, properties, timestamp) do
+  def build_event(event, properties, timestamp, uuid \\ UUIDv7.generate()) do
     properties = Map.merge(lib_properties(), deep_stringify_keys(Map.new(properties)))
-    %{event: to_string(event), properties: properties, timestamp: timestamp}
+    %{event: to_string(event), properties: properties, timestamp: timestamp, uuid: uuid}
   end
 
   @doc false
