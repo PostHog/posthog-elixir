@@ -61,7 +61,7 @@ defmodule Posthog.MixProject do
       {:uniq, "~> 0.6.1"},
       {:jason, "~> 1.4", optional: true},
       {:mimic, "~> 1.11", only: :test},
-      {:cachex, "~> 4.0.4"},
+      {:cachex, "~> 4.1.1"},
       # Development tools
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
     ]
