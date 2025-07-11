@@ -24,10 +24,10 @@
 
 - Elixir v1.14+ is now a requirement
 - Feature Flags now return a key called `payload` rather than `value` to better align with the other SDKs
-- PostHog now requires you to initialize `Posthog.Application` alongside your supervisor tree. This is required because of our `Cachex` system to properly track your FF usage.
+- PostHog now requires you to initialize `PostHog.Application` alongside your supervisor tree. This is required because of our `Cachex` system to properly track your FF usage.
   - We'll also include local evaluation in the near term, which will also require a GenServer, therefore, requiring us to use a Supervisor.
 - Added `enabled_capture` configuration option to disable PostHog tracking in development/test environments
-- `Posthog.capture` now requires `distinct_id` as a required second argument
+- `PostHog.capture` now requires `distinct_id` as a required second argument
 
 ## 0.4.4 - 2025-04-14
 
