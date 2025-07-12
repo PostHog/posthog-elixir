@@ -1,6 +1,4 @@
-Mimic.copy(:hackney)
-
-{:ok, _} = Registry.start_link(keys: :unique, name: :hackney_stub_registry)
-{:ok, _} = HackneyStub.State.start_link([])
+# Exclude the unmocked tests by default
+ExUnit.configure(exclude: :integration, assert_receive_timeout: 1000)
 
 ExUnit.start()

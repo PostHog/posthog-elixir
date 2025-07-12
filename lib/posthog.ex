@@ -1,251 +1,202 @@
-defmodule Posthog do
-  @moduledoc """
-  A comprehensive Elixir client for PostHog's analytics and feature flag APIs.
+defmodule PostHog do
+  @typedoc "Name under which an instance of PostHog supervision tree is registered."
+  @type supervisor_name() :: atom()
 
-  This module provides a high-level interface to PostHog's APIs, allowing you to:
-  - Track user events and actions
-  - Manage and evaluate feature flags
-  - Handle multivariate testing
-  - Process events in batch
-  - Work with user, group, and person properties
+  @typedoc "Event name, such as `\"user_signed_up\"` or `\"$create_alias\"`"
+  @type event() :: String.t()
 
-  ## Configuration
+  @typedoc "string representing distinct ID"
+  @type distinct_id() :: String.t()
 
-  Add your PostHog configuration to your application config:
+  @typedoc """
+  Map representing event properties.
 
-      config :posthog,
-        api_url: "https://us.i.posthog.com",  # Or your self-hosted instance
-        api_key: "phc_your_project_api_key"
-
-  Optional configuration:
-
-      config :posthog,
-        json_library: Jason,   # Default JSON parser (optional)
-        enabled_capture: true  # Whether to enable PostHog tracking (optional, defaults to true)
-                               # Set to false in development/test environments to disable tracking
-
-  ### Disabling PostHog
-
-  You can disable PostHog tracking by setting `enabled: false` in your configuration.
-  This is particularly useful in development or test environments where you don't want
-  to send actual events to PostHog.
-
-  When `enabled_capture` is set to `false`:
-  - All `Posthog.capture/3` and `Posthog.batch/2` calls will succeed silently
-  - PostHog will still communicate with the server for Feature Flags
-
-  This is useful for:
-  - Development and test environments where you don't want to pollute your PostHog instance
-  - Situations where you need to temporarily disable tracking
-
-  Example configuration for development:
-
-      # config/dev.exs
-      config :posthog,
-        enabled_capture: false  # Disable tracking in development
-
-  Example configuration for test:
-
-      # config/test.exs
-      config :posthog,
-        enabled_capture: false  # Disable tracking in test environment
-
-  ## Event Tracking
-
-  Events can be tracked with various levels of detail:
-
-      # Basic event
-      Posthog.capture("page_view", distinct_id: "user_123")
-
-      # Event with properties
-      Posthog.capture("purchase", %{
-        distinct_id: "user_123",
-        product_id: "prod_123",
-        price: 99.99
-      })
-
-      # Event with custom timestamp
-      Posthog.capture("signup", "user_123", %{}, timestamp: DateTime.utc_now())
-
-      # Event with custom headers (e.g., for IP forwarding)
-      Posthog.capture("login", "user_123", %{}, headers: [{"x-forwarded-for", "127.0.0.1"}])
-
-  ## Feature Flags
-
-  PostHog feature flags can be used for feature management and A/B testing:
-
-      # Get all feature flags for a user
-      {:ok, flags} = Posthog.feature_flags("user_123")
-
-      # Check specific feature flag
-      {:ok, flag} = Posthog.feature_flag("new-dashboard", "user_123")
-
-      # Quick boolean check
-      if Posthog.feature_flag_enabled?("new-feature", "user_123") do
-        # Show new feature
-      end
-
-      # Feature flags with group/person properties
-      Posthog.feature_flags("user_123",
-        groups: %{company: "company_123"},
-        group_properties: %{company: %{industry: "tech"}},
-        person_properties: %{email: "user@example.com"}
-      )
-
-  ## Batch Processing
-
-  Multiple events can be sent in a single request for better performance:
-
-      events = [
-        {"page_view", [distinct_id: "user_123"], nil},
-        {"button_click", [distinct_id: "user_123", button: "signup"], nil}
-      ]
-
-      Posthog.batch(events)
-
-  Each event in the batch is a tuple of `{event_name, properties, timestamp}`.
+  Note that it __must__ be JSON-serializable.
   """
+  @type properties() :: %{optional(String.t()) => any(), optional(atom()) => any()}
 
   @doc """
-  Captures an event in PostHog.
-
-  ## Parameters
-
-    * `event` - The name of the event (string or atom)
-    * `params` - Required parameters including `:distinct_id` and optional properties
-    * `opts` - Optional parameters that can be either a timestamp or a keyword list of options
-
-  ## Options
-
-    * `:headers` - Additional HTTP headers for the request
-    * `:groups` - Group properties for the event
-    * `:group_properties` - Additional properties for groups
-    * `:person_properties` - Properties for the person
-    * `:timestamp` - Custom timestamp for the event
+  Returns the configuration map for a named `PostHog` supervisor.
 
   ## Examples
 
-      # Basic event
-      Posthog.capture("page_view", "user_123")
+  Retrieve the default `PostHog` instance config:
 
-      # Event with properties
-      Posthog.capture("purchase", "user_123", %{
-        product_id: "prod_123",
-        price: 99.99
-      })
+      %{supervisor_name: PostHog} = PostHog.config()
+      
+  Retrieve named instance config:
 
-      # Event with timestamp
-      Posthog.capture("signup", "user_123", %{}, timestamp: DateTime.utc_now())
-
-      # Event with custom headers
-      Posthog.capture("login", "user_123", %{}, headers: [{"x-forwarded-for", "127.0.0.1"}])
+      %{supervisor_name: MyPostHog} = PostHog.config(MyPostHog)
   """
-  alias Posthog.{Client, FeatureFlag}
+  @spec config(supervisor_name()) :: PostHog.Config.config()
+  def config(name \\ __MODULE__), do: PostHog.Registry.config(name)
 
-  @spec capture(Client.event(), Client.distinct_id(), Client.properties(), Client.opts()) ::
-          Client.result()
-  defdelegate capture(event, distinct_id, properties \\ %{}, opts \\ []), to: Client
+  @doc false
+  def bare_capture(event, distinct_id, %{} = properties),
+    do: bare_capture(__MODULE__, event, distinct_id, properties)
 
   @doc """
-  Sends multiple events to PostHog in a single request.
+  Captures a single event without retrieving properties from context.
 
-  ## Parameters
-
-    * `events` - List of event tuples in the format `{event_name, distinct_id, properties}`
-    * `opts` - Optional parameters for the batch request
+  Capture is a relatively lightweight operation. The event is prepared
+  synchronously and then sent to PostHog workers to be batched together with
+  other events and sent over the wire.
 
   ## Examples
 
-      events = [
-        {"page_view", "user_123", %{}},
-        {"button_click", "user_123", %{button: "signup"}}
-      ]
+  Capture a simple event:
 
-      Posthog.batch(events)
+      PostHog.bare_capture("event_captured", "user123")
+      
+  Capture an event with properties:
+
+      PostHog.bare_capture("event_captured", "user123", %{backend: "Phoenix"})
+      
+      Capture through a named PostHog instance:
+
+      PostHog.bare_capture(MyPostHog, "event_captured", "user123")
   """
-  @spec batch(list(tuple()), keyword()) :: Client.result()
-  defdelegate batch(events, opts \\ []), to: Client
+  @spec bare_capture(supervisor_name(), event(), distinct_id(), properties()) :: :ok
+  def bare_capture(name \\ __MODULE__, event, distinct_id, properties \\ %{}) do
+    config = PostHog.Registry.config(name)
+    properties = Map.merge(properties, config.global_properties)
+
+    event = %{
+      event: event,
+      distinct_id: distinct_id,
+      timestamp: DateTime.utc_now() |> DateTime.to_iso8601(),
+      properties: properties
+    }
+
+    PostHog.Sender.send(event, name)
+  end
+
+  @doc false
+  def capture(event, %{} = properties),
+    do: capture(__MODULE__, event, properties)
 
   @doc """
-  Retrieves all feature flags for a given distinct ID.
+  Captures a single event.
 
-  ## Parameters
-
-    * `distinct_id` - The unique identifier for the user
-    * `opts` - Optional parameters for the feature flag request
-
-  ## Options
-
-    * `:groups` - Group properties for feature flag evaluation
-    * `:group_properties` - Additional properties for groups
-    * `:person_properties` - Properties for the person
+  Any context previously set will be included in the event properties. Note that
+  `distinct_id` is still required.
 
   ## Examples
 
-      # Basic feature flags request
-      {:ok, flags} = Posthog.feature_flags("user_123")
+  Set context and capture an event:
 
-      # With group properties
-      {:ok, flags} = Posthog.feature_flags("user_123",
-        groups: %{company: "company_123"},
-        group_properties: %{company: %{industry: "tech"}}
-      )
+      PostHog.set_context(%{distinct_id: "user123", "$feature/my-feature-flag": true})
+      PostHog.capture("job_started", %{job_name: "JobName"})
+      
+      Set context and capture an event through a named PostHog instance:
+
+      PostHog.set_context(MyPostHog, %{distinct_id: "user123", "$feature/my-feature-flag": true})
+      PostHog.capture(MyPostHog, "job_started", %{job_name: "JobName"})
   """
-  @spec feature_flags(binary(), keyword()) :: Client.result()
-  defdelegate feature_flags(distinct_id, opts \\ []), to: Client
+  @spec capture(supervisor_name(), event(), properties()) :: :ok | {:error, :missing_distinct_id}
+  def capture(name \\ __MODULE__, event, properties \\ %{}) do
+    context =
+      name
+      |> get_event_context(event)
+      |> Map.merge(properties)
 
-  @doc """
-  Retrieves information about a specific feature flag for a given distinct ID.
-
-  ## Parameters
-
-    * `flag` - The name of the feature flag
-    * `distinct_id` - The unique identifier for the user
-    * `opts` - Optional parameters for the feature flag request
-
-  ## Examples
-
-      # Boolean feature flag
-      {:ok, flag} = Posthog.feature_flag("new-dashboard", "user_123")
-      # Returns: %Posthog.FeatureFlag{name: "new-dashboard", payload: true, enabled: true}
-
-      # Multivariate feature flag
-      {:ok, flag} = Posthog.feature_flag("pricing-test", "user_123")
-      # Returns: %Posthog.FeatureFlag{
-      #   name: "pricing-test",
-      #   payload: %{"price" => 99, "period" => "monthly"},
-      #   enabled: "variant-a"
-      # }
-  """
-  @spec feature_flag(binary(), binary(), Client.feature_flag_opts()) :: Client.result()
-  defdelegate feature_flag(flag, distinct_id, opts \\ []), to: Client
-
-  @doc """
-  Checks if a feature flag is enabled for a given distinct ID.
-
-  This is a convenience function that returns a boolean instead of a result tuple.
-  For multivariate flags, returns true if the flag has any value set.
-
-  ## Parameters
-
-    * `flag` - The name of the feature flag
-    * `distinct_id` - The unique identifier for the user
-    * `opts` - Optional parameters for the feature flag request
-
-  ## Examples
-
-      if Posthog.feature_flag_enabled?("new-dashboard", "user_123") do
-        # Show new dashboard
-      end
-  """
-  @spec feature_flag_enabled?(binary(), binary(), keyword()) :: boolean()
-  def feature_flag_enabled?(flag, distinct_id, opts \\ []) do
-    flag
-    |> feature_flag(distinct_id, opts)
-    |> case do
-      {:ok, %FeatureFlag{enabled: false}} -> false
-      {:ok, %FeatureFlag{}} -> true
-      _ -> false
+    case Map.pop(context, :distinct_id) do
+      {nil, _} -> {:error, :missing_distinct_id}
+      {distinct_id, properties} -> bare_capture(name, event, distinct_id, properties)
     end
   end
+
+  @spec get_feature_flag(supervisor_name(), distinct_id() | map()) ::
+          PostHog.API.Client.response()
+  def get_feature_flag(name \\ __MODULE__, distinct_id_or_body) do
+    body =
+      case distinct_id_or_body do
+        %{} = body -> body
+        distinct_id -> %{distinct_id: distinct_id}
+      end
+
+    config = config(name)
+    PostHog.API.flags(config.api_client, body)
+  end
+
+  @doc """
+  Sets context for the current process.
+
+  ## Examples
+
+  Set and retrieve context for the current process:
+
+      > PostHog.set_context(%{foo: "bar"})
+      > PostHog.get_context()
+      %{foo: "bar"}
+
+  Set and retrieve context for a named PostHog instance:
+
+  > PostHog.set_context(MyPostHog, %{foo: "bar"})
+  > PostHog.get_context(MyPostHog)
+      %{foo: "bar"}
+  """
+  @spec set_context(supervisor_name(), properties()) :: :ok
+  defdelegate set_context(name \\ __MODULE__, context), to: PostHog.Context, as: :set
+
+  @doc """
+  Sets context for the current process scoped to a specific event.
+
+  ## Examples
+
+  Set and retrieve context scoped to an event:
+
+      > PostHog.set_event_context("$exception", %{foo: "bar"})
+      > PostHog.get_event_context("$exception")
+      %{foo: "bar"}
+     
+  Set and retrieve context for a specific event through a named PostHog instance:
+
+  > PostHog.set_event_context(MyPostHog, "$exception", %{foo: "bar"})
+  > PostHog.get_event_context(MyPostHog, "$exception")
+      %{foo: "bar"}
+  """
+  @spec set_event_context(supervisor_name(), event(), properties()) :: :ok
+  def set_event_context(name \\ __MODULE__, event, context),
+    do: PostHog.Context.set(name, event, context)
+
+  @doc """
+  Retrieves context for the current process.
+
+  ## Examples
+
+  Set and retrieve context for current process:
+
+      > PostHog.set_context(%{foo: "bar"})
+      > PostHog.get_context()
+      %{foo: "bar"}
+      
+  Set and retrieve context for a named PostHog instance:
+
+  > PostHog.set_context(MyPostHog, %{foo: "bar"})
+  > PostHog.get_context(MyPostHog)
+      %{foo: "bar"}
+  """
+  @spec get_context(supervisor_name()) :: properties()
+  defdelegate get_context(name \\ __MODULE__), to: PostHog.Context, as: :get
+
+  @doc """
+  Retrieves context for the current process scoped to a specific event.
+
+  ## Examples
+
+  Set and retrieve context scoped to an event:
+
+      > PostHog.set_event_context("$exception", %{foo: "bar"})
+      > PostHog.get_event_context("$exception")
+      %{foo: "bar"}
+     
+  Set and retrieve context for a specific event through a named PostHog instance:
+
+  > PostHog.set_event_context(MyPostHog, "$exception", %{foo: "bar"})
+  > PostHog.get_event_context(MyPostHog, "$exception")
+      %{foo: "bar"}
+  """
+  @spec get_event_context(supervisor_name()) :: properties()
+  def get_event_context(name \\ __MODULE__, event), do: PostHog.Context.get(name, event)
 end
