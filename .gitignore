@@ -28,3 +28,7 @@ posthog-*.tar
 
 # Ignore .DS_Store
 .DS_Store
+
+# Local Config
+config/dev.exs
+config/integration.exs

@@ -1,116 +1,264 @@
-defmodule PosthogTest do
-  use ExUnit.Case, async: true
-  import Mimic
+defmodule PostHogTest do
+  use PostHog.Case, async: true
 
-  setup do
-    # Clear the cache before each test
-    Cachex.clear(Posthog.Application.cache_name())
-    stub_with(:hackney, HackneyStub)
-    {:ok, _} = HackneyStub.State.start_link([])
-    :ok
+  @moduletag config: [supervisor_name: PostHog]
+
+  import Mox
+
+  alias PostHog.API
+
+  setup :setup_supervisor
+  setup :verify_on_exit!
+
+  describe "config/0" do
+    test "fetches from PostHog by default" do
+      assert %{supervisor_name: PostHog} = PostHog.config()
+    end
+
+    @tag config: [supervisor_name: CustomPostHog]
+    test "uses custom supervisor name" do
+      assert %{supervisor_name: CustomPostHog} = PostHog.config(CustomPostHog)
+    end
   end
 
-  describe "feature_flag_enabled?/3" do
-    test "true if the feature flag is enabled" do
-      stub_with(:hackney, HackneyStub)
+  describe "bare_capture/4" do
+    test "simple call", %{sender_pid: sender_pid} do
+      PostHog.bare_capture("case tested", "distinct_id")
 
-      HackneyStub.verify_capture(fn decoded ->
-        assert decoded["event"] == "$feature_flag_called"
-        assert decoded["distinct_id"] == "user_123"
-        assert decoded["properties"]["$feature_flag"] == "my-awesome-flag"
-        assert decoded["properties"]["$feature_flag_response"] == true
+      assert %{events: [event]} = :sys.get_state(sender_pid)
+
+      assert %{
+               event: "case tested",
+               distinct_id: "distinct_id",
+               properties: %{},
+               timestamp: _
+             } = event
+    end
+
+    test "with properties", %{sender_pid: sender_pid} do
+      PostHog.bare_capture("case tested", "distinct_id", %{foo: "bar"})
+
+      assert %{events: [event]} = :sys.get_state(sender_pid)
+
+      assert %{
+               event: "case tested",
+               distinct_id: "distinct_id",
+               properties: %{foo: "bar"},
+               timestamp: _
+             } = event
+    end
+
+    @tag config: [supervisor_name: CustomPostHog]
+    test "simple call for custom supervisor", %{sender_pid: sender_pid} do
+      PostHog.bare_capture(CustomPostHog, "case tested", "distinct_id")
+
+      assert %{events: [event]} = :sys.get_state(sender_pid)
+
+      assert %{
+               event: "case tested",
+               distinct_id: "distinct_id",
+               properties: %{},
+               timestamp: _
+             } = event
+    end
+
+    @tag config: [supervisor_name: CustomPostHog]
+    test "with properties for custom supervisor", %{sender_pid: sender_pid} do
+      PostHog.bare_capture(CustomPostHog, "case tested", "distinct_id", %{foo: "bar"})
+
+      assert %{events: [event]} = :sys.get_state(sender_pid)
+
+      assert %{
+               event: "case tested",
+               distinct_id: "distinct_id",
+               properties: %{foo: "bar"},
+               timestamp: _
+             } = event
+    end
+
+    test "ignores set context but uses global one from the config", %{sender_pid: sender_pid} do
+      PostHog.set_context(%{hello: "world"})
+      PostHog.bare_capture("case tested", "distinct_id", %{foo: "bar"})
+
+      assert %{events: [%{properties: properties}]} = :sys.get_state(sender_pid)
+
+      assert %{foo: "bar", "$lib": "posthog-elixir", "$lib_version": _} = properties
+      refute properties[:hello]
+    end
+  end
+
+  describe "capture/4" do
+    test "simple call", %{sender_pid: sender_pid} do
+      PostHog.capture("case tested", %{distinct_id: "distinct_id"})
+
+      assert %{events: [event]} = :sys.get_state(sender_pid)
+
+      assert %{
+               event: "case tested",
+               distinct_id: "distinct_id",
+               properties: %{},
+               timestamp: _
+             } = event
+    end
+
+    test "distinct_id is required" do
+      assert {:error, :missing_distinct_id} = PostHog.capture("case tested")
+    end
+
+    test "with properties", %{sender_pid: sender_pid} do
+      PostHog.capture("case tested", %{distinct_id: "distinct_id", foo: "bar"})
+
+      assert %{events: [event]} = :sys.get_state(sender_pid)
+
+      assert %{
+               event: "case tested",
+               distinct_id: "distinct_id",
+               properties: %{foo: "bar"},
+               timestamp: _
+             } = event
+    end
+
+    @tag config: [supervisor_name: CustomPostHog]
+    test "simple call for custom supervisor", %{sender_pid: sender_pid} do
+      PostHog.capture(CustomPostHog, "case tested", %{distinct_id: "distinct_id"})
+
+      assert %{events: [event]} = :sys.get_state(sender_pid)
+
+      assert %{
+               event: "case tested",
+               distinct_id: "distinct_id",
+               properties: %{},
+               timestamp: _
+             } = event
+    end
+
+    @tag config: [supervisor_name: CustomPostHog]
+    test "with properties for custom supervisor", %{sender_pid: sender_pid} do
+      PostHog.capture(CustomPostHog, "case tested", %{distinct_id: "distinct_id", foo: "bar"})
+
+      assert %{events: [event]} = :sys.get_state(sender_pid)
+
+      assert %{
+               event: "case tested",
+               distinct_id: "distinct_id",
+               properties: %{foo: "bar"},
+               timestamp: _
+             } = event
+    end
+
+    test "includes relevant event context", %{sender_pid: sender_pid} do
+      PostHog.set_context(%{hello: "world", distinct_id: "distinct_id"})
+      PostHog.set_event_context("case tested", %{foo: "bar"})
+      PostHog.set_context(MyPostHog, %{spam: "eggs"})
+      PostHog.capture("case tested", %{final: "override"})
+
+      assert %{events: [event]} = :sys.get_state(sender_pid)
+
+      assert %{
+               event: "case tested",
+               distinct_id: "distinct_id",
+               properties: %{
+                 hello: "world",
+                 foo: "bar",
+                 final: "override"
+               },
+               timestamp: _
+             } = event
+    end
+  end
+
+  describe "get_feature_flag/2" do
+    test "returns body on success" do
+      expect(API.Mock, :request, fn _client, method, url, opts ->
+        assert method == :post
+        assert url == "/flags"
+        assert opts[:params] == %{v: 2}
+
+        assert opts[:json] == %{
+                 distinct_id: "foo"
+               }
+
+        {:ok, %{status: 200, body: "body"}}
       end)
 
-      assert Posthog.feature_flag_enabled?("my-awesome-flag", "user_123")
+      assert {:ok, %{status: 200, body: "body"}} = PostHog.get_feature_flag("foo")
     end
 
-    test "false if the feature flag is disabled" do
-      stub_with(:hackney, HackneyStub)
+    test "sophisticated body" do
+      expect(API.Mock, :request, fn client, method, url, opts ->
+        assert opts[:json] == %{
+                 distinct_id: "foo",
+                 groups: %{group_type: "group_id"}
+               }
 
-      refute Posthog.feature_flag_enabled?("flag-thats-not-on", "user_123")
+        API.Stub.request(client, method, url, opts)
+      end)
+
+      assert {:ok, %{}} =
+               PostHog.get_feature_flag(%{distinct_id: "foo", groups: %{group_type: "group_id"}})
     end
 
-    test "false if the feature flag does not exist" do
-      stub_with(:hackney, HackneyStub)
+    test "errors passed as is" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:error, :transport_error}
+      end)
 
-      refute Posthog.feature_flag_enabled?("flag-does-not-exist", "user_123")
-    end
-  end
-
-  describe "v3 - feature_flag/3" do
-    test "when feature flag exists, returns feature flag struct" do
-      stub_with(:hackney, HackneyStubV3)
-
-      assert Posthog.feature_flag("my-awesome-flag", "user_123") ==
-               {:ok,
-                %Posthog.FeatureFlag{
-                  enabled: true,
-                  name: "my-awesome-flag",
-                  payload: "example-payload-string"
-                }}
+      assert {:error, :transport_error} = PostHog.get_feature_flag("foo")
     end
 
-    test "when feature flag has a json payload, will return decoded payload" do
-      stub_with(:hackney, HackneyStubV3)
+    test "non-200 is wrapped in error" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok, %{status: 503}}
+      end)
 
-      assert Posthog.feature_flag("my-awesome-flag-2", "user_123") ==
-               {:ok,
-                %Posthog.FeatureFlag{
-                  enabled: true,
-                  name: "my-awesome-flag-2",
-                  payload: %{"color" => "blue", "animal" => "hedgehog"}
-                }}
+      assert {:ok, %{status: 503}} = PostHog.get_feature_flag("foo")
     end
 
-    test "when feature flag has an array payload, will return decoded payload" do
-      stub_with(:hackney, HackneyStubV3)
+    @tag config: [supervisor_name: MyPostHog]
+    test "custom PostHog instance" do
+      expect(API.Mock, :request, fn client, method, url, opts ->
+        assert opts[:json] == %{distinct_id: "foo"}
 
-      assert Posthog.feature_flag("array-payload", "user_123") ==
-               {:ok,
-                %Posthog.FeatureFlag{
-                  enabled: true,
-                  name: "array-payload",
-                  payload: [0, 1, 2]
-                }}
-    end
+        API.Stub.request(client, method, url, opts)
+      end)
 
-    test "when feature flag does not have a payload, will return flag value" do
-      stub_with(:hackney, HackneyStubV3)
-
-      assert Posthog.feature_flag("flag-thats-not-on", "user_123") ==
-               {:ok,
-                %Posthog.FeatureFlag{
-                  enabled: false,
-                  name: "flag-thats-not-on",
-                  payload: nil
-                }}
-    end
-
-    test "when feature flag does not exist, returns not_found" do
-      stub_with(:hackney, HackneyStubV3)
-
-      assert Posthog.feature_flag("does-not-exist", "user_123") ==
-               {:error, :not_found}
+      assert {:ok, %{}} = PostHog.get_feature_flag(MyPostHog, "foo")
     end
   end
 
-  describe "v3 - feature_flag_enabled?/3" do
-    test "true if the feature flag is enabled" do
-      stub_with(:hackney, HackneyStubV3)
-
-      assert Posthog.feature_flag_enabled?("my-awesome-flag", "user_123")
+  describe "set_context/2 + get_context/2" do
+    test "default scope" do
+      PostHog.set_context(%{foo: "bar"})
+      assert PostHog.get_context() == %{foo: "bar"}
+      assert PostHog.get_context(PostHog) == %{foo: "bar"}
+      assert PostHog.get_event_context("$exception") == %{foo: "bar"}
+      assert PostHog.get_event_context(PostHog, "$exception") == %{foo: "bar"}
     end
 
-    test "false if the feature flag is disabled" do
-      stub_with(:hackney, HackneyStubV3)
+    test "named scope, all events" do
+      PostHog.set_context(MyPostHog, %{foo: "bar"})
+      assert PostHog.get_context() == %{}
+      assert PostHog.get_event_context("$exception") == %{}
+      assert PostHog.get_context(MyPostHog) == %{foo: "bar"}
+      assert PostHog.get_event_context(MyPostHog, "$exception") == %{foo: "bar"}
+    end
+  end
 
-      refute Posthog.feature_flag_enabled?("flag-thats-not-on", "user_123")
+  describe "set_event_context/2 + get_event_context/2" do
+    test "default scope" do
+      PostHog.set_event_context("$exception", %{foo: "bar"})
+      assert PostHog.get_context() == %{}
+      assert PostHog.get_event_context("$exception") == %{foo: "bar"}
+      assert PostHog.get_context(PostHog) == %{}
+      assert PostHog.get_event_context(PostHog, "$exception") == %{foo: "bar"}
     end
 
-    test "false if the feature flag does not exist" do
-      stub_with(:hackney, HackneyStubV3)
-
-      refute Posthog.feature_flag_enabled?("flag-does-not-exist", "user_123")
+    test "named scope" do
+      PostHog.set_event_context(MyPostHog, "$exception", %{foo: "bar"})
+      assert PostHog.get_context() == %{}
+      assert PostHog.get_event_context("$exception") == %{}
+      assert PostHog.get_context(MyPostHog) == %{}
+      assert PostHog.get_event_context(MyPostHog, "$exception") == %{foo: "bar"}
     end
   end
 end

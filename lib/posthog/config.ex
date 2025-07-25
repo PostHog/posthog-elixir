@@ -1,153 +1,138 @@
-defmodule Posthog.Config do
-  @moduledoc """
-  Handles configuration validation and defaults for the PostHog client.
-
-  This module validates the configuration at compile time and provides
-  sensible defaults for optional values.
-  """
-
-  @app :posthog
-
-  @doc """
-  Validates and returns the API URL from the configuration.
-
-  Raises a helpful error message if the URL is missing or invalid.
-  """
-  def api_url do
-    case Application.get_env(@app, :api_url) do
-      url when is_binary(url) and url != "" ->
-        url
-
-      nil ->
-        raise """
-        PostHog API URL is not configured. Please add it to your config:
-
-            config :posthog,
-              api_url: "https://us.i.posthog.com"  # or your self-hosted instance
-        """
-
-      url ->
-        raise """
-        Invalid PostHog API URL: #{inspect(url)}
-
-        Expected a non-empty string URL, for example:
-            config :posthog,
-              api_url: "https://us.i.posthog.com"  # or your self-hosted instance
-        """
-    end
-  end
-
-  @doc """
-  Validates and returns the API key from the configuration.
-
-  Raises a helpful error message if the key is missing or invalid.
-  """
-  def api_key do
-    case Application.get_env(@app, :api_key) do
-      key when is_binary(key) and key != "" ->
-        key
-
-      nil ->
-        raise """
-        PostHog API key is not configured. Please add it to your config:
-
-            config :posthog,
-              api_key: "phc_your_project_api_key"
-        """
-
-      key ->
-        raise """
-        Invalid PostHog API key: #{inspect(key)}
-
-        Expected a non-empty string API key, for example:
-            config :posthog,
-              api_key: "phc_your_project_api_key"
-        """
-    end
-  end
-
-  @doc """
-  Returns whether event capture is enabled.
-
-  Defaults to true if not configured.
-  """
-  def enabled_capture? do
-    Application.get_env(@app, :enabled_capture, true)
-  end
-
-  @doc """
-  Returns the JSON library to use for encoding/decoding.
-
-  Defaults to Jason if not configured.
-  """
-  def json_library do
-    Application.get_env(@app, :json_library, Jason)
-  end
-
-  @doc """
-  Returns the HTTP client module to use.
-
-  Defaults to Posthog.HTTPClient.Hackney if not configured.
-  """
-  def http_client do
-    Application.get_env(@app, :http_client, Posthog.HTTPClient.Hackney)
-  end
-
-  @doc """
-  Returns the HTTP client options.
-
-  Defaults to:
-  - timeout: 5_000 (5 seconds)
-  - retries: 3
-  - retry_delay: 1_000 (1 second)
-  """
-  def http_client_opts do
-    Application.get_env(@app, :http_client_opts,
-      timeout: 5_000,
-      retries: 3,
-      retry_delay: 1_000
-    )
-  end
-
-  @doc """
-  Validates the entire PostHog configuration at compile time.
-
-  This ensures that all required configuration is present and valid
-  before the application starts.
-  """
-  def validate_config! do
-    # Validate required config
-    api_url()
-    api_key()
-
-    # Validate optional config
-    if json_library() != Jason do
-      unless Code.ensure_loaded?(json_library()) do
-        raise """
-        Configured JSON library #{inspect(json_library())} is not available.
-
-        Make sure to add it to your dependencies in mix.exs:
-            defp deps do
-              [{#{inspect(json_library())}, "~> x.x"}]
-            end
-        """
-      end
-    end
-
-    # Validate HTTP client
-    http_client = http_client()
-
-    unless Code.ensure_loaded?(http_client) do
-      raise """
-      Configured HTTP client #{inspect(http_client)} is not available.
-
-      Make sure to add it to your dependencies in mix.exs:
-          defp deps do
-            [{:hackney, "~> x.x"}]
-          end
+defmodule PostHog.Config do
+  @configuration_schema [
+    public_url: [
+      type: :string,
+      required: true,
+      doc: "`https://us.i.posthog.com` for US cloud or `https://eu.i.posthog.com` for EU cloud"
+    ],
+    api_key: [
+      type: :string,
+      required: true,
+      doc: """
+      Your PostHog Project API key. Find it in your project's settings under the Project ID section.
       """
-    end
+    ],
+    api_client_module: [
+      type: :atom,
+      default: PostHog.API.Client,
+      doc: "API client to use"
+    ],
+    supervisor_name: [
+      type: :atom,
+      default: PostHog,
+      doc: "Name of the supervisor process running PostHog"
+    ],
+    metadata: [
+      type: {:list, :atom},
+      default: [],
+      doc: "List of metadata keys to include in event properties"
+    ],
+    capture_level: [
+      type: {:or, [{:in, Logger.levels()}, nil]},
+      default: :error,
+      doc:
+        "Minimum level for logs that should be captured as errors. Errors with `crash_reason` are always captured."
+    ],
+    in_app_otp_apps: [
+      type: {:list, :atom},
+      default: [],
+      doc:
+        "List of OTP app names of your applications. Stacktrace entries that belong to these apps will be marked as \"in_app\"."
+    ]
+  ]
 
-    :ok
+  @convenience_schema [
+    enable: [
+      type: :boolean,
+      default: true,
+      doc: "Automatically start PostHog?"
+    ],
+    enable_error_tracking: [
+      type: :boolean,
+      default: true,
+      doc: "Automatically start the logger handler for error tracking?"
+    ]
+  ]
+
+  @compiled_configuration_schema NimbleOptions.new!(@configuration_schema)
+  @compiled_convenience_schema NimbleOptions.new!(@convenience_schema)
+
+  @moduledoc """
+  PostHog configuration
+
+  ## Configuration Schema
+
+  ### Application Configuration
+
+  These are convenience options that only affect how PostHog's own application behaves.
+
+  #{NimbleOptions.docs(@compiled_convenience_schema)}
+
+  ### Supervisor Configuration
+
+  This is the main options block that configures each supervision tree instance.
+
+  #{NimbleOptions.docs(@compiled_configuration_schema)}
+  """
+
+  @typedoc """
+  Map containing valid configuration.
+
+  It mostly follows `t:options/0`, but the internal structure shouldn't be relied upon.
+  """
+  @opaque config() :: map()
+
+  @type options() :: unquote(NimbleOptions.option_typespec(@compiled_configuration_schema))
+
+  @doc false
+  def read!() do
+    configuration_options =
+      Application.get_all_env(:posthog) |> Keyword.take(Keyword.keys(@configuration_schema))
+
+    convenience_options =
+      Application.get_all_env(:posthog) |> Keyword.take(Keyword.keys(@convenience_schema))
+
+    with %{enable: true} = conv <-
+           convenience_options
+           |> NimbleOptions.validate!(@compiled_convenience_schema)
+           |> Map.new() do
+      config = validate!(configuration_options)
+      {conv, config}
+    end
+  end
+
+  @doc """
+  See `validate/1`.
+  """
+  @spec validate!(options()) :: config()
+  def validate!(options) do
+    {:ok, config} = validate(options)
+    config
+  end
+
+  @doc """
+  Validates configuration against the schema.
+  """
+  @spec validate(options()) ::
+          {:ok, config()} | {:error, NimbleOptions.ValidationError.t()}
+  def validate(options) do
+    with {:ok, validated} <- NimbleOptions.validate(options, @compiled_configuration_schema) do
+      config = Map.new(validated)
+      client = config.api_client_module.client(config.api_key, config.public_url)
+
+      final_config =
+        config
+        |> Map.put(:api_client, client)
+        |> Map.put(
+          :in_app_modules,
+          config.in_app_otp_apps |> Enum.flat_map(&Application.spec(&1, :modules)) |> MapSet.new()
+        )
+        |> Map.put(:global_properties, %{
+          "$lib": "posthog-elixir",
+          "$lib_version": Application.spec(:posthog, :vsn) |> to_string()
+        })
+
+      {:ok, final_config}
+    end
   end
 end
