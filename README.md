@@ -44,10 +44,10 @@ config :posthog,
   test_mode: true
 ```
 
-Optionally, enable [Plug integration](`PostHog.Integrations.Plug`).
+Optionally, enable [Plug integration](lib/posthog/integrations/plug.ex).
 
 You're all set! 🎉 For more information on configuration, check the `PostHog.Config` module
-documentation and the [advanced configuration guide](advanced-configuration.md).
+documentation and the [advanced configuration guide](guides/advanced-configuration.md).
 
 ## Capturing Events
 
