@@ -32,7 +32,7 @@ Configure the `PostHog` application environment:
 config :posthog,
   enable: true,
   enable_error_tracking: true,
-  api_host: "https://us.i.posthog.com", # Or `https://eu.posthog.com` or your self-hosted PostHog instance URL
+  api_host: "https://us.i.posthog.com", # Or `https://eu.i.posthog.com` or your self-hosted PostHog instance URL
   api_key: "phc_my_api_key",
   in_app_otp_apps: [:my_app]
 ```
