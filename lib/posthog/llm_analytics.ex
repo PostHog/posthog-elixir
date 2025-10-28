@@ -22,6 +22,10 @@ defmodule PostHog.LLMAnalytics do
     Process.put({name, @root_span_key}, span_id)
   end
 
+  def get_root_span(name \\ PostHog) do
+    Process.get({name, @root_span_key})
+  end
+
   def start_span(properties) when not is_atom(properties) do
     start_span(PostHog, properties)
   end
