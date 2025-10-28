@@ -54,8 +54,9 @@ defmodule PostHog.LLMAnalytics do
   end
 
   def capture_span(name \\ PostHog, type, properties \\ %{}) when type in @llm_events do
-    start_span(name, properties)
+    span_id = start_span(name, properties)
     capture_current_span(name, type, properties)
+    span_id
   end
 
   defp pop_span(name) do
