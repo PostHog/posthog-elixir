@@ -18,6 +18,10 @@ defmodule PostHog.LLMAnalytics do
     trace_id
   end
 
+  def get_trace(name \\ PostHog) do
+    PostHog.Context.get(name, "$ai_generation")[:"$ai_trace_id"]
+  end
+
   def set_root_span(name \\ PostHog, span_id) do
     Process.put({name, @root_span_key}, span_id)
   end
