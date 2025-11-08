@@ -99,6 +99,41 @@ defmodule PostHog.IntegrationTest do
       :ok
     end
 
+    test "OpenAI Responses", %{wait_fun: wait} do
+      Req.new()
+      |> PostHog.Integrations.LLMAnalytics.Req.attach()
+      |> Req.post!(
+        url: "https://api.openai.com/v1/responses",
+        auth: {:bearer, Application.get_env(:posthog, :openai_key)},
+        json: %{
+          model: "gpt-5-mini",
+          input: "Cite me the greatest opening line in the history of cyberpunk."
+        }
+      )
+
+      wait.()
+    end
+
+    test "OpenAI Chat Completions", %{wait_fun: wait} do
+      Req.new()
+      |> PostHog.Integrations.LLMAnalytics.Req.attach()
+      |> Req.post!(
+        url: "https://api.openai.com/v1/chat/completions",
+        auth: {:bearer, Application.get_env(:posthog, :openai_key)},
+        json: %{
+          model: "gpt-5-mini",
+          messages: [
+            %{
+              role: "user",
+              content: "Cite me the greatest opening line in the history of cyberpunk."
+            }
+          ]
+        }
+      )
+
+      wait.()
+    end
+
     test "documentation example", %{wait_fun: wait} do
       LLMAnalytics.capture_span("$ai_generation", %{
         "$ai_model": "gpt-5-mini",
