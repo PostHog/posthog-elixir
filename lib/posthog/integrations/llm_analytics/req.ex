@@ -102,31 +102,76 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
 
   defp request_url_properties(_), do: %{}
 
-  defp request_body_properties(%Req.Request{options: %{json: json_body}}),
-    do: request_body_properties(json_body)
+  defp request_body_properties(%Req.Request{options: %{json: json_body}}) do
+    Enum.reduce(
+      [:"$ai_input", :"$ai_temperature", :"$ai_stream", :"$ai_max_tokens", :"$ai_tools"],
+      %{},
+      fn property, properties ->
+        if value = request_optional_property(property, json_body) do
+          Map.put(properties, property, value)
+        else
+          properties
+        end
+      end
+    )
+  end
 
-  # OpenAI Responses
-  defp request_body_properties(%{input: input}), do: %{"$ai_input": input}
-  defp request_body_properties(%{"input" => input}), do: %{"$ai_input": input}
-  # OpenAI Chat Completions
-  defp request_body_properties(%{messages: input}), do: %{"$ai_input": input}
-  defp request_body_properties(%{"messages" => input}), do: %{"$ai_input": input}
   defp request_body_properties(_), do: %{}
 
+  defp request_optional_property(:"$ai_input", body) do
+    # OpenAI Responses
+    # OpenAI Chat Completions
+    get_in(body, [atom_or_string_key(:input)]) ||
+      get_in(body, [atom_or_string_key(:messages)])
+  end
+
+  defp request_optional_property(:"$ai_temperature", body) do
+    # OpenAI Responses
+    # OpenAI Chat Completions
+    get_in(body, [atom_or_string_key(:temperature)])
+  end
+
+  defp request_optional_property(:"$ai_stream", body) do
+    # OpenAI Responses
+    # OpenAI Chat Completions
+    get_in(body, [atom_or_string_key(:stream)])
+  end
+
+  defp request_optional_property(:"$ai_max_tokens", body) do
+    # OpenAI Responses
+    # OpenAI Chat Completions
+    get_in(body, [atom_or_string_key(:max_output_tokens)]) ||
+      get_in(body, [atom_or_string_key(:max_completion_tokens)])
+  end
+
+  defp request_optional_property(:"$ai_tools", body) do
+    # OpenAI Responses
+    # OpenAI Chat Completions
+    get_in(body, [atom_or_string_key(:tools)])
+  end
+
+  defp request_optional_property(_, _), do: nil
+
+  # OpenAI Responses
   defp response_properties(%{
          "model" => model,
          "output" => output,
-         "usage" => %{"output_tokens" => output_tokens, "input_tokens" => input_tokens}
+         "usage" => %{"output_tokens" => output_tokens, "input_tokens" => input_tokens},
+         "tools" => tools,
+         "temperature" => temperature
        }) do
     %{
       "$ai_output_choices": output,
       "$ai_input_tokens": input_tokens,
       "$ai_output_tokens": output_tokens,
       "$ai_model": model,
+      "$ai_tools": tools,
+      "$ai_temperature": temperature,
       "$ai_is_error": false
     }
   end
 
+  # OpenAI Chat Completions
   defp response_properties(%{
          "model" => model,
          "choices" => output,
@@ -149,4 +194,14 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
   end
 
   defp response_properties(_), do: %{}
+
+  defp atom_or_string_key(key) do
+    fn :get, data, next ->
+      if value = Access.get(data, key) || Access.get(data, Atom.to_string(key)) do
+        next.(value)
+      else
+        nil
+      end
+    end
+  end
 end
