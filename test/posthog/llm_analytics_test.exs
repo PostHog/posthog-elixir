@@ -80,6 +80,19 @@ defmodule Posthog.LLMAnalyticsTest do
     end
   end
 
+  describe "get_trace/1" do
+    test "retrieves trace_id" do
+      assert "" <> id = LLMAnalytics.set_trace()
+      assert ^id = LLMAnalytics.get_trace()
+    end
+
+    @tag config: [supervisor_name: MyPostHog]
+    test "custom PostHog instance" do
+      assert "" <> id = LLMAnalytics.set_trace(MyPostHog)
+      assert ^id = LLMAnalytics.get_trace(MyPostHog)
+    end
+  end
+
   describe "set_root_span/2" do
     test "sets root span in process dictionary" do
       LLMAnalytics.set_root_span("foo")
