@@ -358,7 +358,7 @@ defmodule Posthog.LLMAnalyticsTest do
     end
 
     test "completely isolated span" do
-      assert "" <> id = LLMAnalytics.capture_span("$ai_generation", %{foo: "bar"})
+      assert {:ok, "" <> id} = LLMAnalytics.capture_span("$ai_generation", %{foo: "bar"})
       assert [event] = all_captured()
 
       assert %{
@@ -372,7 +372,7 @@ defmodule Posthog.LLMAnalyticsTest do
     test "respects trace and root span" do
       LLMAnalytics.set_trace("foo")
       LLMAnalytics.set_root_span("root_span_id")
-      assert "" <> id = LLMAnalytics.capture_span("$ai_generation", %{foo: "bar"})
+      assert {:ok, "" <> id} = LLMAnalytics.capture_span("$ai_generation", %{foo: "bar"})
       assert [event] = all_captured()
 
       assert %{
@@ -389,7 +389,7 @@ defmodule Posthog.LLMAnalyticsTest do
     test "uses current span as parent if present" do
       LLMAnalytics.set_root_span("root_span_id")
       current_span_id = LLMAnalytics.start_span(%{foo: "bar"})
-      assert "" <> id = LLMAnalytics.capture_span("$ai_generation", %{bar: "baz"})
+      assert {:ok, "" <> id} = LLMAnalytics.capture_span("$ai_generation", %{bar: "baz"})
       assert [event] = all_captured()
 
       assert %{
@@ -399,7 +399,7 @@ defmodule Posthog.LLMAnalyticsTest do
     end
 
     test "no properties" do
-      assert "" <> id = LLMAnalytics.capture_span("$ai_generation")
+      assert {:ok, "" <> id} = LLMAnalytics.capture_span("$ai_generation")
       assert [event] = all_captured()
 
       assert %{
@@ -411,8 +411,10 @@ defmodule Posthog.LLMAnalyticsTest do
     @tag config: [supervisor_name: MyPostHog]
     test "custom PostHog instance" do
       PostHog.set_context(MyPostHog, %{distinct_id: "foo"})
-      assert "" <> id1 = LLMAnalytics.capture_span(MyPostHog, "$ai_generation")
-      assert "" <> id2 = LLMAnalytics.capture_span(MyPostHog, "$ai_generation", %{foo: "bar"})
+      assert {:ok, "" <> id1} = LLMAnalytics.capture_span(MyPostHog, "$ai_generation")
+
+      assert {:ok, "" <> id2} =
+               LLMAnalytics.capture_span(MyPostHog, "$ai_generation", %{foo: "bar"})
 
       assert [
                %{
