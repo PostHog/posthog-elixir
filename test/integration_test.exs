@@ -2,10 +2,11 @@ defmodule PostHog.IntegrationTest do
   # Note that this test suite lacks assertions and is meant to assist with
   # manual testing. There is not much point in running all tests in it at once.
   # Instead, pick one test and iterate over it while checking PostHog UI.
-  require Config
   use ExUnit.Case, async: false
 
   require Logger
+
+  alias PostHog.LLMAnalytics
 
   @moduletag integration: true
 
@@ -94,22 +95,12 @@ defmodule PostHog.IntegrationTest do
   describe "llm analytics" do
     setup %{test: test} do
       PostHog.set_context(%{distinct_id: test})
-
-      trace_id = "#{test}-#{DateTime.utc_now() |> DateTime.to_unix(:microsecond)}"
-
-      PostHog.set_event_context("$ai_generation", %{
-        "$ai_trace_id": trace_id
-      })
-
-      PostHog.set_event_context("$ai_span", %{
-        "$ai_trace_id": trace_id
-      })
-
-      %{trace_id: trace_id}
+      LLMAnalytics.set_trace()
+      :ok
     end
 
-    test "documentation example", %{test: test, wait_fun: wait} do
-      PostHog.capture("$ai_generation", %{
+    test "documentation example", %{wait_fun: wait} do
+      LLMAnalytics.capture_span("$ai_generation", %{
         "$ai_model": "gpt-5-mini",
         "$ai_latency": 1.5,
         "$ai_tools": [],
@@ -146,7 +137,6 @@ defmodule PostHog.IntegrationTest do
           }
         ],
         "$ai_output_tokens": 100,
-        "$ai_span_id": "#{test}-span-#{DateTime.utc_now() |> DateTime.to_unix(:microsecond)}",
         "$ai_span_name": "first request",
         "$ai_provider": "openai",
         "$ai_http_status": 200,
@@ -158,8 +148,8 @@ defmodule PostHog.IntegrationTest do
       wait.()
     end
 
-    test "responses API example", %{test: test, wait_fun: wait} do
-      PostHog.capture("$ai_generation", %{
+    test "responses API example", %{wait_fun: wait} do
+      LLMAnalytics.capture_span("$ai_generation", %{
         "$ai_model": "gpt-5-mini",
         "$ai_latency": 1.5,
         "$ai_tools": [],
@@ -193,7 +183,6 @@ defmodule PostHog.IntegrationTest do
           }
         ],
         "$ai_output_tokens": 619,
-        "$ai_span_id": "#{test}-span-#{DateTime.utc_now() |> DateTime.to_unix(:microsecond)}",
         "$ai_span_name": "first request",
         "$ai_provider": "openai",
         "$ai_http_status": 200,
@@ -205,67 +194,64 @@ defmodule PostHog.IntegrationTest do
       wait.()
     end
 
-    test "tool call example", %{test: test, wait_fun: wait} do
-      span_id = "#{test}-span-#{DateTime.utc_now() |> DateTime.to_unix(:microsecond)}"
-
-      PostHog.capture("$ai_generation", %{
-        "$ai_model": "gpt-5-mini",
-        "$ai_latency": 1.5,
-        "$ai_tools": [
-          %{
-            type: "function",
-            name: "get_current_weather",
-            description: "Get the current weather in a given location",
-            parameters: %{
-              type: "object",
-              properties: %{
-                location: %{
-                  type: "string",
-                  description: "The city and state, e.g. San Francisco, CA"
+    test "tool call example", %{wait_fun: wait} do
+      {:ok, span_id} =
+        LLMAnalytics.capture_span("$ai_generation", %{
+          "$ai_model": "gpt-5-mini",
+          "$ai_latency": 1.5,
+          "$ai_tools": [
+            %{
+              type: "function",
+              name: "get_current_weather",
+              description: "Get the current weather in a given location",
+              parameters: %{
+                type: "object",
+                properties: %{
+                  location: %{
+                    type: "string",
+                    description: "The city and state, e.g. San Francisco, CA"
+                  },
+                  unit: %{
+                    type: "string",
+                    enum: ["celsius", "fahrenheit"]
+                  }
                 },
-                unit: %{
-                  type: "string",
-                  enum: ["celsius", "fahrenheit"]
-                }
-              },
-              required: ["location", "unit"]
+                required: ["location", "unit"]
+              }
             }
-          }
-        ],
-        "$ai_input": [
-          %{
-            role: "user",
-            content: "Tell me weather in Vancouver"
-          }
-        ],
-        "$ai_input_tokens": 79,
-        "$ai_output_choices": [
-          %{
-            "id" => "rs_0ad5cc1dea87abd60068c6ffdcff78819380572ff4e3882cd9",
-            "summary" => [],
-            "type" => "reasoning"
-          },
-          %{
-            "arguments" => "{\"unit\":\"celsius\",\"location\":\"Vancouver, BC\"}",
-            "call_id" => "call_gdzLdDbo8TqAJRzsq39zMXPr",
-            "id" => "fc_0ad5cc1dea87abd60068c6ffdedeec8193a6c39f4c57326b8b",
-            "name" => "get_current_weather",
-            "status" => "completed",
-            "type" => "function_call"
-          }
-        ],
-        "$ai_output_tokens": 93,
-        "$ai_span_id": span_id,
-        "$ai_span_name": "ask for weather",
-        "$ai_provider": "openai",
-        "$ai_http_status": 200,
-        "$ai_base_url": "https://api.openai.com/v1",
-        "$ai_request_url": "https://api.openai.com/v1/responses",
-        "$ai_is_error": false
-      })
+          ],
+          "$ai_input": [
+            %{
+              role: "user",
+              content: "Tell me weather in Vancouver"
+            }
+          ],
+          "$ai_input_tokens": 79,
+          "$ai_output_choices": [
+            %{
+              "id" => "rs_0ad5cc1dea87abd60068c6ffdcff78819380572ff4e3882cd9",
+              "summary" => [],
+              "type" => "reasoning"
+            },
+            %{
+              "arguments" => "{\"unit\":\"celsius\",\"location\":\"Vancouver, BC\"}",
+              "call_id" => "call_gdzLdDbo8TqAJRzsq39zMXPr",
+              "id" => "fc_0ad5cc1dea87abd60068c6ffdedeec8193a6c39f4c57326b8b",
+              "name" => "get_current_weather",
+              "status" => "completed",
+              "type" => "function_call"
+            }
+          ],
+          "$ai_output_tokens": 93,
+          "$ai_span_name": "ask for weather",
+          "$ai_provider": "openai",
+          "$ai_http_status": 200,
+          "$ai_base_url": "https://api.openai.com/v1",
+          "$ai_request_url": "https://api.openai.com/v1/responses",
+          "$ai_is_error": false
+        })
 
-      PostHog.capture("$ai_span", %{
-        "$ai_span_id": "#{test}-span-#{DateTime.utc_now() |> DateTime.to_unix(:microsecond)}",
+      LLMAnalytics.capture_span("$ai_span", %{
         "$ai_span_name": "tool_call",
         "$ai_parent_id": span_id,
         "$ai_input_state": %{"unit" => "celsius", "location" => "Vancouver, BC"},
