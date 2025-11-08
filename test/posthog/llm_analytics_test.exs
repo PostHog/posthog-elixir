@@ -106,6 +106,19 @@ defmodule Posthog.LLMAnalyticsTest do
     end
   end
 
+  describe "get_root_span/1" do
+    test "sets root span in process dictionary" do
+      LLMAnalytics.set_root_span("foo")
+      assert "foo" = LLMAnalytics.get_root_span()
+    end
+
+    test "custom PostHog instance" do
+      LLMAnalytics.set_root_span(MyPostHog, "foo")
+      assert nil == LLMAnalytics.get_root_span()
+      assert "foo" == LLMAnalytics.get_root_span(MyPostHog)
+    end
+  end
+
   describe "start_span/2" do
     test "pushes new span to the backlog in process dictionary" do
       assert "" <> span_id = LLMAnalytics.start_span(%{foo: "bar"})
