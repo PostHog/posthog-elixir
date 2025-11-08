@@ -358,70 +358,70 @@ defmodule Posthog.LLMAnalyticsTest do
     end
 
     test "completely isolated span" do
-      assert :ok = LLMAnalytics.capture_span("$ai_generation", %{foo: "bar"})
+      assert "" <> id = LLMAnalytics.capture_span("$ai_generation", %{foo: "bar"})
       assert [event] = all_captured()
 
       assert %{
                event: "$ai_generation",
-               properties: %{foo: "bar"}
+               properties: %{foo: "bar", "$ai_span_id": ^id}
              } = event
 
-      refute event[:"$ai_span_id"]
-      refute event[:"$ai_parent_id"]
+      refute event[:properties][:"$ai_parent_id"]
     end
 
     test "respects trace and root span" do
       LLMAnalytics.set_trace("foo")
       LLMAnalytics.set_root_span("root_span_id")
-      assert :ok = LLMAnalytics.capture_span("$ai_generation", %{foo: "bar"})
+      assert "" <> id = LLMAnalytics.capture_span("$ai_generation", %{foo: "bar"})
       assert [event] = all_captured()
 
       assert %{
                event: "$ai_generation",
-               properties: %{foo: "bar", "$ai_trace_id": "foo", "$ai_parent_id": "root_span_id"}
+               properties: %{
+                 foo: "bar",
+                 "$ai_trace_id": "foo",
+                 "$ai_parent_id": "root_span_id",
+                 "$ai_span_id": ^id
+               }
              } = event
-
-      refute event[:"$ai_span_id"]
     end
 
     test "uses current span as parent if present" do
       LLMAnalytics.set_root_span("root_span_id")
       current_span_id = LLMAnalytics.start_span(%{foo: "bar"})
-      assert :ok = LLMAnalytics.capture_span("$ai_generation", %{bar: "baz"})
+      assert "" <> id = LLMAnalytics.capture_span("$ai_generation", %{bar: "baz"})
       assert [event] = all_captured()
 
       assert %{
                event: "$ai_generation",
-               properties: %{bar: "baz", "$ai_parent_id": ^current_span_id}
+               properties: %{bar: "baz", "$ai_parent_id": ^current_span_id, "$ai_span_id": ^id}
              } = event
-
-      refute event[:"$ai_span_id"]
     end
 
     test "no properties" do
-      assert :ok = LLMAnalytics.capture_span("$ai_generation")
+      assert "" <> id = LLMAnalytics.capture_span("$ai_generation")
       assert [event] = all_captured()
 
       assert %{
                event: "$ai_generation",
-               properties: %{}
+               properties: %{"$ai_span_id": ^id}
              } = event
     end
 
     @tag config: [supervisor_name: MyPostHog]
     test "custom PostHog instance" do
       PostHog.set_context(MyPostHog, %{distinct_id: "foo"})
-      assert :ok = LLMAnalytics.capture_span(MyPostHog, "$ai_generation")
-      assert :ok = LLMAnalytics.capture_span(MyPostHog, "$ai_generation", %{foo: "bar"})
+      assert "" <> id1 = LLMAnalytics.capture_span(MyPostHog, "$ai_generation")
+      assert "" <> id2 = LLMAnalytics.capture_span(MyPostHog, "$ai_generation", %{foo: "bar"})
 
       assert [
                %{
                  event: "$ai_generation",
-                 properties: %{foo: "bar"}
+                 properties: %{foo: "bar", "$ai_span_id": ^id2}
                },
                %{
                  event: "$ai_generation",
-                 properties: %{}
+                 properties: %{"$ai_span_id": ^id1}
                }
              ] = all_captured(MyPostHog)
     end
