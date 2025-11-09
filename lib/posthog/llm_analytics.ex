@@ -10,19 +10,19 @@ defmodule PostHog.LLMAnalytics do
 
   ```mermaid
   flowchart TD
-  
+
       A[<strong>$ai_trace</strong>]
               
       B[<strong>$ai_generation</strong>]
         
       C@{ shape: processes, label: "<strong>$ai_spans</strong>" }
-  
+
       D[<strong>$ai_generation</strong>]
-  
+
       E@{ shape: processes, label: "<strong>$ai_spans</strong>" }
-  
+
       F[<strong>$ai_generation</strong>]
-  
+
       A --> B
       A --> C
       C --> D
@@ -140,6 +140,21 @@ defmodule PostHog.LLMAnalytics do
     set_trace(PostHog, trace_id)
   end
 
+  @doc """
+  Set `$ai_trace_id` property for the current process.
+
+  Unlike span-related machinery, this function sets trace_id property in the
+  [Context](README.md#context). It is scoped to AI-related events.
+
+  ## Examples
+
+      iex> PostHog.LLMAnalytics.set_trace()
+      "019a6a06-3800-78aa-8bb9-ac7eeb85ac67"
+      iex> PostHog.LLMAnalytics.set_trace("my_trace_id")
+      "my_trace_id"
+      iex> PostHog.LLMAnalytics.set_trace(MyPostHog)
+      "019a6a06-7f23-736d-9a5e-ef707b5a5f15"
+  """
   @spec set_trace(PostHog.supervisor_name(), trace_id()) :: trace_id()
   def set_trace(name \\ PostHog, trace_id \\ UUIDv7.generate()) do
     properties = %{"$ai_trace_id": trace_id}
@@ -151,17 +166,66 @@ defmodule PostHog.LLMAnalytics do
     trace_id
   end
 
+  @doc """
+  Get trace id set for current process.
+
+  Use this function to propagate current process' trace ID to a new process.
+
+  ## Examples
+
+      iex> PostHog.LLMAnalytics.get_trace()
+      nil
+      iex> PostHog.LLMAnalytics.set_trace()
+      "019a6a07-b4bd-7e93-acfe-f811bfa521c4"
+      iex> PostHog.LLMAnalytics.get_trace()
+      "019a6a07-b4bd-7e93-acfe-f811bfa521c4"
+      iex> PostHog.LLMAnalytics.get_trace(MyPostHog)
+      nil
+  """
   @spec get_trace(PostHog.supervisor_name()) :: trace_id() | nil
   def get_trace(name \\ PostHog) do
     PostHog.Context.get(name, "$ai_generation")[:"$ai_trace_id"]
   end
 
+  @doc """
+  Set root span ID for a process.
+
+  Use this function when you want all spans captured in a given process to be
+  nested under a span captured in other process. Root span ID can't be
+  "consumed" by calling `capture_current_span/3`.
+
+  ## Examples
+
+      iex> {:ok, span_id} = PostHog.LLMAnalytics.capture_span("$ai_span", %{"$ai_span_name": "parent"})
+      {:ok, "019a6a0d-55fc-795a-b5d8-bf1ca0ba9c5b"}
+      iex> Task.async(fn ->
+        PostHog.LLMAnalytics.set_root_span(span_id)
+        PostHog.LLMAnalytics.capture_span("$ai_span", %{"$ai_span_name": "async child"})
+      end)
+  """
   @spec set_root_span(PostHog.supervisor_name(), span_id()) :: :ok
   def set_root_span(name \\ PostHog, span_id) do
     Process.put({name, @root_span_key}, span_id)
     :ok
   end
 
+  @doc """
+  Get root span ID for a process.
+
+  Use this function to get propagate current process' root span to a new
+  process. 
+
+  ## Examples
+
+      iex> PostHog.LLMAnalytics.get_root_span()
+      nil
+      iex> PostHog.LLMAnalytics.set_root_span("span_id")
+      :ok
+      iex> PostHog.LLMAnalytics.get_root_span()
+      "span_id"
+      iex> PostHog.LLMAnalytics.get_root_span(MyPostHog)
+      nil
+  """
   @spec get_root_span(PostHog.supervisor_name()) :: span_id()
   def get_root_span(name \\ PostHog) do
     Process.get({name, @root_span_key})
@@ -172,6 +236,25 @@ defmodule PostHog.LLMAnalytics do
     start_span(PostHog, properties)
   end
 
+  @doc """
+  Starts a span that will be automatically set as the parent for nested spans.
+
+  Current spans are stored as a stack in the process dictionary and "popped" every
+  time `capture_current_span` is called.
+
+  Use `start_span/2` when there are nested spans ahead or when you only have a
+  subset of properties at hand and don't want to carry them all the way to the
+  `capture_current_span/3` call.
+
+  ## Examples
+
+      iex> PostHog.LLMAnalytics.start_span()
+      "019a6a22-82eb-7284-aa1b-58db153fb66d"
+      iex> PostHog.LLMAnalytics.start_span(%{"$ai_span_name": "LLM Call"})
+      "019a6a22-b6de-7fee-a6ff-82eeafe8dc7a"
+      iex> PostHog.LLMAnalytics.start_span(MyPostHog)
+      "019a6a23-19de-7b9c-939a-0bbd455d45dc"
+  """
   @spec start_span(PostHog.supervisor_name(), PostHog.properties()) :: span_id()
   def start_span(name \\ PostHog, properties \\ %{}) do
     properties = Map.put_new_lazy(properties, :"$ai_span_id", fn -> UUIDv7.generate() end)
@@ -184,6 +267,20 @@ defmodule PostHog.LLMAnalytics do
     capture_current_span(PostHog, type, properties)
   end
 
+  @doc """
+  Capture a span, consuming the "current" one if set.
+
+  If no current span is set, the function will behave as `capture_span/2`.
+
+  ## Examples
+
+      iex> PostHog.LLMAnalytics.start_span(%{"$ai_span_name": "LLM Call"})
+      "019a6a26-c24f-7d0b-b47b-315c16ca3361"
+      iex> PostHog.LLMAnalytics.capture_current_span("$ai_generation")
+      {:ok, "019a6a26-c24f-7d0b-b47b-315c16ca3361"}
+      iex> PostHog.LLMAnalytics.capture_current_span("$ai_generation", %{"$ai_span_name": "LLM Call"})
+      {:ok, "019a6a26-a259-7f00-930b-65fd359f48be"}
+  """
   @spec capture_current_span(PostHog.supervisor_name(), llm_event(), PostHog.properties()) ::
           :ok | {:error, :missing_distinct_id}
   def capture_current_span(name \\ PostHog, type, properties \\ %{}) when type in @llm_events do
@@ -199,6 +296,22 @@ defmodule PostHog.LLMAnalytics do
     capture_span(PostHog, type, properties)
   end
 
+  @doc """
+  Capture a span.
+
+  Calling this function will have no effect on the current span set in the process
+  dictionary. Use this function to capture "leaf" spans or when nested spans
+  will be captured in a different process.
+
+  ## Examples
+
+      iex> PostHog.LLMAnalytics.capture_span("$ai_generation", %{"$ai_span_name": "LLM Call"})
+      {:ok, "019a6a2c-10ef-7b68-9cee-b8a5ac86124b"}
+      iex> PostHog.LLMAnalytics.start_span(%{"$ai_span_name": "LLM Call"})
+      "019a6a2a-e0a1-7be7-ab1c-19dfcc5d0af7"
+      iex> PostHog.LLMAnalytics.capture_span("$ai_generation", %{"$ai_span_name": "LLM Call"})
+      {:ok, "019a6a2b-04db-7f97-a561-e818a929a508"}
+  """
   @spec capture_span(PostHog.supervisor_name(), llm_event(), PostHog.properties()) ::
           {:ok, span_id()} | {:error, :missing_distinct_id}
   def capture_span(name \\ PostHog, type, properties \\ %{}) when type in @llm_events do

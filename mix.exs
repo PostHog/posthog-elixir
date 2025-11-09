@@ -71,14 +71,14 @@ defmodule PostHog.MixProject do
       {:mox, "~> 1.1", only: :test}
     ]
   end
-  
+
   defp before_closing_body_tag(:html) do
     # https://hexdocs.pm/ex_doc/readme.html#rendering-mermaid-graphs
     """
     <script defer src="https://cdn.jsdelivr.net/npm/mermaid@11.12.1/dist/mermaid.min.js"></script>
     <script>
       let initialized = false;
-    
+
       window.addEventListener("exdoc:loaded", () => {
         if (!initialized) {
           mermaid.initialize({
@@ -87,7 +87,7 @@ defmodule PostHog.MixProject do
           });
           initialized = true;
         }
-    
+
         let id = 0;
         for (const codeEl of document.querySelectorAll("pre code.mermaid")) {
           const preEl = codeEl.parentElement;
@@ -105,6 +105,6 @@ defmodule PostHog.MixProject do
     </script>
     """
   end
-  
+
   defp before_closing_body_tag(:epub), do: ""
 end
