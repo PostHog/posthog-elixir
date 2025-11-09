@@ -52,7 +52,8 @@ defmodule PostHog.MixProject do
         Integrations: [PostHog.Integrations.Plug],
         Testing: [PostHog.Test]
       ],
-      skip_code_autolink_to: &String.starts_with?(&1, "Posthog")
+      skip_code_autolink_to: &String.starts_with?(&1, "Posthog"),
+      before_closing_body_tag: &before_closing_body_tag/1
     ]
   end
 
@@ -70,4 +71,40 @@ defmodule PostHog.MixProject do
       {:mox, "~> 1.1", only: :test}
     ]
   end
+  
+  defp before_closing_body_tag(:html) do
+    # https://hexdocs.pm/ex_doc/readme.html#rendering-mermaid-graphs
+    """
+    <script defer src="https://cdn.jsdelivr.net/npm/mermaid@11.12.1/dist/mermaid.min.js"></script>
+    <script>
+      let initialized = false;
+    
+      window.addEventListener("exdoc:loaded", () => {
+        if (!initialized) {
+          mermaid.initialize({
+            startOnLoad: false,
+            theme: document.body.className.includes("dark") ? "dark" : "default"
+          });
+          initialized = true;
+        }
+    
+        let id = 0;
+        for (const codeEl of document.querySelectorAll("pre code.mermaid")) {
+          const preEl = codeEl.parentElement;
+          const graphDefinition = codeEl.textContent;
+          const graphEl = document.createElement("div");
+          const graphId = "mermaid-graph-" + id++;
+          mermaid.render(graphId, graphDefinition).then(({svg, bindFunctions}) => {
+            graphEl.innerHTML = svg;
+            bindFunctions?.(graphEl);
+            preEl.insertAdjacentElement("afterend", graphEl);
+            preEl.remove();
+          });
+        }
+      });
+    </script>
+    """
+  end
+  
+  defp before_closing_body_tag(:epub), do: ""
 end
