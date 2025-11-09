@@ -65,7 +65,10 @@ defmodule PostHog.LLMAnalytics do
           :ok | {:error, :missing_distinct_id}
   def capture_current_span(name \\ PostHog, type, properties \\ %{}) when type in @llm_events do
     current_span_properties = name |> pop_span() |> Map.merge(properties)
-    PostHog.capture(name, type, current_span_properties)
+
+    with :ok <- PostHog.capture(name, type, current_span_properties) do
+      {:ok, current_span_properties."$ai_span_id"}
+    end
   end
 
   @doc false
@@ -76,11 +79,8 @@ defmodule PostHog.LLMAnalytics do
   @spec capture_span(PostHog.supervisor_name(), llm_event(), PostHog.properties()) ::
           {:ok, span_id()} | {:error, :missing_distinct_id}
   def capture_span(name \\ PostHog, type, properties \\ %{}) when type in @llm_events do
-    span_id = start_span(name, properties)
-
-    with :ok <- capture_current_span(name, type, properties) do
-      {:ok, span_id}
-    end
+    start_span(name, properties)
+    capture_current_span(name, type, properties)
   end
 
   defp pop_span(name) do
@@ -92,7 +92,11 @@ defmodule PostHog.LLMAnalytics do
       _ ->
         root_span = Process.get({name, @root_span_key})
 
-        if root_span, do: %{"$ai_parent_id": root_span}, else: %{}
+        if root_span do
+          %{"$ai_parent_id": root_span, "$ai_span_id": span_id}
+        else
+          %{"$ai_span_id": span_id}
+        end
     end
   end
 
