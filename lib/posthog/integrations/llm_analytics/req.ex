@@ -26,6 +26,43 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
   PostHog.LLMAnalytics.start_span(%{"$ai_span_name": "OpenAI Request"})
   Req.post!(client, url: "https://api.openai.com/v1/responses", json: ...)
   ```
+
+  ## Integrating with InstructorLite
+
+  InstructorLite built-in adapters allow customizing the HTTP client using the
+  [`http_client`
+  option](https://hexdocs.pm/instructor_lite/InstructorLite.Adapters.OpenAI.html#send_request/2).
+  Define a wrapper module like this:
+
+  ```
+  defmodule ReqWithLLMAnalytics do
+    def post(url, opts) do
+      Req.new(url: url)
+      |> PostHog.Integrations.LLMAnalytics.Req.attach()
+      |> Req.post(opts)
+    end
+  end
+  ```
+
+  Then pass this module as the `http_client` option in `adapter_context`.
+  Optionally, start a span beforehand!
+
+  ```
+  PostHog.LLMAnalytics.start_span(%{"$ai_span_name": "LLM Call"})
+
+  InstructorLite.instruct(%{
+      input: [%{role: "user", content: "John is 25yo"}],
+      model: "gpt-4o-mini"
+    },
+    response_model: %{name: :string, age: :integer},
+    adapter: InstructorLite.Adapters.OpenAI,
+    adapter_context: [
+      api_key: "my-secret-key",
+      http_client: ReqWithLLMAnalytics
+    ]
+  )
+  {:ok, %{name: "John", age: 25}}
+  ```
   """
   @start_at_key :posthog_llm_analytics_start_at
   @properties_key :posthog_llm_analytics_properties
