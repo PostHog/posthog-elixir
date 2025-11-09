@@ -1,9 +1,48 @@
 defmodule PostHog.Integrations.LLMAnalytics.Req do
+  @moduledoc since: "2.1.0"
+  @moduledoc """
+  Req plugin that automatically captures
+  [`$ai_generation`](https://posthog.com/docs/llm-analytics/manual-capture?tab=Generation)
+  events for LLMs.
+
+  It tries to extract as much information as possible from both requests and
+  responses. Currently, it works best with the following APIs:
+  * OpenAI (Responses)
+  * OpenAI (Chat Completions)
+
+  ## Usage
+
+  Just add it to your `Req` client before making a call:
+
+  ```
+  Req.new()
+  |> PostHog.Integrations.LLMAnalytics.Req.attach()
+  |> Req.post!(url: "https://api.openai.com/v1/responses", json: %{model: "gpt-5-mini", input: "Who are you?"})
+  ```
+
+  Optionally, start a new span beforehand to add additional properties to the event:
+
+  ```
+  PostHog.LLMAnalytics.start_span(%{"$ai_span_name": "OpenAI Request"})
+  Req.post!(client, url: "https://api.openai.com/v1/responses", json: ...)
+  ```
+  """
   @start_at_key :posthog_llm_analytics_start_at
   @properties_key :posthog_llm_analytics_properties
 
   alias PostHog.LLMAnalytics
 
+  @doc """
+  Attach plugin to a `Req.Request` struct.
+
+  The plugin registers the `posthog_supervisor` option. Use it if you run a [custom
+  PostHog instance](advanced-configuration.md).
+
+  ## Examples
+
+      iex> Req.new() |> PostHog.Integrations.LLMAnalytics.Req.attach()
+      iex> Req.new() |> PostHog.Integrations.LLMAnalytics.Req.attach(posthog_supervisor: MyPostHog)
+  """
   def attach(%Req.Request{} = request, options \\ []) do
     request
     |> Req.Request.register_options([:posthog_supervisor])

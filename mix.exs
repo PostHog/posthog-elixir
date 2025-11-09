@@ -49,7 +49,7 @@ defmodule PostHog.MixProject do
       },
       extras: ["README.md", "CHANGELOG.md", "MIGRATION.md", "guides/advanced-configuration.md"],
       groups_for_modules: [
-        Integrations: [PostHog.Integrations.Plug],
+        Integrations: [PostHog.Integrations.Plug, PostHog.Integrations.LLMAnalytics.Req],
         Testing: [PostHog.Test]
       ],
       skip_code_autolink_to: &String.starts_with?(&1, "Posthog"),
