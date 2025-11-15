@@ -95,6 +95,7 @@ defmodule PostHog.IntegrationTest do
   describe "llm analytics" do
     setup %{test: test} do
       PostHog.set_context(%{distinct_id: test})
+      LLMAnalytics.set_session()
       LLMAnalytics.set_trace()
       :ok
     end
