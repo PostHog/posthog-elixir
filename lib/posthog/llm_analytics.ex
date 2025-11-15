@@ -365,7 +365,7 @@ defmodule PostHog.LLMAnalytics do
       {:ok, "019a6a26-a259-7f00-930b-65fd359f48be"}
   """
   @spec capture_current_span(PostHog.supervisor_name(), llm_event(), PostHog.properties()) ::
-          :ok | {:error, :missing_distinct_id}
+          {:ok, span_id()} | {:error, :missing_distinct_id}
   def capture_current_span(name \\ PostHog, type, properties \\ %{}) when type in @llm_events do
     current_span_properties = name |> pop_span() |> Map.merge(properties)
 
