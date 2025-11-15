@@ -6,15 +6,19 @@ defmodule PostHog.LLMAnalytics do
 
   LLM Analytics works by capturing special types of events: traces (`$ai_trace`)
   and spans (`$ai_generation`, `$ai_span`, and `$ai_embedding`). They organize
-  into a tree structure.
+  into a tree structure that are grouped into sessions:
 
   ```mermaid
   flowchart TD
 
+      S["<strong>$ai_session_id</strong><br/>(optional)"]
+
       A[<strong>$ai_trace</strong>]
-              
+
+      A2[<strong>$ai_trace</strong>]
+
       B[<strong>$ai_generation</strong>]
-        
+
       C@{ shape: processes, label: "<strong>$ai_spans</strong>" }
 
       D[<strong>$ai_generation</strong>]
@@ -23,6 +27,8 @@ defmodule PostHog.LLMAnalytics do
 
       F[<strong>$ai_generation</strong>]
 
+      S -.-> A
+      S -.-> A2
       A --> B
       A --> C
       C --> D
@@ -46,6 +52,26 @@ defmodule PostHog.LLMAnalytics do
       "019a69ad-a9e9-7a20-9540-40101e01a364"
       iex> PostHog.get_event_context("$ai_span")
       %{"$ai_trace_id": "019a69ad-a9e9-7a20-9540-40101e01a364"}
+      
+  ## Sessions
+
+  [Sessions](https://posthog.com/docs/llm-analytics/sessions) group multiple
+  traces together using the `$ai_session_id` property.
+
+  In this SDK, sessions work the same way as traces – you set them for the current
+  process and LLM-related events captured in this process will have the same
+  `$ai_session_id` property.
+
+      iex> PostHog.LLMAnalytics.set_session()
+      "019a88b5-d2e0-75df-8601-7c1101717959"
+      iex> PostHog.get_event_context("$ai_span")
+      %{"$ai_session_id": "019a88b5-d2e0-75df-8601-7c1101717959"}
+      
+  > #### Sessions {: .info}
+  >
+  > `$ai_session_id` used throughout LLM Analytics [is a different kind of
+  > session](https://posthog.com/docs/llm-analytics/sessions#note-on-posthog-session-ids)
+  > than frontend sessions defined by `$session_id` property.
       
   ## Spans
 
@@ -101,14 +127,16 @@ defmodule PostHog.LLMAnalytics do
 
   Just as with Context, LLMAnalytics tracks the current trace and span in the
   process dictionary. Any time you spawn a new process, you'll need to propagate
-  this information. Use `set_trace/2` and `set_root_span/2`:
+  this information. Use `set_session/2`, `set_trace/2` and `set_root_span/2`:
 
   ```
   def generate_response(user_message) do
+    session_id = LLMAnalytics.set_session()
     trace_id = LLMAnalytics.set_trace()
     {:ok, span_id} = LLMAnalytics.capture_span("$ai_span", %{"$ai_span_name": "top level", "$ai_input_state": user_message})
     
     Task.async(fn -> 
+      LLMAnalytics.set_session(session)
       LLMAnalytics.set_trace(trace_id)
       LLMAnalytics.set_root_span(span_id)
       
@@ -131,6 +159,9 @@ defmodule PostHog.LLMAnalytics do
 
   @typedoc "You can pass any string as trace_id. By default, PostHog will generate a random UUIDv7."
   @type trace_id() :: String.t()
+
+  @typedoc "You can pass any string as session_id. By default, PostHog will generate a random UUIDv7."
+  @type session_id() :: String.t()
 
   @typedoc "One of LLM Analytics events: `$ai_generation`, `$ai_trace`, `$ai_span`, `$ai_embedding`"
   @type llm_event() :: PostHog.event()
@@ -166,6 +197,37 @@ defmodule PostHog.LLMAnalytics do
     trace_id
   end
 
+  @doc false
+  def set_session(session_id) when not is_atom(session_id) do
+    set_session(PostHog, session_id)
+  end
+
+  @doc """
+  Set `$ai_session_id` property for the current process.
+
+  Unlike span-related machinery, this function sets session_id property in the
+  [Context](README.md#context). It is scoped to AI-related events.
+
+  ## Examples
+
+      iex> PostHog.LLMAnalytics.set_session()
+      "019a6a06-3800-78aa-8bb9-ac7eeb85ac67"
+      iex> PostHog.LLMAnalytics.set_session("my_session_id")
+      "my_session_id"
+      iex> PostHog.LLMAnalytics.set_session(MyPostHog)
+      "019a6a06-7f23-736d-9a5e-ef707b5a5f15"
+  """
+  @spec set_session(PostHog.supervisor_name(), session_id()) :: session_id()
+  def set_session(name \\ PostHog, session_id \\ UUIDv7.generate()) do
+    properties = %{"$ai_session_id": session_id}
+
+    for event <- ["$exception" | @llm_events] do
+      PostHog.Context.set(name, event, properties)
+    end
+
+    session_id
+  end
+
   @doc """
   Get trace id set for current process.
 
@@ -185,6 +247,27 @@ defmodule PostHog.LLMAnalytics do
   @spec get_trace(PostHog.supervisor_name()) :: trace_id() | nil
   def get_trace(name \\ PostHog) do
     PostHog.Context.get(name, "$ai_generation")[:"$ai_trace_id"]
+  end
+
+  @doc """
+  Get session id set for current process.
+
+  Use this function to propagate current process' session ID to a new process.
+
+  ## Examples
+
+      iex> PostHog.LLMAnalytics.get_session()
+      nil
+      iex> PostHog.LLMAnalytics.set_session()
+      "019a6a07-b4bd-7e93-acfe-f811bfa521c4"
+      iex> PostHog.LLMAnalytics.get_session()
+      "019a6a07-b4bd-7e93-acfe-f811bfa521c4"
+      iex> PostHog.LLMAnalytics.get_session(MyPostHog)
+      nil
+  """
+  @spec get_session(PostHog.supervisor_name()) :: session_id() | nil
+  def get_session(name \\ PostHog) do
+    PostHog.Context.get(name, "$ai_generation")[:"$ai_session_id"]
   end
 
   @doc """

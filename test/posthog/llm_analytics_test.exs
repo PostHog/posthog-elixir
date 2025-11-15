@@ -80,6 +80,74 @@ defmodule Posthog.LLMAnalyticsTest do
     end
   end
 
+  describe "set_session/2" do
+    test "generates new session_id of not passed" do
+      assert "" <> id = LLMAnalytics.set_session()
+
+      assert [
+               __posthog__: %{
+                 PostHog => %{
+                   "$ai_trace" => %{"$ai_session_id": ^id},
+                   "$ai_span" => %{"$ai_session_id": ^id},
+                   "$ai_generation" => %{"$ai_session_id": ^id},
+                   "$ai_embedding" => %{"$ai_session_id": ^id},
+                   "$exception" => %{"$ai_session_id": ^id}
+                 }
+               }
+             ] = Logger.metadata()
+    end
+
+    test "explicit session_id" do
+      assert "foo" = LLMAnalytics.set_session("foo")
+
+      assert [
+               __posthog__: %{
+                 PostHog => %{
+                   "$ai_trace" => %{"$ai_session_id": "foo"},
+                   "$ai_span" => %{"$ai_session_id": "foo"},
+                   "$ai_generation" => %{"$ai_session_id": "foo"},
+                   "$ai_embedding" => %{"$ai_session_id": "foo"},
+                   "$exception" => %{"$ai_session_id": "foo"}
+                 }
+               }
+             ] = Logger.metadata()
+    end
+
+    @tag config: [supervisor_name: MyPostHog]
+    test "custom PostHog instance" do
+      assert "" <> id = LLMAnalytics.set_session(MyPostHog)
+
+      assert [
+               __posthog__: %{
+                 MyPostHog => %{
+                   "$ai_trace" => %{"$ai_session_id": ^id},
+                   "$ai_span" => %{"$ai_session_id": ^id},
+                   "$ai_generation" => %{"$ai_session_id": ^id},
+                   "$ai_embedding" => %{"$ai_session_id": ^id},
+                   "$exception" => %{"$ai_session_id": ^id}
+                 }
+               }
+             ] = Logger.metadata()
+    end
+
+    @tag config: [supervisor_name: MyPostHog]
+    test "custom PostHog instance and explicit session_id" do
+      assert "foo" = LLMAnalytics.set_session(MyPostHog, "foo")
+
+      assert [
+               __posthog__: %{
+                 MyPostHog => %{
+                   "$ai_trace" => %{"$ai_session_id": "foo"},
+                   "$ai_span" => %{"$ai_session_id": "foo"},
+                   "$ai_generation" => %{"$ai_session_id": "foo"},
+                   "$ai_embedding" => %{"$ai_session_id": "foo"},
+                   "$exception" => %{"$ai_session_id": "foo"}
+                 }
+               }
+             ] = Logger.metadata()
+    end
+  end
+
   describe "get_trace/1" do
     test "retrieves trace_id" do
       assert "" <> id = LLMAnalytics.set_trace()
@@ -90,6 +158,19 @@ defmodule Posthog.LLMAnalyticsTest do
     test "custom PostHog instance" do
       assert "" <> id = LLMAnalytics.set_trace(MyPostHog)
       assert ^id = LLMAnalytics.get_trace(MyPostHog)
+    end
+  end
+
+  describe "get_session/1" do
+    test "retrieves trace_id" do
+      assert "" <> id = LLMAnalytics.set_session()
+      assert ^id = LLMAnalytics.get_session()
+    end
+
+    @tag config: [supervisor_name: MyPostHog]
+    test "custom PostHog instance" do
+      assert "" <> id = LLMAnalytics.set_session(MyPostHog)
+      assert ^id = LLMAnalytics.get_session(MyPostHog)
     end
   end
 
