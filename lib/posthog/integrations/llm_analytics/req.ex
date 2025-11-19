@@ -306,16 +306,19 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
   defp response_properties(%{
          "candidates" => output,
          "modelVersion" => model,
-         "usageMetadata" => %{
-           "promptTokenCount" => input_tokens,
-           "thoughtsTokenCount" => thinking_tokens,
-           "candidatesTokenCount" => candidates_tokens
-         }
+         "usageMetadata" =>
+           %{
+             "promptTokenCount" => input_tokens,
+             "candidatesTokenCount" => candidates_tokens
+           } = usage
        }) do
+    reasoning_tokens = usage["thoughtsTokenCount"] || 0
+    tool_use_tokens = usage["toolUsePromptTokenCount"] || 0
+
     %{
       "$ai_output_choices": output,
       "$ai_input_tokens": input_tokens,
-      "$ai_output_tokens": candidates_tokens + thinking_tokens,
+      "$ai_output_tokens": candidates_tokens + reasoning_tokens + tool_use_tokens,
       "$ai_model": model,
       "$ai_is_error": false
     }
