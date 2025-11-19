@@ -208,5 +208,69 @@ defmodule PostHog.IntegrationTest do
 
       wait.()
     end
+
+    test "Gemini", %{wait_fun: wait} do
+      Req.new()
+      |> PostHog.Integrations.LLMAnalytics.Req.attach()
+      |> Req.post!(
+        url: "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+        headers: [{"x-goog-api-key", Application.get_env(:posthog, :gemini_key)}],
+        path_params: [model: "gemini-2.5-flash"],
+        path_params_style: :curly,
+        json: %{
+          contents: %{
+            parts: [
+              %{text: "Cite me the greatest opening line in the history of cyberpunk."}
+            ]
+          }
+        }
+      )
+
+      wait.()
+    end
+
+    test "Gemini with tool", %{wait_fun: wait} do
+      Req.new()
+      |> PostHog.Integrations.LLMAnalytics.Req.attach()
+      |> Req.post!(
+        url: "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+        headers: [{"x-goog-api-key", Application.get_env(:posthog, :gemini_key)}],
+        path_params: [model: "gemini-2.5-flash"],
+        path_params_style: :curly,
+        json: %{
+          contents: %{
+            parts: [
+              %{text: "Tell me weather in Vancouver, BC. Celsius."}
+            ]
+          },
+          tools: [
+            %{
+              functionDeclarations: [
+                %{
+                  name: "get_current_weather",
+                  description: "Get the current weather in a given location",
+                  parameters: %{
+                    type: "object",
+                    properties: %{
+                      location: %{
+                        type: "string",
+                        description: "The city and state, e.g. San Francisco, CA"
+                      },
+                      unit: %{
+                        type: "string",
+                        enum: ["celsius", "fahrenheit"]
+                      }
+                    },
+                    required: ["location", "unit"]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      )
+
+      wait.()
+    end
   end
 end
