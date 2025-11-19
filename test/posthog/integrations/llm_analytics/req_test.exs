@@ -635,4 +635,214 @@ defmodule PostHog.Integrations.LLMAnalytics.ReqTest do
              }
            ] = all_captured(@supervisor_name)
   end
+
+  test "captures Gemini generateContent properties", %{req: req} do
+    Req.Test.expect(@mock_module, fn conn ->
+      Req.Test.json(conn, %{
+        "candidates" => [
+          %{
+            "content" => %{
+              "parts" => [
+                %{
+                  "text" =>
+                    "The greatest opening line in the history of cyberpunk, arguably the most iconic and genre-defining, comes from the novel that started it all:\n\n**\"The sky above the port was the color of television, tuned to a dead channel.\"**\n\n— **William Gibson, *Neuromancer*** (1984)\n\n**Why it's so great:**\n\n1.  **Establishes the Aesthetic:** In a single, vivid simile, it perfectly captures the \"high tech, low life\" ethos of cyberpunk. It's an urban, gritty landscape (the \"port\") imbued with a technological metaphor (\"television, tuned to a dead channel\") that speaks of decay, static, information overload, and a world where technology is omnipresent but not necessarily pristine or hopeful.\n2.  **Immersive and Evocative:** It immediately drops the reader into a specific, slightly dystopian atmosphere without needing to explain anything further. You instantly *feel* the world.\n3.  **Influential:** This line, and the book it begins, fundamentally shaped the literary and visual language of cyberpunk across all media. It's instantly recognizable and frequently referenced."
+                }
+              ],
+              "role" => "model"
+            },
+            "finishReason" => "STOP",
+            "index" => 0
+          }
+        ],
+        "modelVersion" => "gemini-2.5-flash",
+        "responseId" => "ukoeaZ6wG8aM_PUPlbuE-A8",
+        "usageMetadata" => %{
+          "candidatesTokenCount" => 238,
+          "promptTokenCount" => 12,
+          "promptTokensDetails" => [%{"modality" => "TEXT", "tokenCount" => 12}],
+          "thoughtsTokenCount" => 1169,
+          "totalTokenCount" => 1419
+        }
+      })
+    end)
+
+    assert %{status: 200, body: %{}} =
+             Req.post!(req,
+               url:
+                 "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+               path_params: [model: "gemini-2.5-flash"],
+               path_params_style: :curly,
+               json: %{
+                 contents: %{
+                   parts: [
+                     %{text: "Cite me the greatest opening line in the history of cyberpunk."}
+                   ]
+                 }
+               }
+             )
+
+    assert [
+             %{
+               event: "$ai_generation",
+               properties: %{
+                 "$ai_base_url": "https://generativelanguage.googleapis.com/v1beta/models",
+                 "$ai_http_status": 200,
+                 "$ai_input": %{
+                   parts: [
+                     %{text: "Cite me the greatest opening line in the history of cyberpunk."}
+                   ]
+                 },
+                 "$ai_input_tokens": 12,
+                 "$ai_model": "gemini-2.5-flash",
+                 "$ai_output_choices": [
+                   %{
+                     "index" => 0,
+                     "content" => %{
+                       "parts" => [%{"text" => "The greatest" <> _}],
+                       "role" => "model"
+                     },
+                     "finishReason" => "STOP"
+                   }
+                 ],
+                 "$ai_output_tokens": 1407,
+                 "$ai_provider": "gemini",
+                 "$ai_request_url":
+                   "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+                 "$ai_is_error": false
+               }
+             }
+           ] = all_captured(@supervisor_name)
+  end
+
+  test "captures Gemini generateContent properties with tools", %{req: req} do
+    Req.Test.expect(@mock_module, fn conn ->
+      Req.Test.json(conn, %{
+        "candidates" => [
+          %{
+            "content" => %{
+              "parts" => [
+                %{
+                  "functionCall" => %{
+                    "args" => %{"location" => "Vancouver, BC", "unit" => "celsius"},
+                    "name" => "get_current_weather"
+                  },
+                  "thoughtSignature" => "foo"
+                }
+              ],
+              "role" => "model"
+            },
+            "finishMessage" => "Model generated function call(s).",
+            "finishReason" => "STOP",
+            "index" => 0
+          }
+        ],
+        "modelVersion" => "gemini-2.5-flash",
+        "responseId" => "mkweacCdFKDP_uMPz7f2CQ",
+        "usageMetadata" => %{
+          "candidatesTokenCount" => 25,
+          "promptTokenCount" => 82,
+          "promptTokensDetails" => [%{"modality" => "TEXT", "tokenCount" => 82}],
+          "thoughtsTokenCount" => 206,
+          "totalTokenCount" => 313
+        }
+      })
+    end)
+
+    assert %{status: 200, body: %{}} =
+             Req.post!(req,
+               url:
+                 "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+               path_params: [model: "gemini-2.5-flash"],
+               path_params_style: :curly,
+               json: %{
+                 contents: %{
+                   parts: [
+                     %{text: "Tell me weather in Vancouver, BC. Celsius."}
+                   ]
+                 },
+                 tools: [
+                   %{
+                     functionDeclarations: [
+                       %{
+                         name: "get_current_weather",
+                         description: "Get the current weather in a given location",
+                         parameters: %{
+                           type: "object",
+                           properties: %{
+                             location: %{
+                               type: "string",
+                               description: "The city and state, e.g. San Francisco, CA"
+                             },
+                             unit: %{
+                               type: "string",
+                               enum: ["celsius", "fahrenheit"]
+                             }
+                           },
+                           required: ["location", "unit"]
+                         }
+                       }
+                     ]
+                   }
+                 ]
+               }
+             )
+
+    assert [
+             %{
+               event: "$ai_generation",
+               properties: %{
+                 "$ai_base_url": "https://generativelanguage.googleapis.com/v1beta/models",
+                 "$ai_http_status": 200,
+                 "$ai_input": %{parts: [%{text: "Tell me weather in Vancouver, BC. Celsius."}]},
+                 "$ai_input_tokens": 82,
+                 "$ai_model": "gemini-2.5-flash",
+                 "$ai_output_choices": [
+                   %{
+                     "index" => 0,
+                     "content" => %{
+                       "parts" => [
+                         %{
+                           "functionCall" => %{
+                             "args" => %{"location" => "Vancouver, BC", "unit" => "celsius"},
+                             "name" => "get_current_weather"
+                           },
+                           "thoughtSignature" => "foo"
+                         }
+                       ],
+                       "role" => "model"
+                     },
+                     "finishMessage" => "Model generated function call(s).",
+                     "finishReason" => "STOP"
+                   }
+                 ],
+                 "$ai_output_tokens": 231,
+                 "$ai_provider": "gemini",
+                 "$ai_request_url":
+                   "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+                 "$ai_tools": [
+                   %{
+                     functionDeclarations: [
+                       %{
+                         name: "get_current_weather",
+                         description: "Get the current weather in a given location",
+                         parameters: %{
+                           type: "object",
+                           required: ["location", "unit"],
+                           properties: %{
+                             unit: %{type: "string", enum: ["celsius", "fahrenheit"]},
+                             location: %{
+                               type: "string",
+                               description: "The city and state, e.g. San Francisco, CA"
+                             }
+                           }
+                         }
+                       }
+                     ]
+                   }
+                 ],
+                 "$ai_is_error": false
+               }
+             }
+           ] = all_captured(@supervisor_name)
+  end
 end

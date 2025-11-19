@@ -169,6 +169,41 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
     }
   end
 
+  defp request_url_properties(
+         %Req.Request{
+           url: %URI{host: "generativelanguage.googleapis.com", path: "/v1beta/models" <> _}
+         } = request
+       ) do
+    properties =
+      with true <- is_binary(request.url.query),
+           %{"alt" => "sse"} <- URI.decode_query(request.url.query) do
+        %{"$ai_stream": true}
+      else
+        _ -> %{}
+      end
+
+    Map.merge(properties, %{
+      "$ai_base_url": "https://generativelanguage.googleapis.com/v1beta/models",
+      "$ai_request_url": URI.to_string(request.url),
+      "$ai_provider": "gemini"
+    })
+  end
+
+  defp request_url_properties(
+         %Req.Request{
+           url: %URI{
+             host: "generativelanguage.googleapis.com",
+             path: "/v1beta/openai/chat/completions"
+           }
+         } = request
+       ) do
+    %{
+      "$ai_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "$ai_request_url": URI.to_string(request.url),
+      "$ai_provider": "gemini"
+    }
+  end
+
   defp request_url_properties(%Req.Request{} = request) do
     %{
       "$ai_base_url": URI.to_string(%{request.url | path: nil}),
@@ -197,14 +232,17 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
   defp request_optional_property(:"$ai_input", body) do
     # OpenAI Responses
     # OpenAI Chat Completions
+    # Gemini generateContent
     get_in(body, [atom_or_string_key(:input)]) ||
-      get_in(body, [atom_or_string_key(:messages)])
+      get_in(body, [atom_or_string_key(:messages)]) ||
+      get_in(body, [atom_or_string_key(:contents)])
   end
 
   defp request_optional_property(:"$ai_temperature", body) do
     # OpenAI Responses
     # OpenAI Chat Completions
-    get_in(body, [atom_or_string_key(:temperature)])
+    get_in(body, [atom_or_string_key(:temperature)]) ||
+      get_in(body, [atom_or_string_key(:generationConfig), atom_or_string_key(:temperature)])
   end
 
   defp request_optional_property(:"$ai_stream", body) do
@@ -217,12 +255,14 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
     # OpenAI Responses
     # OpenAI Chat Completions
     get_in(body, [atom_or_string_key(:max_output_tokens)]) ||
-      get_in(body, [atom_or_string_key(:max_completion_tokens)])
+      get_in(body, [atom_or_string_key(:max_completion_tokens)]) ||
+      get_in(body, [atom_or_string_key(:generationConfig), atom_or_string_key(:maxOutputTokens)])
   end
 
   defp request_optional_property(:"$ai_tools", body) do
     # OpenAI Responses
     # OpenAI Chat Completions
+    # Gemini
     get_in(body, [atom_or_string_key(:tools)])
   end
 
@@ -257,6 +297,25 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
       "$ai_output_choices": output,
       "$ai_input_tokens": input_tokens,
       "$ai_output_tokens": output_tokens,
+      "$ai_model": model,
+      "$ai_is_error": false
+    }
+  end
+
+  # Gemini generateContent
+  defp response_properties(%{
+         "candidates" => output,
+         "modelVersion" => model,
+         "usageMetadata" => %{
+           "promptTokenCount" => input_tokens,
+           "thoughtsTokenCount" => thinking_tokens,
+           "candidatesTokenCount" => candidates_tokens
+         }
+       }) do
+    %{
+      "$ai_output_choices": output,
+      "$ai_input_tokens": input_tokens,
+      "$ai_output_tokens": candidates_tokens + thinking_tokens,
       "$ai_model": model,
       "$ai_is_error": false
     }
