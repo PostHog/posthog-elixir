@@ -146,9 +146,11 @@ defmodule PostHog.FeatureFlags do
              }}
         end
 
+      evaluated_at = Map.get(body, "evaluatedAt")
+
       # Make sure we keep track of the feature flag usage for debugging purposes
       # Users are NOT charged extra for this, but it's still good to have.
-      log_feature_flag_usage(name, distinct_id, flag_name, result)
+      log_feature_flag_usage(name, distinct_id, flag_name, result, evaluated_at)
 
       result
     end
@@ -201,13 +203,22 @@ defmodule PostHog.FeatureFlags do
     end
   end
 
-  defp log_feature_flag_usage(name, distinct_id, flag_name, result) do
+  defp log_feature_flag_usage(name, distinct_id, flag_name, result, evaluated_at) do
     with {:ok, variant} <- result do
-      PostHog.capture(name, "$feature_flag_called", %{
+      properties = %{
         distinct_id: distinct_id,
         "$feature_flag": flag_name,
         "$feature_flag_response": variant
-      })
+      }
+
+      properties =
+        if evaluated_at do
+          Map.put(properties, "$feature_flag_evaluated_at", evaluated_at)
+        else
+          properties
+        end
+
+      PostHog.capture(name, "$feature_flag_called", properties)
 
       PostHog.set_context(name, %{"$feature/#{flag_name}" => variant})
     end
