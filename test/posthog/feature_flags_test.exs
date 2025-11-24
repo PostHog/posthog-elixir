@@ -300,7 +300,7 @@ defmodule PostHog.FeatureFlagsTest do
                  properties: %{
                    "$feature_flag": "myflag",
                    "$feature_flag_response": "variant1",
-                   "$feature_flag_evaluated_at" => 1234567890
+                   "$feature_flag_evaluated_at": 1234567890
                  }
                }
              ] = all_captured()

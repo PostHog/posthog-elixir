@@ -213,7 +213,7 @@ defmodule PostHog.FeatureFlags do
 
       properties =
         if evaluated_at do
-          Map.put(properties, "$feature_flag_evaluated_at", evaluated_at)
+          Map.put(properties, :"$feature_flag_evaluated_at", evaluated_at)
         else
           properties
         end
