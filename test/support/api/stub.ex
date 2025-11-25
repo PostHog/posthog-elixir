@@ -36,7 +36,8 @@ defmodule PostHog.API.Stub do
              "variant" => nil
            }
          },
-         "requestId" => "0d23f243-399a-4904-b1a8-ec2037834b72"
+         "requestId" => "0d23f243-399a-4904-b1a8-ec2037834b72",
+         "evaluatedAt" => 1_234_567_890
        }
      }}
   end

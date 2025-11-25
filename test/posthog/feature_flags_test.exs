@@ -279,6 +279,33 @@ defmodule PostHog.FeatureFlagsTest do
              ] = all_captured()
     end
 
+    test "includes evaluatedAt in $feature_flag_called event when present" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{"myflag" => %{"variant" => "variant1"}},
+             "evaluatedAt" => 1_234_567_890
+           }
+         }}
+      end)
+
+      assert {:ok, "variant1"} = FeatureFlags.check("myflag", "foo")
+
+      assert [
+               %{
+                 event: "$feature_flag_called",
+                 distinct_id: "foo",
+                 properties: %{
+                   "$feature_flag": "myflag",
+                   "$feature_flag_response": "variant1",
+                   "$feature_flag_evaluated_at": 1_234_567_890
+                 }
+               }
+             ] = all_captured()
+    end
+
     @tag config: [supervisor_name: MyPostHog]
     test "custom PostHog instance" do
       expect(API.Mock, :request, fn client, method, url, opts ->
