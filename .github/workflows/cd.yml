@@ -100,6 +100,11 @@ jobs:
           message: "chore: Bump version to v${{ steps.versions.outputs.new-version }}"
           github_token: ${{ secrets.POSTHOG_BOT_PAT }}
 
+      - name: Create release on GitHub
+        if: steps.bump-type.outputs.bump-type != 'null'
+        run: |
+          gh release create "v${{ steps.versions.outputs.new-version }}" --generate-notes
+
       - name: Publish to Hex.pm
         if: steps.bump-type.outputs.bump-type != 'null'
         run: |
