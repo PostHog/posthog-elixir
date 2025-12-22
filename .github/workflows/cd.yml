@@ -99,10 +99,10 @@ jobs:
         env:
           OLD_VERSION: ${{ steps.versions.outputs.old-version }}
           NEW_VERSION: ${{ steps.versions.outputs.new-version }}
-          PR_BRANCH: ${{ github.event.pull_request.base.ref }}
+          BASE_COMMIT: ${{ github.event.pull_request.base.ref }}
         run: |
           CHANGELOG_HEADING="## $NEW_VERSION - $(date --iso-8601)"
-          CHANGELOG_POINTS="$(git log v$OLD_VERSION..$PR_BRANCH --pretty=format:%s --grep='^.*\d*)$' | sed -e 's/^/- /')"
+          CHANGELOG_POINTS="$(git log v$OLD_VERSION..$BASE_COMMIT --pretty=format:%s --grep='^.*\d*)$' | sed -e 's/^/- /')"
           mv CHANGELOG.md CHANGELOG.old.md
           echo -e "$CHANGELOG_HEADING\n\n$CHANGELOG_POINTS\n\n$(cat CHANGELOG.old.md)" > CHANGELOG.md
           rm CHANGELOG.old.md
