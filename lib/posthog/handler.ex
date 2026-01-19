@@ -81,7 +81,7 @@ defmodule PostHog.Handler do
   defp do_type(%{meta: %{crash_reason: {reason, _}}}),
     do: Exception.format_banner(:exit, reason)
 
-  defp do_type(%{msg: {:string, chardata}}), do: IO.iodata_to_binary(chardata)
+  defp do_type(%{msg: {:string, chardata}}), do: IO.chardata_to_string(chardata)
 
   defp do_type(%{msg: {:report, report}, meta: %{report_cb: report_cb}})
        when is_function(report_cb, 1) do
@@ -89,13 +89,13 @@ defmodule PostHog.Handler do
 
     io_format
     |> :io_lib.format(data)
-    |> IO.iodata_to_binary()
+    |> IO.chardata_to_string()
   end
 
   defp do_type(%{msg: {:report, report}}), do: inspect(report)
 
   defp do_type(%{msg: {io_format, data}}),
-    do: io_format |> :io_lib.format(data) |> IO.iodata_to_binary()
+    do: io_format |> :io_lib.format(data) |> IO.chardata_to_string()
 
   defp value(%{meta: %{crash_reason: {reason, stacktrace}}}) when is_exception(reason),
     do: %{value: Exception.format_banner(:error, reason, stacktrace)}
@@ -106,18 +106,18 @@ defmodule PostHog.Handler do
   defp value(%{meta: %{crash_reason: {reason, stacktrace}}}),
     do: %{value: Exception.format_banner(:exit, reason, stacktrace)}
 
-  defp value(%{msg: {:string, chardata}}), do: %{value: IO.iodata_to_binary(chardata)}
+  defp value(%{msg: {:string, chardata}}), do: %{value: IO.chardata_to_string(chardata)}
 
   defp value(%{msg: {:report, report}, meta: %{report_cb: report_cb}})
        when is_function(report_cb, 1) do
     {io_format, data} = report_cb.(report)
-    io_format |> :io_lib.format(data) |> IO.iodata_to_binary() |> then(&%{value: &1})
+    io_format |> :io_lib.format(data) |> IO.chardata_to_string() |> then(&%{value: &1})
   end
 
   defp value(%{msg: {:report, report}}), do: %{value: inspect(report)}
 
   defp value(%{msg: {io_format, data}}),
-    do: io_format |> :io_lib.format(data) |> IO.iodata_to_binary() |> then(&%{value: &1})
+    do: io_format |> :io_lib.format(data) |> IO.chardata_to_string() |> then(&%{value: &1})
 
   defp stacktrace(%{meta: %{crash_reason: {_reason, [_ | _] = stacktrace}}}, in_app_modules) do
     frames =

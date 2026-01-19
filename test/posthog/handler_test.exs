@@ -155,6 +155,29 @@ defmodule PostHog.HandlerTest do
            } = event
   end
 
+  test "chardata message - emoji", %{
+    handler_ref: ref,
+    config: %{supervisor_name: supervisor_name}
+  } do
+    Logger.bare_log(:info, [?H, ["ello", []], 32, ~c"World 🪩"])
+    LoggerHandlerKit.Assert.assert_logged(ref)
+
+    assert [event] = all_captured(supervisor_name)
+
+    assert %{
+             event: "$exception",
+             properties: %{
+               "$exception_list": [
+                 %{
+                   type: "Hello World 🪩",
+                   value: "Hello World 🪩",
+                   mechanism: %{handled: true}
+                 }
+               ]
+             }
+           } = event
+  end
+
   test "chardata message - improper", %{
     handler_ref: ref,
     config: %{supervisor_name: supervisor_name}
