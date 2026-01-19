@@ -1,0 +1,18 @@
+# Sampo configuration
+version = 1
+
+[git]
+default_branch = "master"
+
+[github]
+repository = "posthog/posthog-elixir"
+
+[changelog]
+# Options for release notes generation.
+# show_commit_hash = true (default)
+# show_acknowledgments = true (default)
+
+[packages]
+# Options for package discovery and filtering.
+# ignore_unpublished = false (default)
+# ignore = ["internal-*", "examples/*"]
