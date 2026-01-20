@@ -1,5 +1,5 @@
 defmodule PostHog.LLMAnalytics do
-  @moduledoc since: "2.1.0"
+  @moduledoc since: "2.2.0"
   @moduledoc """
   [LLM Analytics](https://posthog.com/docs/llm-analytics) is an observability
   product for LLM-powered applications.

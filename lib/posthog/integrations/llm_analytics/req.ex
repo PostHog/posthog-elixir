@@ -1,5 +1,5 @@
 defmodule PostHog.Integrations.LLMAnalytics.Req do
-  @moduledoc since: "2.1.0"
+  @moduledoc since: "2.2.0"
   @moduledoc """
   Req plugin that automatically captures
   [`$ai_generation`](https://posthog.com/docs/llm-analytics/manual-capture?tab=Generation)
