@@ -1,0 +1,25 @@
+version: "3.8"
+
+services:
+  # PostHog Elixir SDK adapter
+  sdk-adapter:
+    build:
+      context: ..
+      dockerfile: sdk_compliance_adapter/Dockerfile
+    ports:
+      - "8080:8080"
+    networks:
+      - test-network
+
+  # Test harness
+  test-harness:
+    image: ghcr.io/posthog/sdk-test-harness:latest
+    command: ["run", "--adapter-url", "http://sdk-adapter:8080", "--mock-url", "http://test-harness:8081"]
+    networks:
+      - test-network
+    depends_on:
+      - sdk-adapter
+
+networks:
+  test-network:
+    driver: bridge
