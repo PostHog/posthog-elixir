@@ -2,10 +2,11 @@ defmodule PostHog.IntegrationTest do
   # Note that this test suite lacks assertions and is meant to assist with
   # manual testing. There is not much point in running all tests in it at once.
   # Instead, pick one test and iterate over it while checking PostHog UI.
-  require Config
   use ExUnit.Case, async: false
 
   require Logger
+
+  alias PostHog.LLMAnalytics
 
   @moduletag integration: true
 
@@ -94,186 +95,180 @@ defmodule PostHog.IntegrationTest do
   describe "llm analytics" do
     setup %{test: test} do
       PostHog.set_context(%{distinct_id: test})
-
-      trace_id = "#{test}-#{DateTime.utc_now() |> DateTime.to_unix(:microsecond)}"
-
-      PostHog.set_event_context("$ai_generation", %{
-        "$ai_trace_id": trace_id
-      })
-
-      PostHog.set_event_context("$ai_span", %{
-        "$ai_trace_id": trace_id
-      })
-
-      %{trace_id: trace_id}
+      LLMAnalytics.set_session()
+      LLMAnalytics.set_trace()
+      :ok
     end
 
-    test "documentation example", %{test: test, wait_fun: wait} do
-      PostHog.capture("$ai_generation", %{
-        "$ai_model": "gpt-5-mini",
-        "$ai_latency": 1.5,
-        "$ai_tools": [],
-        "$ai_input": [
-          %{
-            "role" => "user",
-            "content" => [
-              %{"type" => "text", "text" => "What's in this image?"},
-              %{"type" => "image", "image" => "https://example.com/image.jpg"},
-              %{
-                "type" => "function",
-                "function" => %{
-                  "name" => "get_weather",
-                  "arguments" => %{"location" => "San Francisco"}
-                }
-              }
-            ]
-          }
-        ],
-        "$ai_input_tokens": 100,
-        "$ai_output_choices": [
-          %{
-            "role" => "assistant",
-            "content" => [
-              %{"type" => "text", "text" => "I can see a hedgehog in the image."},
-              %{
-                "type" => "function",
-                "function" => %{
-                  "name" => "get_weather",
-                  "arguments" => %{"location" => "San Francisco"}
-                }
-              }
-            ]
-          }
-        ],
-        "$ai_output_tokens": 100,
-        "$ai_span_id": "#{test}-span-#{DateTime.utc_now() |> DateTime.to_unix(:microsecond)}",
-        "$ai_span_name": "first request",
-        "$ai_provider": "openai",
-        "$ai_http_status": 200,
-        "$ai_base_url": "https://api.openai.com/v1",
-        "$ai_request_url": "https://api.openai.com/v1/chat/completions",
-        "$ai_is_error": false
-      })
+    test "OpenAI Responses", %{wait_fun: wait} do
+      Req.new()
+      |> PostHog.Integrations.LLMAnalytics.Req.attach()
+      |> Req.post!(
+        url: "https://api.openai.com/v1/responses",
+        auth: {:bearer, Application.get_env(:posthog, :openai_key)},
+        json: %{
+          model: "gpt-5-mini",
+          input: "Cite me the greatest opening line in the history of cyberpunk."
+        }
+      )
 
       wait.()
     end
 
-    test "responses API example", %{test: test, wait_fun: wait} do
-      PostHog.capture("$ai_generation", %{
-        "$ai_model": "gpt-5-mini",
-        "$ai_latency": 1.5,
-        "$ai_tools": [],
-        "$ai_input": [
-          %{
-            role: "user",
-            content: "Cite me the greatest opening line in the history of cyberpunk."
-          }
-        ],
-        "$ai_input_tokens": 20,
-        "$ai_output_choices": [
-          %{
-            "id" => "rs_0ac5587e0b21fd390068c6f9781d9c8195afbc14299ff7dc4d",
-            "summary" => [],
-            "type" => "reasoning"
-          },
-          %{
-            "content" => [
-              %{
-                "annotations" => [],
-                "logprobs" => [],
-                "text" =>
-                  "\"The sky above the port was the color of television, tuned to a dead channel.\"\n— William Gibson, Neuromancer (Ace Books, 1984).\n\nMLA: Gibson, William. Neuromancer. Ace Books, 1984.\nAPA: Gibson, W. (1984). Neuromancer. New York: Ace Books.\nChicago: Gibson, William. 1984. Neuromancer. New York: Ace Books.\n\nWant other contender opening lines from cyberpunk to compare?",
-                "type" => "output_text"
-              }
-            ],
-            "id" => "msg_0ac5587e0b21fd390068c6f97f63b081958254bb3bfd344060",
-            "role" => "assistant",
-            "status" => "completed",
-            "type" => "message"
-          }
-        ],
-        "$ai_output_tokens": 619,
-        "$ai_span_id": "#{test}-span-#{DateTime.utc_now() |> DateTime.to_unix(:microsecond)}",
-        "$ai_span_name": "first request",
-        "$ai_provider": "openai",
-        "$ai_http_status": 200,
-        "$ai_base_url": "https://api.openai.com/v1",
-        "$ai_request_url": "https://api.openai.com/v1/responses",
-        "$ai_is_error": false
-      })
-
-      wait.()
-    end
-
-    test "tool call example", %{test: test, wait_fun: wait} do
-      span_id = "#{test}-span-#{DateTime.utc_now() |> DateTime.to_unix(:microsecond)}"
-
-      PostHog.capture("$ai_generation", %{
-        "$ai_model": "gpt-5-mini",
-        "$ai_latency": 1.5,
-        "$ai_tools": [
-          %{
-            type: "function",
-            name: "get_current_weather",
-            description: "Get the current weather in a given location",
-            parameters: %{
-              type: "object",
-              properties: %{
-                location: %{
-                  type: "string",
-                  description: "The city and state, e.g. San Francisco, CA"
-                },
-                unit: %{
-                  type: "string",
-                  enum: ["celsius", "fahrenheit"]
-                }
-              },
-              required: ["location", "unit"]
+    test "OpenAI Chat Completions", %{wait_fun: wait} do
+      Req.new()
+      |> PostHog.Integrations.LLMAnalytics.Req.attach()
+      |> Req.post!(
+        url: "https://api.openai.com/v1/chat/completions",
+        auth: {:bearer, Application.get_env(:posthog, :openai_key)},
+        json: %{
+          model: "gpt-5-mini",
+          messages: [
+            %{
+              role: "user",
+              content: "Cite me the greatest opening line in the history of cyberpunk."
             }
-          }
-        ],
-        "$ai_input": [
-          %{
-            role: "user",
-            content: "Tell me weather in Vancouver"
-          }
-        ],
-        "$ai_input_tokens": 79,
-        "$ai_output_choices": [
-          %{
-            "id" => "rs_0ad5cc1dea87abd60068c6ffdcff78819380572ff4e3882cd9",
-            "summary" => [],
-            "type" => "reasoning"
-          },
-          %{
-            "arguments" => "{\"unit\":\"celsius\",\"location\":\"Vancouver, BC\"}",
-            "call_id" => "call_gdzLdDbo8TqAJRzsq39zMXPr",
-            "id" => "fc_0ad5cc1dea87abd60068c6ffdedeec8193a6c39f4c57326b8b",
-            "name" => "get_current_weather",
-            "status" => "completed",
-            "type" => "function_call"
-          }
-        ],
-        "$ai_output_tokens": 93,
-        "$ai_span_id": span_id,
-        "$ai_span_name": "ask for weather",
-        "$ai_provider": "openai",
-        "$ai_http_status": 200,
-        "$ai_base_url": "https://api.openai.com/v1",
-        "$ai_request_url": "https://api.openai.com/v1/responses",
-        "$ai_is_error": false
-      })
+          ]
+        }
+      )
 
-      PostHog.capture("$ai_span", %{
-        "$ai_span_id": "#{test}-span-#{DateTime.utc_now() |> DateTime.to_unix(:microsecond)}",
-        "$ai_span_name": "tool_call",
-        "$ai_parent_id": span_id,
-        "$ai_input_state": %{"unit" => "celsius", "location" => "Vancouver, BC"},
-        "$ai_output_state": "17ºC",
-        "$ai_latency": 0.361,
-        "$ai_is_error": false,
-        "$ai_error": nil
-      })
+      wait.()
+    end
+
+    test "OpenAI Responses with tool", %{wait_fun: wait} do
+      Req.new()
+      |> PostHog.Integrations.LLMAnalytics.Req.attach()
+      |> Req.post!(
+        url: "https://api.openai.com/v1/responses",
+        auth: {:bearer, Application.get_env(:posthog, :openai_key)},
+        json: %{
+          model: "gpt-5-mini",
+          input: "Tell me weather in Vancouver",
+          tools: [
+            %{
+              type: "function",
+              name: "get_current_weather",
+              description: "Get the current weather in a given location",
+              parameters: %{
+                type: "object",
+                properties: %{
+                  location: %{
+                    type: "string",
+                    description: "The city and state, e.g. San Francisco, CA"
+                  },
+                  unit: %{
+                    type: "string",
+                    enum: ["celsius", "fahrenheit"]
+                  }
+                },
+                required: ["location", "unit"]
+              }
+            }
+          ]
+        }
+      )
+
+      wait.()
+    end
+
+    test "OpenAI Chat Completions with tool", %{wait_fun: wait} do
+      Req.new()
+      |> PostHog.Integrations.LLMAnalytics.Req.attach()
+      |> Req.post!(
+        url: "https://api.openai.com/v1/chat/completions",
+        auth: {:bearer, Application.get_env(:posthog, :openai_key)},
+        json: %{
+          model: "gpt-5-mini",
+          messages: [%{role: "user", content: "Tell me weather in Vancouver, BC"}],
+          tools: [
+            %{
+              type: "function",
+              function: %{
+                name: "get_current_weather",
+                description: "Get the current weather in a given location",
+                parameters: %{
+                  type: "object",
+                  properties: %{
+                    location: %{
+                      type: "string",
+                      description: "The city and state, e.g. San Francisco, CA"
+                    },
+                    unit: %{
+                      type: "string",
+                      enum: ["celsius", "fahrenheit"]
+                    }
+                  },
+                  required: ["location", "unit"]
+                }
+              }
+            }
+          ]
+        }
+      )
+
+      wait.()
+    end
+
+    test "Gemini", %{wait_fun: wait} do
+      Req.new()
+      |> PostHog.Integrations.LLMAnalytics.Req.attach()
+      |> Req.post!(
+        url: "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+        headers: [{"x-goog-api-key", Application.get_env(:posthog, :gemini_key)}],
+        path_params: [model: "gemini-2.5-flash"],
+        path_params_style: :curly,
+        json: %{
+          contents: %{
+            parts: [
+              %{text: "Cite me the greatest opening line in the history of cyberpunk."}
+            ]
+          }
+        }
+      )
+
+      wait.()
+    end
+
+    test "Gemini with tool", %{wait_fun: wait} do
+      Req.new()
+      |> PostHog.Integrations.LLMAnalytics.Req.attach()
+      |> Req.post!(
+        url: "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+        headers: [{"x-goog-api-key", Application.get_env(:posthog, :gemini_key)}],
+        path_params: [model: "gemini-2.5-flash"],
+        path_params_style: :curly,
+        json: %{
+          contents: %{
+            parts: [
+              %{text: "Tell me weather in Vancouver, BC. Celsius."}
+            ]
+          },
+          tools: [
+            %{
+              functionDeclarations: [
+                %{
+                  name: "get_current_weather",
+                  description: "Get the current weather in a given location",
+                  parameters: %{
+                    type: "object",
+                    properties: %{
+                      location: %{
+                        type: "string",
+                        description: "The city and state, e.g. San Francisco, CA"
+                      },
+                      unit: %{
+                        type: "string",
+                        enum: ["celsius", "fahrenheit"]
+                      }
+                    },
+                    required: ["location", "unit"]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      )
 
       wait.()
     end
