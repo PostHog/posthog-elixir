@@ -8,6 +8,11 @@ defmodule PostHog.API.Stub do
   end
 
   @impl PostHog.API.Client
+  def client(_api_key, _api_host, _opts) do
+    %PostHog.API.Client{client: :stub_client, module: PostHog.API.Mock}
+  end
+
+  @impl PostHog.API.Client
   def request(_client, :post, "/batch", _opts) do
     {:ok, %{status: 200, body: %{"status" => "Ok"}}}
   end

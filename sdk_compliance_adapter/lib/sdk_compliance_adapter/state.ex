@@ -41,18 +41,28 @@ defmodule SdkComplianceAdapter.State do
   end
 
   def record_request(status_code, event_count, uuid_list) do
-    request_info = %{
-      timestamp_ms: System.system_time(:millisecond),
-      status_code: status_code,
-      retry_attempt: 0,
-      event_count: event_count,
-      uuid_list: uuid_list
-    }
-
     Agent.update(__MODULE__, fn state ->
-      new_state = %{state | requests_made: state.requests_made ++ [request_info]}
+      retry_attempt =
+        state.requests_made
+        |> Enum.count(fn req -> req.uuid_list != [] and req.uuid_list == uuid_list end)
 
-      if status_code == 200 do
+      is_retry = retry_attempt > 0
+
+      request_info = %{
+        timestamp_ms: System.system_time(:millisecond),
+        status_code: status_code,
+        retry_attempt: retry_attempt,
+        event_count: event_count,
+        uuid_list: uuid_list
+      }
+
+      new_state = %{
+        state
+        | requests_made: state.requests_made ++ [request_info],
+          total_retries: if(is_retry, do: state.total_retries + 1, else: state.total_retries)
+      }
+
+      if status_code in 200..299 do
         %{
           new_state
           | total_events_sent: state.total_events_sent + event_count,

@@ -66,6 +66,150 @@ defmodule PostHog.SenderTest do
     end
   end
 
+  describe "retry behavior" do
+    test "retries on retryable status codes", %{api_client: api_client} do
+      test_pid = self()
+
+      # First call returns 500, second returns 200
+      expect(API.Mock, :request, fn _client, :post, "/batch", opts ->
+        send(test_pid, {:request, opts})
+        {:ok, %Req.Response{status: 500, headers: %{}, body: ""}}
+      end)
+
+      expect(API.Mock, :request, fn _client, :post, "/batch", opts ->
+        send(test_pid, {:request, opts})
+        {:ok, %Req.Response{status: 200, headers: %{}, body: %{"status" => "Ok"}}}
+      end)
+
+      start_link_supervised!(
+        {Sender,
+         supervisor_name: @supervisor_name,
+         index: 1,
+         api_client: api_client,
+         max_batch_time_ms: 60_000,
+         max_batch_events: 1,
+         max_retries: 3}
+      )
+
+      Sender.send("event1", @supervisor_name)
+
+      assert_receive {:request, _opts}, 5_000
+      assert_receive {:request, _opts}, 5_000
+    end
+
+    test "does not retry on non-retryable status codes", %{api_client: api_client} do
+      test_pid = self()
+
+      expect(API.Mock, :request, 1, fn _client, :post, "/batch", _opts ->
+        send(test_pid, :request_made)
+        {:ok, %Req.Response{status: 400, headers: %{}, body: ""}}
+      end)
+
+      start_link_supervised!(
+        {Sender,
+         supervisor_name: @supervisor_name,
+         index: 1,
+         api_client: api_client,
+         max_batch_time_ms: 60_000,
+         max_batch_events: 1,
+         max_retries: 3}
+      )
+
+      Sender.send("event1", @supervisor_name)
+
+      assert_receive :request_made, 5_000
+      refute_receive :request_made, 500
+    end
+
+    test "respects max_retries", %{api_client: api_client} do
+      test_pid = self()
+
+      # With max_retries: 2, expect 1 initial + 2 retries = 3 total
+      expect(API.Mock, :request, 3, fn _client, :post, "/batch", _opts ->
+        send(test_pid, :request_made)
+        {:ok, %Req.Response{status: 500, headers: %{}, body: ""}}
+      end)
+
+      start_link_supervised!(
+        {Sender,
+         supervisor_name: @supervisor_name,
+         index: 1,
+         api_client: api_client,
+         max_batch_time_ms: 60_000,
+         max_batch_events: 1,
+         max_retries: 2}
+      )
+
+      Sender.send("event1", @supervisor_name)
+
+      assert_receive :request_made, 5_000
+      assert_receive :request_made, 5_000
+      assert_receive :request_made, 5_000
+      refute_receive :request_made, 500
+    end
+
+    test "retries on network errors", %{api_client: api_client} do
+      test_pid = self()
+
+      expect(API.Mock, :request, fn _client, :post, "/batch", _opts ->
+        send(test_pid, :request_made)
+        {:error, %RuntimeError{message: "connection refused"}}
+      end)
+
+      expect(API.Mock, :request, fn _client, :post, "/batch", _opts ->
+        send(test_pid, :request_made)
+        {:ok, %Req.Response{status: 200, headers: %{}, body: %{"status" => "Ok"}}}
+      end)
+
+      start_link_supervised!(
+        {Sender,
+         supervisor_name: @supervisor_name,
+         index: 1,
+         api_client: api_client,
+         max_batch_time_ms: 60_000,
+         max_batch_events: 1,
+         max_retries: 3}
+      )
+
+      Sender.send("event1", @supervisor_name)
+
+      assert_receive :request_made, 5_000
+      assert_receive :request_made, 5_000
+    end
+
+    test "preserves events across retries", %{api_client: api_client} do
+      test_pid = self()
+
+      expect(API.Mock, :request, fn _client, :post, "/batch", opts ->
+        send(test_pid, {:request, opts})
+        {:ok, %Req.Response{status: 500, headers: %{}, body: ""}}
+      end)
+
+      expect(API.Mock, :request, fn _client, :post, "/batch", opts ->
+        send(test_pid, {:request, opts})
+        {:ok, %Req.Response{status: 200, headers: %{}, body: %{"status" => "Ok"}}}
+      end)
+
+      start_link_supervised!(
+        {Sender,
+         supervisor_name: @supervisor_name,
+         index: 1,
+         api_client: api_client,
+         max_batch_time_ms: 60_000,
+         max_batch_events: 1,
+         max_retries: 3}
+      )
+
+      Sender.send(%{event: "test", uuid: "abc-123"}, @supervisor_name)
+
+      assert_receive {:request, opts1}, 5_000
+      assert_receive {:request, opts2}, 5_000
+
+      # Same batch payload sent both times
+      assert opts1[:json][:batch] == opts2[:json][:batch]
+    end
+  end
+
   describe "Server" do
     test "starts in :available state", %{api_client: api_client, registry: registry} do
       pid =

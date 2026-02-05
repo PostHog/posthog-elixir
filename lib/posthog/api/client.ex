@@ -38,6 +38,13 @@ defmodule PostHog.API.Client do
   @callback client(api_key :: String.t(), cloud :: String.t()) :: t()
 
   @doc """
+  Creates a struct with additional options (e.g., gzip compression).
+  """
+  @callback client(api_key :: String.t(), cloud :: String.t(), opts :: keyword()) :: t()
+
+  @optional_callbacks [client: 3]
+
+  @doc """
   Sends an API request.
 
   Things such as the API token are expected to be baked into the `client` argument.
@@ -46,9 +53,14 @@ defmodule PostHog.API.Client do
               response()
 
   @impl __MODULE__
-  def client(api_key, api_host) do
+  def client(api_key, api_host), do: client(api_key, api_host, [])
+
+  @impl __MODULE__
+  def client(api_key, api_host, opts) do
+    gzip = Keyword.get(opts, :gzip, false)
+
     client =
-      Req.new(base_url: api_host)
+      Req.new(base_url: api_host, compress_body: gzip)
       |> Req.Request.put_private(:api_key, api_key)
 
     %__MODULE__{client: client, module: __MODULE__}

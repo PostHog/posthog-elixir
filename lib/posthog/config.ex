@@ -53,6 +53,17 @@ defmodule PostHog.Config do
                             default: [],
                             doc:
                               "List of OTP app names of your applications. Stacktrace entries that belong to these apps will be marked as \"in_app\"."
+                          ],
+                          max_retries: [
+                            type: :non_neg_integer,
+                            default: 3,
+                            doc:
+                              "Maximum number of retry attempts for failed batch requests."
+                          ],
+                          gzip: [
+                            type: :boolean,
+                            default: false,
+                            doc: "Enable gzip compression for request bodies."
                           ]
                         ] ++ @shared_schema
 
@@ -144,7 +155,15 @@ defmodule PostHog.Config do
   def validate(options) do
     with {:ok, validated} <- NimbleOptions.validate(options, @compiled_configuration_schema) do
       config = Map.new(validated)
-      client = config.api_client_module.client(config.api_key, config.api_host)
+
+      client_opts = [gzip: config[:gzip] || false]
+
+      client =
+        if function_exported?(config.api_client_module, :client, 3) do
+          config.api_client_module.client(config.api_key, config.api_host, client_opts)
+        else
+          config.api_client_module.client(config.api_key, config.api_host)
+        end
       global_properties = Map.merge(config.global_properties, @system_global_properties)
 
       final_config =

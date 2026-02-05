@@ -8,13 +8,16 @@ defmodule SdkComplianceAdapter.TrackedClient do
   @behaviour PostHog.API.Client
 
   @impl true
-  def client(api_key, api_host) do
-    # Create the underlying Req client
+  def client(api_key, api_host), do: client(api_key, api_host, [])
+
+  @impl true
+  def client(api_key, api_host, opts) do
+    gzip = Keyword.get(opts, :gzip, false)
+
     client =
-      Req.new(base_url: api_host)
+      Req.new(base_url: api_host, compress_body: gzip)
       |> Req.Request.put_private(:api_key, api_key)
 
-    # Return the standard PostHog.API.Client struct with our module
     %PostHog.API.Client{client: client, module: __MODULE__}
   end
 

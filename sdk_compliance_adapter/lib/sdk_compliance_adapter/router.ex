@@ -94,9 +94,11 @@ defmodule SdkComplianceAdapter.Router do
     config = SdkComplianceAdapter.State.get_config()
     interval_ms = config[:max_batch_time_ms] || 100
 
-    # Wait for events to be sent (interval + buffer)
-    wait_time = interval_ms + 500
-    Process.sleep(wait_time)
+    # Wait for batch timer to trigger
+    Process.sleep(interval_ms + 100)
+
+    # Poll until sender finishes (including retries)
+    wait_for_senders_available(60_000)
 
     state = SdkComplianceAdapter.State.get()
 
@@ -147,28 +149,34 @@ defmodule SdkComplianceAdapter.Router do
   end
 
   defp build_config(params) do
-    api_key = params["api_key"]
-    host = params["host"]
-
-    # Default values optimized for testing
-    flush_at = params["flush_at"] || 1
-    flush_interval_ms = params["flush_interval_ms"] || 100
-
-    %{
-      api_key: api_key,
-      api_host: host,
+    config = %{
+      api_key: params["api_key"],
+      api_host: params["host"],
       api_client_module: SdkComplianceAdapter.TrackedClient,
       supervisor_name: SdkComplianceAdapter.PostHog,
-      max_batch_events: flush_at,
-      max_batch_time_ms: flush_interval_ms,
+      max_batch_events: params["flush_at"] || 1,
+      max_batch_time_ms: params["flush_interval_ms"] || 100,
       # Use a single sender for predictable testing
       sender_pool_size: 1
     }
+
+    config =
+      if params["max_retries"],
+        do: Map.put(config, :max_retries, params["max_retries"]),
+        else: config
+
+    config =
+      if is_boolean(params["gzip"]),
+        do: Map.put(config, :gzip, params["gzip"]),
+        else: config
+
+    config
   end
 
   defp start_posthog(config) do
     # Extract extra config that's not part of the validation schema
-    extra_config = Map.take(config, [:max_batch_events, :max_batch_time_ms, :sender_pool_size])
+    extra_config =
+      Map.take(config, [:max_batch_events, :max_batch_time_ms, :sender_pool_size, :max_retries])
 
     # Build the base config for validation
     base_config = [
@@ -177,6 +185,11 @@ defmodule SdkComplianceAdapter.Router do
       api_client_module: config.api_client_module,
       supervisor_name: config.supervisor_name
     ]
+
+    base_config =
+      if Map.has_key?(config, :gzip),
+        do: Keyword.put(base_config, :gzip, config.gzip),
+        else: base_config
 
     # Validate and start PostHog supervisor
     case PostHog.Config.validate(base_config) do
@@ -188,6 +201,32 @@ defmodule SdkComplianceAdapter.Router do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp wait_for_senders_available(timeout_ms) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_for_senders(deadline)
+  end
+
+  defp do_wait_for_senders(deadline) do
+    if System.monotonic_time(:millisecond) > deadline do
+      :timeout
+    else
+      registry = PostHog.Registry.registry_name(SdkComplianceAdapter.PostHog)
+
+      senders =
+        Registry.select(registry, [
+          {{{PostHog.Sender, :_}, :"$1", :"$2"}, [], [{{:"$2", :"$1"}}]}
+        ])
+
+      if Enum.all?(senders, fn {status, _pid} -> status == :available end) do
+        Process.sleep(50)
+        :ok
+      else
+        Process.sleep(50)
+        do_wait_for_senders(deadline)
+      end
     end
   end
 

@@ -2,12 +2,17 @@ defmodule PostHog.Sender do
   @moduledoc false
   use GenServer
 
+  @retryable_statuses [408, 500, 502, 503, 504]
+  @initial_retry_delay_ms 1_000
+  @max_retry_delay_ms 30_000
+
   defstruct [
     :registry,
     :index,
     :api_client,
     :max_batch_time_ms,
     :max_batch_events,
+    :max_retries,
     events: [],
     num_events: 0
   ]
@@ -58,6 +63,7 @@ defmodule PostHog.Sender do
       api_client: Keyword.fetch!(opts, :api_client),
       max_batch_time_ms: Keyword.fetch!(opts, :max_batch_time_ms),
       max_batch_events: Keyword.fetch!(opts, :max_batch_events),
+      max_retries: Keyword.get(opts, :max_retries, 3),
       events: [],
       num_events: 0
     }
@@ -99,7 +105,7 @@ defmodule PostHog.Sender do
     # sender is currently busy and if there is another sender available it
     # should be used instead.
     Registry.update_value(state.registry, registry_key(state.index), fn _ -> :busy end)
-    PostHog.API.batch(state.api_client, state.events)
+    send_with_retries(state.api_client, state.events, state.max_retries)
     Registry.update_value(state.registry, registry_key(state.index), fn _ -> :available end)
     {:noreply, %{state | events: [], num_events: 0}}
   end
@@ -110,6 +116,53 @@ defmodule PostHog.Sender do
   end
 
   def terminate(_reason, _state), do: :ok
+
+  defp send_with_retries(api_client, events, max_retries, attempt \\ 0)
+
+  defp send_with_retries(_api_client, _events, max_retries, attempt)
+       when attempt > max_retries,
+       do: :ok
+
+  defp send_with_retries(api_client, events, max_retries, attempt) do
+    case PostHog.API.batch(api_client, events) do
+      {:ok, %{status: status}} when status in 200..299 ->
+        :ok
+
+      {:ok, %{status: status} = response} when status in @retryable_statuses ->
+        delay = retry_delay(attempt, response)
+        Process.sleep(delay)
+        send_with_retries(api_client, events, max_retries, attempt + 1)
+
+      {:error, _reason} ->
+        delay = retry_delay(attempt, nil)
+        Process.sleep(delay)
+        send_with_retries(api_client, events, max_retries, attempt + 1)
+
+      _other ->
+        :ok
+    end
+  end
+
+  defp retry_delay(attempt, %Req.Response{} = response) do
+    case Req.Response.get_retry_after(response) do
+      nil -> exponential_backoff(attempt)
+      delay_ms -> delay_ms
+    end
+  end
+
+  defp retry_delay(attempt, %{headers: %{"retry-after" => [value | _]}}) do
+    case Integer.parse(value) do
+      {seconds, ""} -> :timer.seconds(seconds)
+      _ -> exponential_backoff(attempt)
+    end
+  end
+
+  defp retry_delay(attempt, _response), do: exponential_backoff(attempt)
+
+  defp exponential_backoff(attempt) do
+    import Bitwise
+    min(@initial_retry_delay_ms * (1 <<< attempt), @max_retry_delay_ms)
+  end
 
   defp registry_key(index), do: {__MODULE__, index}
 end
