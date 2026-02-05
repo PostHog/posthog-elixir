@@ -49,6 +49,7 @@ defmodule PostHog.Integrations.PlugTest do
 
       assert %{
                event: "$exception",
+               uuid: _,
                properties: properties
              } = event
 
@@ -79,6 +80,7 @@ defmodule PostHog.Integrations.PlugTest do
 
       assert %{
                event: "$exception",
+               uuid: _,
                properties: properties
              } = event
 
@@ -109,6 +111,7 @@ defmodule PostHog.Integrations.PlugTest do
 
       assert %{
                event: "$exception",
+               uuid: _,
                properties: properties
              } = event
 
@@ -139,6 +142,7 @@ defmodule PostHog.Integrations.PlugTest do
 
       assert %{
                event: "$exception",
+               uuid: _,
                properties: properties
              } = event
 
@@ -168,6 +172,7 @@ defmodule PostHog.Integrations.PlugTest do
 
       assert %{
                event: "$exception",
+               uuid: _,
                properties: properties
              } = event
 
@@ -197,6 +202,7 @@ defmodule PostHog.Integrations.PlugTest do
 
       assert %{
                event: "$exception",
+               uuid: _,
                properties: properties
              } = event
 

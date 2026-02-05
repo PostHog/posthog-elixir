@@ -6,6 +6,7 @@ defmodule PostHog.IntegrationTest do
 
   require Logger
 
+  alias PostHog.Integrations.LLMAnalytics.Req, as: LLMReq
   alias PostHog.LLMAnalytics
 
   @moduletag integration: true
@@ -102,7 +103,7 @@ defmodule PostHog.IntegrationTest do
 
     test "OpenAI Responses", %{wait_fun: wait} do
       Req.new()
-      |> PostHog.Integrations.LLMAnalytics.Req.attach()
+      |> LLMReq.attach()
       |> Req.post!(
         url: "https://api.openai.com/v1/responses",
         auth: {:bearer, Application.get_env(:posthog, :openai_key)},
@@ -117,7 +118,7 @@ defmodule PostHog.IntegrationTest do
 
     test "OpenAI Chat Completions", %{wait_fun: wait} do
       Req.new()
-      |> PostHog.Integrations.LLMAnalytics.Req.attach()
+      |> LLMReq.attach()
       |> Req.post!(
         url: "https://api.openai.com/v1/chat/completions",
         auth: {:bearer, Application.get_env(:posthog, :openai_key)},
@@ -137,7 +138,7 @@ defmodule PostHog.IntegrationTest do
 
     test "OpenAI Responses with tool", %{wait_fun: wait} do
       Req.new()
-      |> PostHog.Integrations.LLMAnalytics.Req.attach()
+      |> LLMReq.attach()
       |> Req.post!(
         url: "https://api.openai.com/v1/responses",
         auth: {:bearer, Application.get_env(:posthog, :openai_key)},
@@ -173,7 +174,7 @@ defmodule PostHog.IntegrationTest do
 
     test "OpenAI Chat Completions with tool", %{wait_fun: wait} do
       Req.new()
-      |> PostHog.Integrations.LLMAnalytics.Req.attach()
+      |> LLMReq.attach()
       |> Req.post!(
         url: "https://api.openai.com/v1/chat/completions",
         auth: {:bearer, Application.get_env(:posthog, :openai_key)},
@@ -211,7 +212,7 @@ defmodule PostHog.IntegrationTest do
 
     test "Gemini", %{wait_fun: wait} do
       Req.new()
-      |> PostHog.Integrations.LLMAnalytics.Req.attach()
+      |> LLMReq.attach()
       |> Req.post!(
         url: "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
         headers: [{"x-goog-api-key", Application.get_env(:posthog, :gemini_key)}],
@@ -231,7 +232,7 @@ defmodule PostHog.IntegrationTest do
 
     test "Gemini with tool", %{wait_fun: wait} do
       Req.new()
-      |> PostHog.Integrations.LLMAnalytics.Req.attach()
+      |> LLMReq.attach()
       |> Req.post!(
         url: "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
         headers: [{"x-goog-api-key", Application.get_env(:posthog, :gemini_key)}],

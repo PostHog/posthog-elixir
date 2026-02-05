@@ -29,6 +29,7 @@ defmodule PostHogTest do
 
       assert %{
                event: "case tested",
+               uuid: _,
                distinct_id: "distinct_id",
                properties: %{},
                timestamp: _
@@ -42,6 +43,7 @@ defmodule PostHogTest do
 
       assert %{
                event: "case tested",
+               uuid: _,
                distinct_id: "distinct_id",
                properties: %{foo: "bar"},
                timestamp: _
@@ -59,6 +61,7 @@ defmodule PostHogTest do
 
       assert %{
                event: "case tested",
+               uuid: _,
                distinct_id: "distinct_id",
                properties: %{
                  egg: "spam",
@@ -80,6 +83,7 @@ defmodule PostHogTest do
 
       assert %{
                event: "case tested",
+               uuid: _,
                distinct_id: "distinct_id",
                properties: %{},
                timestamp: _
@@ -94,6 +98,7 @@ defmodule PostHogTest do
 
       assert %{
                event: "case tested",
+               uuid: _,
                distinct_id: "distinct_id",
                properties: %{foo: "bar"},
                timestamp: _
@@ -120,12 +125,26 @@ defmodule PostHogTest do
 
       assert %{
                event: "case tested",
+               uuid: _,
                distinct_id: "distinct_id",
                properties: %{struct: %{hello: nil}, ref: _} = properties,
                timestamp: _
              } = event
 
       Jason.encode!(properties)
+    end
+
+    test "uuid is valid v7" do
+      PostHog.bare_capture("uuid test", "distinct_id")
+
+      assert [event] = all_captured()
+
+      assert is_binary(event.uuid)
+
+      assert Regex.match?(
+               ~r/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+               event.uuid
+             )
     end
   end
 
@@ -137,6 +156,7 @@ defmodule PostHogTest do
 
       assert %{
                event: "case tested",
+               uuid: _,
                distinct_id: "distinct_id",
                properties: %{},
                timestamp: _
@@ -154,6 +174,7 @@ defmodule PostHogTest do
 
       assert %{
                event: "case tested",
+               uuid: _,
                distinct_id: "distinct_id",
                properties: %{foo: "bar"},
                timestamp: _

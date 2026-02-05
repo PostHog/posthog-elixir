@@ -20,6 +20,7 @@ defmodule PostHog.HandlerTest do
 
     assert %{
              event: "$exception",
+             uuid: _,
              distinct_id: "foo",
              properties: %{
                "$exception_list": [
@@ -45,6 +46,7 @@ defmodule PostHog.HandlerTest do
 
     assert %{
              event: "$exception",
+             uuid: _,
              properties: %{
                "$lib": "posthog-elixir",
                "$lib_version": _,
@@ -83,6 +85,7 @@ defmodule PostHog.HandlerTest do
 
     assert %{
              event: "$exception",
+             uuid: _,
              properties: %{
                "$exception_list": [
                  %{
@@ -103,6 +106,7 @@ defmodule PostHog.HandlerTest do
 
     assert %{
              event: "$exception",
+             uuid: _,
              properties: %{
                "$exception_list": [
                  %{
@@ -123,6 +127,7 @@ defmodule PostHog.HandlerTest do
 
     assert %{
              event: "$exception",
+             uuid: _,
              properties: %{
                "$exception_list": [
                  %{
@@ -143,6 +148,7 @@ defmodule PostHog.HandlerTest do
 
     assert %{
              event: "$exception",
+             uuid: _,
              properties: %{
                "$exception_list": [
                  %{
@@ -189,6 +195,7 @@ defmodule PostHog.HandlerTest do
 
     assert %{
              event: "$exception",
+             uuid: _,
              properties: %{
                "$exception_list": [
                  %{
@@ -209,6 +216,7 @@ defmodule PostHog.HandlerTest do
 
     assert %{
              event: "$exception",
+             uuid: _,
              properties: %{
                "$exception_list": [
                  %{
@@ -229,6 +237,7 @@ defmodule PostHog.HandlerTest do
 
     assert %{
              event: "$exception",
+             uuid: _,
              properties: %{
                "$exception_list": [
                  %{
@@ -249,6 +258,7 @@ defmodule PostHog.HandlerTest do
 
     assert %{
              event: "$exception",
+             uuid: _,
              properties: %{
                "$exception_list": [
                  %{
