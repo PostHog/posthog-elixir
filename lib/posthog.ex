@@ -73,6 +73,7 @@ defmodule PostHog do
     event = %{
       event: event,
       distinct_id: distinct_id,
+      uuid: PostHog.UUID.uuid4(),
       timestamp: DateTime.utc_now() |> DateTime.to_iso8601(),
       properties: properties
     }
