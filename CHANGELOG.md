@@ -1,5 +1,15 @@
 # posthog
 
+## 2.2.0 — 2026-02-05
+
+### Minor changes
+
+- [4069a8e](https://github.com/posthog/posthog-elixir/commit/4069a8e1923b43d1857e1232d3138c992d3f592a) Add LLM Analytics
+  
+  This release introduces a lightweight LLM analytics toolkit for instrumenting, recording, and analyzing large language model usage across applications that use this repository's SDK. It provides practical observability for teams running LLMs in production and during development. — Thanks @martosaur!
+- [5fec2fd](https://github.com/posthog/posthog-elixir/commit/5fec2fd8d60eba21c529cd8c4e0e0f8abc795e0f) Add `uuid` to events on every request to guarantee idempotency in the backend — Thanks @rafaeelaudibert!
+- [927c1b4](https://github.com/posthog/posthog-elixir/commit/927c1b41e70ac6677f06525413da23393d34bf5a) New release process via [sampo](https://github.com/bruits/sampo) — Thanks @rafaeelaudibert!
+
 ## 2.1.0 - 2025-11-25
 
 - included evaluated_at properties in $feature_flag_called events `7c7ee1e978164809aa28162824f273f6f2bd33f2`
