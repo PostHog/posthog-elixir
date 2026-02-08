@@ -57,13 +57,8 @@ defmodule SdkComplianceAdapter.Router do
     SdkComplianceAdapter.State.set_config(config)
 
     # Start PostHog with the new configuration
-    case start_posthog(config) do
-      {:ok, _pid} ->
-        json_response(conn, 200, %{success: true})
-
-      {:error, reason} ->
-        json_response(conn, 500, %{success: false, error: inspect(reason)})
-    end
+    {:ok, _pid} = start_posthog(config)
+    json_response(conn, 200, %{success: true})
   end
 
   # POST /capture - Capture a single event
@@ -125,14 +120,9 @@ defmodule SdkComplianceAdapter.Router do
 
   # POST /reset - Reset SDK state
   post "/reset" do
-    try do
-      stop_posthog()
-      SdkComplianceAdapter.State.reset()
-      json_response(conn, 200, %{success: true})
-    rescue
-      e ->
-        json_response(conn, 500, %{success: false, error: Exception.message(e)})
-    end
+    stop_posthog()
+    SdkComplianceAdapter.State.reset()
+    json_response(conn, 200, %{success: true})
   end
 
   match _ do
@@ -196,15 +186,12 @@ defmodule SdkComplianceAdapter.Router do
     case Process.whereis(SdkComplianceAdapter.PostHog) do
       nil ->
         :ok
-
+  
       pid ->
         # terminate_child can return :ok or {:error, :not_found}
         # We don't care about the result - just try to stop it
         _ = DynamicSupervisor.terminate_child(SdkComplianceAdapter.DynamicSupervisor, pid)
         :ok
     end
-  rescue
-    # Catch any errors during termination
-    _ -> :ok
   end
 end
