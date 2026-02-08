@@ -48,7 +48,7 @@ defmodule PostHog.API.Client do
   @impl __MODULE__
   def client(api_key, api_host) do
     client =
-      Req.new(base_url: api_host)
+      Req.new(base_url: api_host, retry: :transient)
       |> Req.Request.put_private(:api_key, api_key)
 
     %__MODULE__{client: client, module: __MODULE__}
