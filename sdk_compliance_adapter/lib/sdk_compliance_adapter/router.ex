@@ -11,6 +11,7 @@ defmodule SdkComplianceAdapter.Router do
 
   # Capture SDK version at compile time since Mix isn't available at runtime
   @sdk_version Application.spec(:posthog, :vsn) |> to_string()
+  @adapter_version Application.spec(:sdk_compliance_adapter, :vsn) |> to_string()
 
   plug(Plug.Logger)
   plug(:match)
@@ -35,7 +36,7 @@ defmodule SdkComplianceAdapter.Router do
     response = %{
       sdk_name: "posthog-elixir",
       sdk_version: @sdk_version,
-      adapter_version: SdkComplianceAdapter.version()
+      adapter_version: @adapter_version
     }
 
     json_response(conn, 200, response)
@@ -143,7 +144,7 @@ defmodule SdkComplianceAdapter.Router do
   defp json_response(conn, status, data) do
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(status, Jason.encode!(data))
+    |> send_resp(status, JSON.encode!(data))
   end
 
   defp build_config(params) do
