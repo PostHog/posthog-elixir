@@ -17,7 +17,7 @@ defmodule SdkComplianceAdapter.Router do
   plug(:match)
   plug(Plug.Parsers,
     parsers: [:json],
-    json_decoder: Jason,
+    json_decoder: JSON,
     pass: ["*/*"]
   )
   plug(:dispatch)
@@ -28,7 +28,7 @@ defmodule SdkComplianceAdapter.Router do
 
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(500, Jason.encode!(%{success: false, error: inspect(reason)}))
+    |> send_resp(500, JSON.encode!(%{success: false, error: inspect(reason)}))
   end
 
   # GET /health - Health check endpoint
