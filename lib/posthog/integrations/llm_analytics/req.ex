@@ -9,6 +9,8 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
   responses. Currently, it works best with the following APIs:
   * OpenAI (Responses)
   * OpenAI (Chat Completions)
+  * Anthropic (Create Message)
+  * Gemini (generateContent)
 
   ## Usage
 
@@ -204,6 +206,16 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
     }
   end
 
+  defp request_url_properties(
+         %Req.Request{url: %URI{host: "api.anthropic.com", path: "/v1/messages" <> _}} = request
+       ) do
+    %{
+      "$ai_base_url": "https://api.anthropic.com/v1/messages",
+      "$ai_request_url": URI.to_string(request.url),
+      "$ai_provider": "anthropic"
+    }
+  end
+
   defp request_url_properties(%Req.Request{} = request) do
     %{
       "$ai_base_url": URI.to_string(%{request.url | path: nil}),
@@ -233,6 +245,7 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
     # OpenAI Responses
     # OpenAI Chat Completions
     # Gemini generateContent
+    # Anthropic
     get_in(body, [atom_or_string_key(:input)]) ||
       get_in(body, [atom_or_string_key(:messages)]) ||
       get_in(body, [atom_or_string_key(:contents)])
@@ -241,6 +254,7 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
   defp request_optional_property(:"$ai_temperature", body) do
     # OpenAI Responses
     # OpenAI Chat Completions
+    # Anthropic
     get_in(body, [atom_or_string_key(:temperature)]) ||
       get_in(body, [atom_or_string_key(:generationConfig), atom_or_string_key(:temperature)])
   end
@@ -254,15 +268,18 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
   defp request_optional_property(:"$ai_max_tokens", body) do
     # OpenAI Responses
     # OpenAI Chat Completions
+    # Anthropic
     get_in(body, [atom_or_string_key(:max_output_tokens)]) ||
       get_in(body, [atom_or_string_key(:max_completion_tokens)]) ||
-      get_in(body, [atom_or_string_key(:generationConfig), atom_or_string_key(:maxOutputTokens)])
+      get_in(body, [atom_or_string_key(:generationConfig), atom_or_string_key(:maxOutputTokens)]) ||
+      get_in(body, [atom_or_string_key(:max_tokens)])
   end
 
   defp request_optional_property(:"$ai_tools", body) do
     # OpenAI Responses
     # OpenAI Chat Completions
     # Gemini
+    # Anthropic
     get_in(body, [atom_or_string_key(:tools)])
   end
 
@@ -319,6 +336,21 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
       "$ai_output_choices": output,
       "$ai_input_tokens": input_tokens,
       "$ai_output_tokens": candidates_tokens + reasoning_tokens + tool_use_tokens,
+      "$ai_model": model,
+      "$ai_is_error": false
+    }
+  end
+
+  # Anthropic Create Message
+  defp response_properties(%{
+         "model" => model,
+         "content" => output,
+         "usage" => %{"output_tokens" => output_tokens, "input_tokens" => input_tokens}
+       }) do
+    %{
+      "$ai_output_choices": output,
+      "$ai_input_tokens": input_tokens,
+      "$ai_output_tokens": output_tokens,
       "$ai_model": model,
       "$ai_is_error": false
     }

@@ -273,5 +273,68 @@ defmodule PostHog.IntegrationTest do
 
       wait.()
     end
+
+    test "Anthropic", %{wait_fun: wait} do
+      Req.new()
+      |> LLMReq.attach()
+      |> Req.post!(
+        url: "https://api.anthropic.com/v1/messages",
+        headers: [
+          {"x-api-key", Application.get_env(:posthog, :anthropic_key)},
+          {"anthropic-version", "2023-06-01"}
+        ],
+        json: %{
+          messages: [
+            %{
+              role: :user,
+              content: "Cite me the greatest opening line in the history of cyberpunk."
+            }
+          ],
+          max_tokens: 1024,
+          model: "claude-haiku-4-5"
+        }
+      )
+
+      wait.()
+    end
+
+    test "Anthropic with tool", %{wait_fun: wait} do
+      Req.new()
+      |> LLMReq.attach()
+      |> Req.post!(
+        url: "https://api.anthropic.com/v1/messages",
+        headers: [
+          {"x-api-key", Application.get_env(:posthog, :anthropic_key)},
+          {"anthropic-version", "2023-06-01"}
+        ],
+        json: %{
+          messages: [%{role: :user, content: "Tell me weather in Vancouver, BC. Celsius."}],
+          max_tokens: 1024,
+          model: "claude-haiku-4-5",
+          tools: [
+            %{
+              name: "get_current_weather",
+              description: "Get the current weather in a given location",
+              input_schema: %{
+                type: "object",
+                properties: %{
+                  location: %{
+                    type: "string",
+                    description: "The city and state, e.g. San Francisco, CA"
+                  },
+                  unit: %{
+                    type: "string",
+                    enum: ["celsius", "fahrenheit"]
+                  }
+                },
+                required: ["location", "unit"]
+              }
+            }
+          ]
+        }
+      )
+
+      wait.()
+    end
   end
 end
