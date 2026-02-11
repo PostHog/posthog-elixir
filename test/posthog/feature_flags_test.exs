@@ -152,7 +152,7 @@ defmodule PostHog.FeatureFlagsTest do
       assert {:error,
               %PostHog.Error{
                 message:
-                  "distinct_id is required but wasn't explicitely provided or found in the context"
+                  "distinct_id is required but wasn't explicitly provided or found in the context"
               }} =
                FeatureFlags.flags_for(nil)
     end
@@ -249,7 +249,7 @@ defmodule PostHog.FeatureFlagsTest do
       assert {:error,
               %PostHog.Error{
                 message:
-                  "distinct_id is required but wasn't explicitely provided or found in the context"
+                  "distinct_id is required but wasn't explicitly provided or found in the context"
               }} =
                FeatureFlags.check("example-feature-flag-1")
     end

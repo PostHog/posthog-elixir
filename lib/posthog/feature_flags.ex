@@ -238,7 +238,7 @@ defmodule PostHog.FeatureFlags do
             {:error,
              %PostHog.Error{
                message:
-                 "distinct_id is required but wasn't explicitely provided or found in the context"
+                 "distinct_id is required but wasn't explicitly provided or found in the context"
              }}
         end
 
