@@ -3,6 +3,8 @@ defmodule PostHog.FeatureFlags do
   Convenience functions to work with Feature Flags API
   """
 
+  alias PostHog.FeatureFlagResult
+
   @doc """
   Make request to [`/flags`](https://posthog.com/docs/api/flags) API.
 
@@ -125,35 +127,200 @@ defmodule PostHog.FeatureFlags do
   @spec check(PostHog.supervisor_name(), String.t(), PostHog.distinct_id() | map() | nil) ::
           {:ok, boolean()} | {:ok, String.t()} | {:error, Exception.t()}
   def check(name \\ PostHog, flag_name, distinct_id_or_body \\ nil) do
-    with {:ok, %{distinct_id: distinct_id} = body} <- body_for_flags(distinct_id_or_body),
-         {:ok, %{body: body}} <- flags(name, body) do
-      result =
-        case body do
-          %{"flags" => %{^flag_name => %{"variant" => variant}}} when not is_nil(variant) ->
-            {:ok, variant}
+    case evaluate_flag(name, flag_name, distinct_id_or_body, []) do
+      {:ok, %FeatureFlagResult{} = flag_result, _resp_body} ->
+        {:ok, FeatureFlagResult.value(flag_result)}
 
-          %{"flags" => %{^flag_name => %{"enabled" => true}}} ->
-            {:ok, true}
+      {:ok, nil, resp_body} ->
+        {:error,
+         %PostHog.UnexpectedResponseError{
+           response: resp_body,
+           message: "Feature flag #{flag_name} was not found in the response"
+         }}
 
-          %{"flags" => %{^flag_name => _}} ->
-            {:ok, false}
-
-          %{"flags" => _} ->
-            {:error,
-             %PostHog.UnexpectedResponseError{
-               response: body,
-               message: "Feature flag #{flag_name} was not found in the response"
-             }}
-        end
-
-      evaluated_at = Map.get(body, "evaluatedAt")
-
-      # Make sure we keep track of the feature flag usage for debugging purposes
-      # Users are NOT charged extra for this, but it's still good to have.
-      log_feature_flag_usage(name, distinct_id, flag_name, result, evaluated_at)
-
-      result
+      {:error, reason, _resp_body} ->
+        {:error, reason}
     end
+  end
+
+  @doc false
+  def get_feature_flag_result(flag_name, distinct_id_or_body)
+      when not is_atom(flag_name) and not is_list(distinct_id_or_body),
+      do: get_feature_flag_result(PostHog, flag_name, distinct_id_or_body, [])
+
+  @doc false
+  def get_feature_flag_result(flag_name, distinct_id_or_body, opts)
+      when not is_atom(flag_name) and is_list(opts),
+      do: get_feature_flag_result(PostHog, flag_name, distinct_id_or_body, opts)
+
+  @doc """
+  Gets the full feature flag result including value and payload.
+
+  Returns `{:ok, %FeatureFlagResult{}}` on success, `{:ok, nil}` if the flag
+  is not found, or `{:error, reason}` on failure.
+
+  The `FeatureFlagResult` struct contains:
+  - `key` - The flag name
+  - `enabled` - Whether the flag is enabled
+  - `variant` - The variant string (nil for boolean flags)
+  - `payload` - The JSON payload configured for the flag (nil if not set)
+
+  By default, this function will
+  [send](https://posthog.com/docs/api/flags#step-3-send-a-feature_flag_called-event)
+  a `$feature_flag_called` event and
+  [set](https://posthog.com/docs/api/flags#step-2-include-feature-flag-information-when-capturing-events)
+  the `$feature/feature-flag-name` property in context.
+
+  ## Options
+
+  - `:send_event` - Whether to send the `$feature_flag_called` event. Defaults to `true`.
+
+  ## Examples
+
+  Get feature flag result for `distinct_id`:
+
+      iex> PostHog.FeatureFlags.get_feature_flag_result("example-feature-flag-1", "user123")
+      {:ok, %PostHog.FeatureFlagResult{key: "example-feature-flag-1", enabled: true, variant: nil, payload: nil}}
+
+  Get feature flag result with payload:
+
+      iex> PostHog.FeatureFlags.get_feature_flag_result("feature-with-payload", "user123")
+      {:ok, %PostHog.FeatureFlagResult{key: "feature-with-payload", enabled: true, variant: "variant1", payload: %{"key" => "value"}}}
+
+  Get feature flag result without sending event:
+
+      iex> PostHog.FeatureFlags.get_feature_flag_result("my-flag", "user123", send_event: false)
+      {:ok, %PostHog.FeatureFlagResult{key: "my-flag", enabled: true, variant: nil, payload: nil}}
+
+  Flag not found returns `{:ok, nil}`:
+
+      iex> PostHog.FeatureFlags.get_feature_flag_result("non-existent-flag", "user123")
+      {:ok, nil}
+
+  Get feature flag result for `distinct_id` in the current context:
+
+      iex> PostHog.set_context(%{distinct_id: "user123"})
+      iex> PostHog.FeatureFlags.get_feature_flag_result("example-feature-flag-1")
+      {:ok, %PostHog.FeatureFlagResult{key: "example-feature-flag-1", enabled: true, variant: nil, payload: nil}}
+
+  Get feature flag result through a named PostHog instance:
+
+      PostHog.FeatureFlags.get_feature_flag_result(MyPostHog, "example-feature-flag-1", "user123")
+  """
+  @spec get_feature_flag_result(
+          PostHog.supervisor_name(),
+          String.t(),
+          PostHog.distinct_id() | map() | nil,
+          keyword()
+        ) ::
+          {:ok, FeatureFlagResult.t() | nil} | {:error, Exception.t()}
+  def get_feature_flag_result(name \\ PostHog, flag_name, distinct_id_or_body \\ nil, opts \\ []) do
+    case evaluate_flag(name, flag_name, distinct_id_or_body, opts) do
+      {:ok, %FeatureFlagResult{} = result, _resp_body} -> {:ok, result}
+      {:ok, nil, _resp_body} -> {:ok, nil}
+      {:error, reason, _resp_body} -> {:error, reason}
+    end
+  end
+
+  @doc false
+  def get_feature_flag_result!(flag_name, distinct_id_or_body)
+      when not is_atom(flag_name) and not is_list(distinct_id_or_body),
+      do: get_feature_flag_result!(PostHog, flag_name, distinct_id_or_body, [])
+
+  @doc false
+  def get_feature_flag_result!(flag_name, distinct_id_or_body, opts)
+      when not is_atom(flag_name) and is_list(opts),
+      do: get_feature_flag_result!(PostHog, flag_name, distinct_id_or_body, opts)
+
+  @doc """
+  Gets the full feature flag result or raises on error.
+
+  This is a wrapper around `get_feature_flag_result/4` that returns the result
+  directly or raises an exception on error. This follows the Elixir convention
+  where functions ending with `!` raise exceptions instead of returning error
+  tuples.
+
+  Returns `nil` if the flag is not found (does not raise), consistent with
+  other PostHog SDKs.
+
+  > **Warning**: Use this function with care as it will raise an error if there
+  > are any API errors (e.g. missing `distinct_id`). For more resilient code,
+  > use `get_feature_flag_result/4` which returns `{:error, reason}` instead of
+  > raising.
+
+  ## Options
+
+  - `:send_event` - Whether to send the `$feature_flag_called` event. Defaults to `true`.
+
+  ## Examples
+
+  Get feature flag result for `distinct_id`:
+
+      iex> PostHog.FeatureFlags.get_feature_flag_result!("example-feature-flag-1", "user123")
+      %PostHog.FeatureFlagResult{key: "example-feature-flag-1", enabled: true, variant: nil, payload: nil}
+
+  Returns `nil` when flag is not found:
+
+      iex> PostHog.FeatureFlags.get_feature_flag_result!("non-existent-flag", "user123")
+      nil
+
+  Raises an error when `distinct_id` is missing:
+
+      iex> PostHog.FeatureFlags.get_feature_flag_result!("example-feature-flag-1")
+      ** (PostHog.Error) distinct_id is required but wasn't explicitly provided or found in the context
+  """
+  @spec get_feature_flag_result!(
+          PostHog.supervisor_name(),
+          String.t(),
+          PostHog.distinct_id() | map() | nil,
+          keyword()
+        ) ::
+          FeatureFlagResult.t() | nil | no_return()
+  def get_feature_flag_result!(name \\ PostHog, flag_name, distinct_id_or_body \\ nil, opts \\ []) do
+    case get_feature_flag_result(name, flag_name, distinct_id_or_body, opts) do
+      {:ok, result} -> result
+      {:error, error} -> raise error
+    end
+  end
+
+  defp evaluate_flag(name, flag_name, distinct_id_or_body, opts) do
+    send_event = Keyword.get(opts, :send_event, true)
+
+    with {:ok, %{distinct_id: distinct_id} = body} <- body_for_flags(distinct_id_or_body),
+         {:ok, %{body: resp_body}} <- flags(name, body) do
+      case resp_body do
+        %{"flags" => %{^flag_name => flag_data}} ->
+          {enabled, variant} = extract_flag_enabled_and_variant(flag_data)
+          payload = get_in(flag_data, ["metadata", "payload"])
+
+          flag_result = %FeatureFlagResult{
+            key: flag_name,
+            enabled: enabled,
+            variant: variant,
+            payload: payload
+          }
+
+          evaluated_at = Map.get(resp_body, "evaluatedAt")
+
+          if send_event do
+            value = FeatureFlagResult.value(flag_result)
+            log_feature_flag_usage(name, distinct_id, flag_name, {:ok, value}, evaluated_at)
+          end
+
+          {:ok, flag_result, resp_body}
+
+        %{"flags" => _} ->
+          {:ok, nil, resp_body}
+      end
+    else
+      {:error, reason} -> {:error, reason, nil}
+    end
+  end
+
+  defp extract_flag_enabled_and_variant(flag_data) do
+    enabled = Map.get(flag_data, "enabled", false) == true
+    variant = Map.get(flag_data, "variant")
+    {enabled, variant}
   end
 
   @doc false

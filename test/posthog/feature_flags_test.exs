@@ -8,6 +8,7 @@ defmodule PostHog.FeatureFlagsTest do
   import Mox
 
   alias PostHog.API
+  alias PostHog.FeatureFlagResult
   alias PostHog.FeatureFlags
 
   setup :setup_supervisor
@@ -315,6 +316,464 @@ defmodule PostHog.FeatureFlagsTest do
       end)
 
       assert {:ok, true} = FeatureFlags.check(MyPostHog, "example-feature-flag-1", "foo")
+    end
+  end
+
+  describe "get_feature_flag_result/4" do
+    test "returns FeatureFlagResult struct for boolean flag" do
+      expect(API.Mock, :request, fn _client, method, url, opts ->
+        assert method == :post
+        assert url == "/flags"
+        assert opts[:params] == %{v: 2}
+
+        assert opts[:json] == %{
+                 distinct_id: "foo"
+               }
+
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{
+               "myflag" => %{
+                 "enabled" => true,
+                 "metadata" => %{"payload" => nil}
+               }
+             }
+           }
+         }}
+      end)
+
+      assert {:ok,
+              %FeatureFlagResult{
+                key: "myflag",
+                enabled: true,
+                variant: nil,
+                payload: nil
+              }} = FeatureFlags.get_feature_flag_result("myflag", "foo")
+    end
+
+    test "returns FeatureFlagResult struct for variant flag with payload" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{
+               "myflag" => %{
+                 "enabled" => true,
+                 "variant" => "variant1",
+                 "metadata" => %{"payload" => %{"key" => "value"}}
+               }
+             }
+           }
+         }}
+      end)
+
+      assert {:ok,
+              %FeatureFlagResult{
+                key: "myflag",
+                enabled: true,
+                variant: "variant1",
+                payload: %{"key" => "value"}
+              }} = FeatureFlags.get_feature_flag_result("myflag", "foo")
+    end
+
+    test "returns disabled result when flag not enabled" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{
+               "myflag" => %{
+                 "enabled" => false,
+                 "metadata" => %{"payload" => nil}
+               }
+             }
+           }
+         }}
+      end)
+
+      assert {:ok,
+              %FeatureFlagResult{
+                key: "myflag",
+                enabled: false,
+                variant: nil,
+                payload: nil
+              }} = FeatureFlags.get_feature_flag_result("myflag", "foo")
+    end
+
+    test "full request map" do
+      expect(API.Mock, :request, fn _client, _method, _url, opts ->
+        assert opts[:json] == %{distinct_id: "foo", personal_properties: %{foo: "bar"}}
+
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{
+               "myflag" => %{
+                 "enabled" => true,
+                 "metadata" => %{"payload" => nil}
+               }
+             }
+           }
+         }}
+      end)
+
+      assert {:ok, %FeatureFlagResult{key: "myflag", enabled: true}} =
+               FeatureFlags.get_feature_flag_result("myflag", %{
+                 distinct_id: "foo",
+                 personal_properties: %{foo: "bar"}
+               })
+    end
+
+    test "distinct_id is taken from the context if not passed" do
+      PostHog.set_context(%{distinct_id: "foo"})
+
+      expect(API.Mock, :request, fn _client, _method, _url, opts ->
+        assert opts[:json] == %{distinct_id: "foo"}
+
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{
+               "myflag" => %{
+                 "enabled" => true,
+                 "metadata" => %{"payload" => nil}
+               }
+             }
+           }
+         }}
+      end)
+
+      assert {:ok, %FeatureFlagResult{key: "myflag", enabled: true}} =
+               FeatureFlags.get_feature_flag_result("myflag")
+    end
+
+    test "explicit distinct_id preferred over context" do
+      PostHog.set_context(%{distinct_id: "foo"})
+
+      expect(API.Mock, :request, fn _client, _method, _url, opts ->
+        assert opts[:json] == %{distinct_id: "bar"}
+
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{
+               "myflag" => %{
+                 "enabled" => true,
+                 "metadata" => %{"payload" => nil}
+               }
+             }
+           }
+         }}
+      end)
+
+      assert {:ok, %FeatureFlagResult{key: "myflag", enabled: true}} =
+               FeatureFlags.get_feature_flag_result("myflag", "bar")
+    end
+
+    test "missing distinct_id" do
+      assert {:error,
+              %PostHog.Error{
+                message:
+                  "distinct_id is required but wasn't explicitly provided or found in the context"
+              }} =
+               FeatureFlags.get_feature_flag_result("myflag")
+    end
+
+    test "flag not found returns {:ok, nil}" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end)
+
+      assert {:ok, nil} = FeatureFlags.get_feature_flag_result("myflag", "foo")
+    end
+
+    test "sets feature flag context" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{
+               "myflag" => %{
+                 "enabled" => true,
+                 "variant" => "variant1",
+                 "metadata" => %{"payload" => %{"key" => "value"}}
+               }
+             }
+           }
+         }}
+      end)
+
+      assert {:ok,
+              %FeatureFlagResult{
+                key: "myflag",
+                enabled: true,
+                variant: "variant1",
+                payload: %{"key" => "value"}
+              }} = FeatureFlags.get_feature_flag_result("myflag", "foo")
+
+      assert %{"$feature/myflag" => "variant1"} = PostHog.get_context()
+    end
+
+    test "publishes $feature_flag_called event" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{
+               "myflag" => %{
+                 "enabled" => true,
+                 "variant" => "variant1",
+                 "metadata" => %{"payload" => %{"key" => "value"}}
+               }
+             }
+           }
+         }}
+      end)
+
+      assert {:ok, %FeatureFlagResult{variant: "variant1"}} =
+               FeatureFlags.get_feature_flag_result("myflag", "foo")
+
+      assert [
+               %{
+                 event: "$feature_flag_called",
+                 distinct_id: "foo",
+                 properties: %{"$feature_flag": "myflag", "$feature_flag_response": "variant1"}
+               }
+             ] = all_captured()
+    end
+
+    test "includes evaluatedAt in $feature_flag_called event when present" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{
+               "myflag" => %{
+                 "enabled" => true,
+                 "variant" => "variant1",
+                 "metadata" => %{"payload" => nil}
+               }
+             },
+             "evaluatedAt" => 1_234_567_890
+           }
+         }}
+      end)
+
+      assert {:ok, %FeatureFlagResult{variant: "variant1"}} =
+               FeatureFlags.get_feature_flag_result("myflag", "foo")
+
+      assert [
+               %{
+                 event: "$feature_flag_called",
+                 distinct_id: "foo",
+                 properties: %{
+                   "$feature_flag": "myflag",
+                   "$feature_flag_response": "variant1",
+                   "$feature_flag_evaluated_at": 1_234_567_890
+                 }
+               }
+             ] = all_captured()
+    end
+
+    test "send_event: false does not publish event or set context" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{
+               "myflag" => %{
+                 "enabled" => true,
+                 "variant" => "variant1",
+                 "metadata" => %{"payload" => nil}
+               }
+             }
+           }
+         }}
+      end)
+
+      assert {:ok, %FeatureFlagResult{variant: "variant1"}} =
+               FeatureFlags.get_feature_flag_result("myflag", "foo", send_event: false)
+
+      assert [] = all_captured()
+      refute Map.has_key?(PostHog.get_context(), "$feature/myflag")
+    end
+
+    test "send_event: true explicitly sends event (default behavior)" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{
+               "myflag" => %{
+                 "enabled" => true,
+                 "metadata" => %{"payload" => nil}
+               }
+             }
+           }
+         }}
+      end)
+
+      assert {:ok, %FeatureFlagResult{enabled: true}} =
+               FeatureFlags.get_feature_flag_result("myflag", "foo", send_event: true)
+
+      assert [%{event: "$feature_flag_called"}] = all_captured()
+    end
+
+    test "does not send event when flag not found" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end)
+
+      assert {:ok, nil} = FeatureFlags.get_feature_flag_result("myflag", "foo")
+
+      assert [] = all_captured()
+    end
+
+    @tag config: [supervisor_name: MyPostHog]
+    test "custom PostHog instance" do
+      expect(API.Mock, :request, fn _client, _method, _url, opts ->
+        assert opts[:json] == %{distinct_id: "foo"}
+
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{
+               "myflag" => %{
+                 "enabled" => true,
+                 "metadata" => %{"payload" => nil}
+               }
+             }
+           }
+         }}
+      end)
+
+      assert {:ok, %FeatureFlagResult{key: "myflag", enabled: true}} =
+               FeatureFlags.get_feature_flag_result(MyPostHog, "myflag", "foo")
+    end
+
+    @tag config: [supervisor_name: MyPostHog]
+    test "custom PostHog instance with opts" do
+      expect(API.Mock, :request, fn _client, _method, _url, opts ->
+        assert opts[:json] == %{distinct_id: "foo"}
+
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{
+               "myflag" => %{
+                 "enabled" => true,
+                 "metadata" => %{"payload" => nil}
+               }
+             }
+           }
+         }}
+      end)
+
+      assert {:ok, %FeatureFlagResult{key: "myflag", enabled: true}} =
+               FeatureFlags.get_feature_flag_result(MyPostHog, "myflag", "foo", send_event: false)
+
+      assert [] = all_captured()
+    end
+  end
+
+  describe "get_feature_flag_result!/4" do
+    test "returns FeatureFlagResult struct for found flag" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{
+               "myflag" => %{
+                 "enabled" => true,
+                 "variant" => "variant1",
+                 "metadata" => %{"payload" => %{"key" => "value"}}
+               }
+             }
+           }
+         }}
+      end)
+
+      assert %FeatureFlagResult{
+               key: "myflag",
+               enabled: true,
+               variant: "variant1",
+               payload: %{"key" => "value"}
+             } = FeatureFlags.get_feature_flag_result!("myflag", "foo")
+    end
+
+    test "returns nil for missing flag (does not raise)" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end)
+
+      assert nil == FeatureFlags.get_feature_flag_result!("myflag", "foo")
+    end
+
+    test "raises on API error (missing distinct_id)" do
+      assert_raise PostHog.Error, fn ->
+        FeatureFlags.get_feature_flag_result!("myflag")
+      end
+    end
+
+    @tag config: [supervisor_name: MyPostHog]
+    test "custom PostHog instance" do
+      expect(API.Mock, :request, fn _client, _method, _url, opts ->
+        assert opts[:json] == %{distinct_id: "foo"}
+
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{
+               "myflag" => %{
+                 "enabled" => true,
+                 "metadata" => %{"payload" => nil}
+               }
+             }
+           }
+         }}
+      end)
+
+      assert %FeatureFlagResult{key: "myflag", enabled: true} =
+               FeatureFlags.get_feature_flag_result!(MyPostHog, "myflag", "foo")
+    end
+
+    test "passes through opts (send_event: false)" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{
+               "myflag" => %{
+                 "enabled" => true,
+                 "variant" => "variant1",
+                 "metadata" => %{"payload" => nil}
+               }
+             }
+           }
+         }}
+      end)
+
+      assert %FeatureFlagResult{variant: "variant1"} =
+               FeatureFlags.get_feature_flag_result!("myflag", "foo", send_event: false)
+
+      assert [] = all_captured()
     end
   end
 
