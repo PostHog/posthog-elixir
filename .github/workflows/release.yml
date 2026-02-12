@@ -161,6 +161,12 @@ jobs:
         if: steps.commit-release.outputs.committed == 'true'
         run: git push origin --tags
 
+      - name: Create GitHub Release
+        if: steps.commit-release.outputs.committed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "v${{ steps.sampo-release.outputs.new_version }}" --generate-notes
+
       # Notify in case of a failure
       - name: Send failure event to PostHog
         if: ${{ failure() }}
