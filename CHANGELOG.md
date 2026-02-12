@@ -1,5 +1,13 @@
 # posthog
 
+## 2.3.0 — 2026-02-12
+
+### Minor changes
+
+- [ba2f10a](https://github.com/posthog/posthog-elixir/commit/ba2f10ab54a52455007f39f021cd49d39fd3b580) Implement proper retry behavior for requests. Also respects X-Retry-Later header. — Thanks @rafaeelaudibert!
+- [39a304d](https://github.com/posthog/posthog-elixir/commit/39a304d9177b7d2f3b0d2e0d48c45e9bd81e65ac) We've now added a new `get_feature_flag_result` method that can be used to get a full view of your feature flags including the payload rather than simply a boolean/string from the enabled/variant state. — Thanks @rafaeelaudibert!
+- [1dc5271](https://github.com/posthog/posthog-elixir/commit/1dc5271bd4e2793628a82071913bdefb9070416e) Add support for Anthropic messages in the LLM analytis module — Thanks @rafaeelaudibert!
+
 ## 2.2.0 — 2026-02-05
 
 ### Minor changes
