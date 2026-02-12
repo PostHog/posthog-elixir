@@ -11,12 +11,13 @@ defmodule SdkComplianceAdapter.Router do
 
   # Capture SDK version at compile time since Mix isn't available at runtime
   @sdk_version Application.spec(:posthog, :vsn) |> to_string()
+  @adapter_version Application.spec(:sdk_compliance_adapter, :vsn) |> to_string()
 
   plug(Plug.Logger)
   plug(:match)
   plug(Plug.Parsers,
     parsers: [:json],
-    json_decoder: Jason,
+    json_decoder: JSON,
     pass: ["*/*"]
   )
   plug(:dispatch)
@@ -27,7 +28,7 @@ defmodule SdkComplianceAdapter.Router do
 
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(500, Jason.encode!(%{success: false, error: inspect(reason)}))
+    |> send_resp(500, JSON.encode!(%{success: false, error: inspect(reason)}))
   end
 
   # GET /health - Health check endpoint
@@ -35,7 +36,7 @@ defmodule SdkComplianceAdapter.Router do
     response = %{
       sdk_name: "posthog-elixir",
       sdk_version: @sdk_version,
-      adapter_version: SdkComplianceAdapter.version()
+      adapter_version: @adapter_version
     }
 
     json_response(conn, 200, response)
@@ -56,13 +57,8 @@ defmodule SdkComplianceAdapter.Router do
     SdkComplianceAdapter.State.set_config(config)
 
     # Start PostHog with the new configuration
-    case start_posthog(config) do
-      {:ok, _pid} ->
-        json_response(conn, 200, %{success: true})
-
-      {:error, reason} ->
-        json_response(conn, 500, %{success: false, error: inspect(reason)})
-    end
+    {:ok, _pid} = start_posthog(config)
+    json_response(conn, 200, %{success: true})
   end
 
   # POST /capture - Capture a single event
@@ -124,14 +120,9 @@ defmodule SdkComplianceAdapter.Router do
 
   # POST /reset - Reset SDK state
   post "/reset" do
-    try do
-      stop_posthog()
-      SdkComplianceAdapter.State.reset()
-      json_response(conn, 200, %{success: true})
-    rescue
-      e ->
-        json_response(conn, 500, %{success: false, error: Exception.message(e)})
-    end
+    stop_posthog()
+    SdkComplianceAdapter.State.reset()
+    json_response(conn, 200, %{success: true})
   end
 
   match _ do
@@ -143,7 +134,7 @@ defmodule SdkComplianceAdapter.Router do
   defp json_response(conn, status, data) do
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(status, Jason.encode!(data))
+    |> send_resp(status, JSON.encode!(data))
   end
 
   defp build_config(params) do
@@ -195,15 +186,12 @@ defmodule SdkComplianceAdapter.Router do
     case Process.whereis(SdkComplianceAdapter.PostHog) do
       nil ->
         :ok
-
+  
       pid ->
         # terminate_child can return :ok or {:error, :not_found}
         # We don't care about the result - just try to stop it
         _ = DynamicSupervisor.terminate_child(SdkComplianceAdapter.DynamicSupervisor, pid)
         :ok
     end
-  rescue
-    # Catch any errors during termination
-    _ -> :ok
   end
 end

@@ -1,5 +1,5 @@
 # Build stage - use Debian for better compatibility
-FROM elixir:1.17 AS builder
+FROM hexpm/elixir:1.19.5-erlang-28.3.1-debian-bookworm-20260112-slim AS builder
 
 WORKDIR /app
 
@@ -21,7 +21,7 @@ COPY sdk_compliance_adapter/config ./sdk_compliance_adapter/config
 
 # Fetch and compile dependencies for the adapter
 WORKDIR /app/sdk_compliance_adapter
-RUN mix deps.get --only prod
+RUN mix deps.get --only $MIX_ENV
 RUN mix compile
 
 # Build release
