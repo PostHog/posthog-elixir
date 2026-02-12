@@ -2,11 +2,14 @@ defmodule PostHog.Handler do
   @moduledoc """
   A [`logger handler`](https://www.erlang.org/doc/apps/kernel/logger_chapter.html#handlers).
   """
-  @behaviour :logger_handler
+  if System.otp_release() |> String.to_integer() >= 27 do
+    @behaviour :logger_handler
+  end
 
   alias PostHog.Context
 
-  @impl :logger_handler
+  # TODO: add @impl :logger_handler once we drop support for OTP < 27
+  @doc false
   def log(log_event, %{config: config}) do
     maybe_properties =
       cond do
