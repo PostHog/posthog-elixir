@@ -3,6 +3,7 @@ version = 1
 
 [git]
 default_branch = "master"
+short_tags = "posthog"    # Tag with v1.2.3 rather than posthog-v1.2.3
 
 [github]
 repository = "posthog/posthog-elixir"
