@@ -8,8 +8,8 @@ defmodule PostHog.FeatureFlagsTest do
   import Mox
 
   alias PostHog.API
-  alias PostHog.FeatureFlags.Result
   alias PostHog.FeatureFlags
+  alias PostHog.FeatureFlags.Result
 
   setup :setup_supervisor
   setup :verify_on_exit!
