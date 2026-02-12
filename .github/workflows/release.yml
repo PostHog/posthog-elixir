@@ -4,6 +4,7 @@ on:
   pull_request:
     types: [closed]
     branches: [master]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -20,8 +21,10 @@ jobs:
     runs-on: ubuntu-latest
     # Run when PR with 'release' label is merged to master
     if: |
-      github.event.pull_request.merged == true
-       && contains(github.event.pull_request.labels.*.name, 'release')
+      github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request' &&
+        github.event.pull_request.merged == true &&
+        contains(github.event.pull_request.labels.*.name, 'release'))
     outputs:
       should-release: ${{ steps.check.outputs.should-release }}
     steps:
@@ -101,8 +104,8 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@0b1efabc08b657293548b77fb76cc02d26091c7e
         with:
-            toolchain: 1.91.1
-            components: cargo
+          toolchain: 1.91.1
+          components: cargo
 
       - name: Cache Sampo CLI
         id: cache-sampo
