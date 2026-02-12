@@ -210,6 +210,44 @@ You can always disable it by setting `enable_error_tracking` to false:
 config :posthog, enable_error_tracking: false
 ```
 
+## Custom HTTP Client
+
+The SDK uses [Req](https://hexdocs.pm/req) under the hood with gzip compression and
+transient retry enabled by default. You can swap in your own HTTP client module to
+change any of this behaviour — disable compression, add custom headers, attach
+telemetry, or use a completely different HTTP library.
+
+Set the `api_client_module` config option to a module that implements the
+`PostHog.API.Client` behaviour:
+
+```elixir
+config :posthog, api_client_module: MyApp.PostHogClient
+```
+
+The simplest approach is to wrap the default client and override only what you need:
+
+```elixir
+defmodule MyApp.PostHogClient do
+  @behaviour PostHog.API.Client
+
+  @impl true
+  def client(api_key, api_host) do
+    default = PostHog.API.Client.client(api_key, api_host)
+
+    # Disable gzip compression
+    custom = Req.merge(default.client, compress_body: false)
+
+    %{default | client: custom}
+  end
+
+  @impl true
+  defdelegate request(client, method, url, opts), to: PostHog.API.Client
+end
+```
+
+See `PostHog.API.Client` docs for more examples, including adding custom headers
+and using a different HTTP library entirely.
+
 ## Multiple PostHog Projects
 
 If your app works with multiple PostHog projects, PostHog can accommodate you. For
@@ -276,6 +314,7 @@ sampo add
 ```
 
 Follow the prompts to specify:
+
 - The type of change (`patch`, `minor`, or `major`)
 - A description of the change for the changelog
 
@@ -293,6 +332,7 @@ the [PostHog SDK releases process](https://posthog.com/handbook/engineering/sdks
 3. **Merge the PR** into `master`
 
 Once merged, the release workflow will automatically:
+
 - Consume all pending changesets
 - Update the version in `mix.exs`
 - Update `CHANGELOG.md` with the new entries

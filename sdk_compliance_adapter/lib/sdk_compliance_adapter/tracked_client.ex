@@ -22,11 +22,12 @@ defmodule SdkComplianceAdapter.TrackedClient do
   defdelegate request(client, method, url, opts), to: PostHog.API.Client 
   
   def track({request, response}) do
-    req_body = 
+    req_body =
       request.body
       |> to_string()
+      |> decompress(request)
       |> JSON.decode!()
-    
+
     uuid_list = extract_uuids(req_body)
     event_count = count_events(req_body)
     
@@ -38,6 +39,13 @@ defmodule SdkComplianceAdapter.TrackedClient do
   def track_error({request, exception}) do
     SdkComplianceAdapter.State.set_last_error(inspect(exception))
     {request, exception}
+  end
+
+  defp decompress(body, request) do
+    case Req.Request.get_header(request, "content-encoding") do
+      ["gzip"] -> :zlib.gunzip(body)
+      _ -> body
+    end
   end
 
   defp extract_uuids(request) do
