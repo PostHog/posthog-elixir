@@ -845,4 +845,195 @@ defmodule PostHog.Integrations.LLMAnalytics.ReqTest do
              }
            ] = all_captured(@supervisor_name)
   end
+
+  test "captures Anthropic create message properties", %{req: req} do
+    Req.Test.expect(@mock_module, fn conn ->
+      Req.Test.json(conn, %{
+        "content" => [
+          %{
+            "text" =>
+              "I'd argue for this one from **William Gibson's \"Neuromancer\" (1984)**:\n\n\"The sky above the port was the color of television, tuned to a dead channel.\"\n\nIt's often cited as one of the greatest opening lines in science fiction period. It's evocative, immediately establishes a gritty aesthetic, and perfectly captures that cyberpunk blend of high-tech futurity meeting urban decay. The image is both poetic and oddly mundane—comparing something vast to the banal experience of dead air on a TV screen.\n\nThat said, honorable mentions go to:\n- **Bruce Sterling's \"Schismatrix\"** for its ambitious far-future worldbuilding\n- **Pat Cadigan's work** for her psychological approach to cyberspace\n\nBut Gibson's opening has become almost archetypal—it defined what cyberpunk *feels* like for generations of readers and writers who followed.",
+            "type" => "text"
+          }
+        ],
+        "id" => "msg_01USjdBRtDVTcZCcVQMdtAnW",
+        "model" => "claude-haiku-4-5-20251001",
+        "role" => "assistant",
+        "stop_reason" => "end_turn",
+        "stop_sequence" => nil,
+        "type" => "message",
+        "usage" => %{
+          "cache_creation" => %{
+            "ephemeral_1h_input_tokens" => 0,
+            "ephemeral_5m_input_tokens" => 0
+          },
+          "cache_creation_input_tokens" => 0,
+          "cache_read_input_tokens" => 0,
+          "inference_geo" => "not_available",
+          "input_tokens" => 22,
+          "output_tokens" => 205,
+          "service_tier" => "standard"
+        }
+      })
+    end)
+
+    assert %{status: 200, body: %{}} =
+             Req.post!(req,
+               url: "https://api.anthropic.com/v1/messages",
+               headers: [
+                 {"x-api-key", Application.get_env(:posthog, :anthropic_key)},
+                 {"anthropic-version", "2023-06-01"}
+               ],
+               json: %{
+                 messages: [
+                   %{
+                     role: :user,
+                     content: "Cite me the greatest opening line in the history of cyberpunk."
+                   }
+                 ],
+                 max_tokens: 1024,
+                 model: "claude-haiku-4-5"
+               }
+             )
+
+    assert [
+             %{
+               event: "$ai_generation",
+               properties: %{
+                 "$ai_base_url": "https://api.anthropic.com/v1/messages",
+                 "$ai_http_status": 200,
+                 "$ai_input": [
+                   %{
+                     role: :user,
+                     content: "Cite me the greatest opening line in the history of cyberpunk."
+                   }
+                 ],
+                 "$ai_input_tokens": 22,
+                 "$ai_model": "claude-haiku-4-5-20251001",
+                 "$ai_output_choices": [
+                   %{
+                     "text" =>
+                       "I'd argue for this one from **William Gibson's \"Neuromancer\" (1984)**:\n\n\"The sky above the port was the color of television, tuned to a dead channel.\"\n\nIt's often cited as one of the greatest opening lines in science fiction period. It's evocative, immediately establishes a gritty aesthetic, and perfectly captures that cyberpunk blend of high-tech futurity meeting urban decay. The image is both poetic and oddly mundane—comparing something vast to the banal experience of dead air on a TV screen.\n\nThat said, honorable mentions go to:\n- **Bruce Sterling's \"Schismatrix\"** for its ambitious far-future worldbuilding\n- **Pat Cadigan's work** for her psychological approach to cyberspace\n\nBut Gibson's opening has become almost archetypal—it defined what cyberpunk *feels* like for generations of readers and writers who followed.",
+                     "type" => "text"
+                   }
+                 ],
+                 "$ai_output_tokens": 205,
+                 "$ai_provider": "anthropic",
+                 "$ai_request_url": "https://api.anthropic.com/v1/messages",
+                 "$ai_is_error": false
+               }
+             }
+           ] = all_captured(@supervisor_name)
+  end
+
+  test "captures Anthropic with tools", %{req: req} do
+    Req.Test.expect(@mock_module, fn conn ->
+      Req.Test.json(conn, %{
+        "content" => [
+          %{
+            "id" => "toolu_01TB42J8UvzAYvRwaQC4xT2R",
+            "input" => %{"location" => "Vancouver, BC", "unit" => "celsius"},
+            "name" => "get_current_weather",
+            "type" => "tool_use"
+          }
+        ],
+        "id" => "msg_012zLWPheFNRzjaGeMSr35u9",
+        "model" => "claude-haiku-4-5-20251001",
+        "role" => "assistant",
+        "stop_reason" => "tool_use",
+        "stop_sequence" => nil,
+        "type" => "message",
+        "usage" => %{
+          "cache_creation" => %{
+            "ephemeral_1h_input_tokens" => 0,
+            "ephemeral_5m_input_tokens" => 0
+          },
+          "cache_creation_input_tokens" => 0,
+          "cache_read_input_tokens" => 0,
+          "inference_geo" => "not_available",
+          "input_tokens" => 613,
+          "output_tokens" => 75,
+          "service_tier" => "standard"
+        }
+      })
+    end)
+
+    assert %{status: 200, body: %{}} =
+             Req.post!(req,
+               url: "https://api.anthropic.com/v1/messages",
+               headers: [
+                 {"x-api-key", Application.get_env(:posthog, :anthropic_key)},
+                 {"anthropic-version", "2023-06-01"}
+               ],
+               json: %{
+                 messages: [%{role: :user, content: "Tell me weather in Vancouver, BC. Celsius."}],
+                 max_tokens: 1024,
+                 model: "claude-haiku-4-5",
+                 tools: [
+                   %{
+                     name: "get_current_weather",
+                     description: "Get the current weather in a given location",
+                     input_schema: %{
+                       type: "object",
+                       properties: %{
+                         location: %{
+                           type: "string",
+                           description: "The city and state, e.g. San Francisco, CA"
+                         },
+                         unit: %{
+                           type: "string",
+                           enum: ["celsius", "fahrenheit"]
+                         }
+                       },
+                       required: ["location", "unit"]
+                     }
+                   }
+                 ]
+               }
+             )
+
+    assert [
+             %{
+               event: "$ai_generation",
+               properties: %{
+                 "$ai_base_url": "https://api.anthropic.com/v1/messages",
+                 "$ai_http_status": 200,
+                 "$ai_input": [
+                   %{role: :user, content: "Tell me weather in Vancouver, BC. Celsius."}
+                 ],
+                 "$ai_input_tokens": 613,
+                 "$ai_model": "claude-haiku-4-5-20251001",
+                 "$ai_output_choices": [
+                   %{
+                     "type" => "tool_use",
+                     "id" => "toolu_01TB42J8UvzAYvRwaQC4xT2R",
+                     "input" => %{"location" => "Vancouver, BC", "unit" => "celsius"},
+                     "name" => "get_current_weather"
+                   }
+                 ],
+                 "$ai_output_tokens": 75,
+                 "$ai_provider": "anthropic",
+                 "$ai_request_url": "https://api.anthropic.com/v1/messages",
+                 "$ai_is_error": false,
+                 "$ai_tools": [
+                   %{
+                     name: "get_current_weather",
+                     description: "Get the current weather in a given location",
+                     input_schema: %{
+                       type: "object",
+                       required: ["location", "unit"],
+                       properties: %{
+                         unit: %{type: "string", enum: ["celsius", "fahrenheit"]},
+                         location: %{
+                           type: "string",
+                           description: "The city and state, e.g. San Francisco, CA"
+                         }
+                       }
+                     }
+                   }
+                 ]
+               }
+             }
+           ] = all_captured(@supervisor_name)
+  end
 end

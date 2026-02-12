@@ -101,7 +101,7 @@ defmodule PostHog.LLMAnalytics do
   def generate_response(user_message) do
     LLMAnalytics.start_span(%{"$ai_span_name": "LLM call", "$ai_input_state": user_message})
     
-    Req.post!("https://api.openai.com/v1/responses, json: %{input: user_message})
+    Req.post!("https://api.openai.com/v1/responses", json: %{input: user_message})
     |> handle_response()
   end
 
