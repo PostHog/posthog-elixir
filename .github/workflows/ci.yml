@@ -15,12 +15,18 @@ jobs:
     # See https://hexdocs.pm/elixir/compatibility-and-deprecations.html#between-elixir-and-erlang-otp
     strategy:
       matrix:
-        elixir: ["1.17.x", "1.18.x"]
+        elixir: ["1.17.x", "1.18.x", "1.19.x"]
         otp: ["25.x", "26.x", "27.x", "28.x"]
         exclude:
           # Elixir 1.17 doesn't support OTP 28
           - elixir: "1.17.x"
             otp: "28.x"
+          # Elixir 1.18 doesn't support OTP 28
+          - elixir: "1.18.x"
+            otp: "28.x"
+          # Elixir 1.19 doesn't support OTP 25
+          - elixir: "1.19.x"
+            otp: "25.x"
 
     steps:
       - uses: actions/checkout@v3
