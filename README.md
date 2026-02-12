@@ -148,7 +148,7 @@ iex> PostHog.FeatureFlags.check("example-feature-flag-3", "user123")
 {:error, %PostHog.UnexpectedResponseError{message: "Feature flag example-feature-flag-3 was not found in the response", response: ...}}
 ```
 
-If you're feeling adventurous and/or is simply writing a script you can use the `PostHog.FeatureFlags.check!/2` helper instead and it will return a boolean or raise an error.
+If you're feeling adventurous and/or simply writing a script, you can use the `PostHog.FeatureFlags.check!/2` helper instead and it will return a boolean or raise an error.
 
 ```elixir
 # Simple boolean feature flag
@@ -159,10 +159,43 @@ true
 iex> PostHog.FeatureFlags.check!("example-feature-flag-2", "user123")
 "variant2"
 
-
 # Raises error if feature flag doesn't exist
 iex> PostHog.FeatureFlags.check!("example-feature-flag-3", "user123")
 ** (PostHog.UnexpectedResponseError) Feature flag example-feature-flag-3 was not found in the response
+```
+
+### Getting the Full Flag Result
+
+If you need more than just the value -- for example, the payload configured for a
+flag or variant -- use `PostHog.FeatureFlags.get_feature_flag_result/2`:
+
+```elixir
+iex> PostHog.FeatureFlags.get_feature_flag_result("my-flag", "user123")
+{:ok, %PostHog.FeatureFlags.Result{key: "my-flag", enabled: true, variant: nil, payload: nil}}
+
+# Multivariant flag with a JSON payload
+iex> PostHog.FeatureFlags.get_feature_flag_result("my-experiment", "user123")
+{:ok, %PostHog.FeatureFlags.Result{key: "my-experiment", enabled: true, variant: "control", payload: %{"button_color" => "blue"}}}
+
+# Flag not found
+iex> PostHog.FeatureFlags.get_feature_flag_result("non-existent-flag", "user123")
+{:ok, nil}
+```
+
+By default this sends a `$feature_flag_called` event, which PostHog uses to
+track feature flag usage in your analytics, and to measure experiment exposure
+when the flag is linked to an A/B test. You can opt out with `send_event: false`:
+
+```elixir
+iex> PostHog.FeatureFlags.get_feature_flag_result("my-flag", "user123", send_event: false)
+{:ok, %PostHog.FeatureFlags.Result{key: "my-flag", enabled: true, variant: nil, payload: nil}}
+```
+
+A bang variant is also available:
+
+```elixir
+iex> PostHog.FeatureFlags.get_feature_flag_result!("my-flag", "user123")
+%PostHog.FeatureFlags.Result{key: "my-flag", enabled: true, variant: nil, payload: nil}
 ```
 
 ## Error Tracking
