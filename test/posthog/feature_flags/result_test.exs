@@ -1,11 +1,11 @@
-defmodule PostHog.FeatureFlagResultTest do
+defmodule PostHog.FeatureFlags.ResultTest do
   use ExUnit.Case, async: true
 
-  alias PostHog.FeatureFlagResult
+  alias PostHog.FeatureFlags.Result
 
   describe "struct" do
     test "creates struct with all fields" do
-      result = %FeatureFlagResult{
+      result = %Result{
         key: "my-flag",
         enabled: true,
         variant: "control",
@@ -19,7 +19,7 @@ defmodule PostHog.FeatureFlagResultTest do
     end
 
     test "creates struct with nil defaults" do
-      result = %FeatureFlagResult{key: "my-flag", enabled: false}
+      result = %Result{key: "my-flag", enabled: false}
 
       assert result.key == "my-flag"
       assert result.enabled == false
@@ -30,18 +30,18 @@ defmodule PostHog.FeatureFlagResultTest do
 
   describe "value/1" do
     test "returns variant when present" do
-      result = %FeatureFlagResult{
+      result = %Result{
         key: "my-flag",
         enabled: true,
         variant: "control",
         payload: nil
       }
 
-      assert FeatureFlagResult.value(result) == "control"
+      assert Result.value(result) == "control"
     end
 
     test "returns variant even when empty string" do
-      result = %FeatureFlagResult{
+      result = %Result{
         key: "my-flag",
         enabled: true,
         variant: "",
@@ -50,41 +50,41 @@ defmodule PostHog.FeatureFlagResultTest do
 
       # Empty string is still a variant, but per implementation nil check
       # empty string is not nil, so it returns the variant
-      assert FeatureFlagResult.value(result) == ""
+      assert Result.value(result) == ""
     end
 
     test "returns true when enabled and no variant" do
-      result = %FeatureFlagResult{
+      result = %Result{
         key: "my-flag",
         enabled: true,
         variant: nil,
         payload: nil
       }
 
-      assert FeatureFlagResult.value(result) == true
+      assert Result.value(result) == true
     end
 
     test "returns false when not enabled and no variant" do
-      result = %FeatureFlagResult{
+      result = %Result{
         key: "my-flag",
         enabled: false,
         variant: nil,
         payload: nil
       }
 
-      assert FeatureFlagResult.value(result) == false
+      assert Result.value(result) == false
     end
 
     test "variant takes precedence over enabled status" do
       # Edge case: variant present but enabled is false
-      result = %FeatureFlagResult{
+      result = %Result{
         key: "my-flag",
         enabled: false,
         variant: "test-variant",
         payload: nil
       }
 
-      assert FeatureFlagResult.value(result) == "test-variant"
+      assert Result.value(result) == "test-variant"
     end
   end
 end

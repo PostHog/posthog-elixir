@@ -1,4 +1,4 @@
-defmodule PostHog.FeatureFlagResult do
+defmodule PostHog.FeatureFlags.Result do
   @moduledoc """
   Represents the result of a feature flag evaluation.
 
@@ -11,7 +11,7 @@ defmodule PostHog.FeatureFlagResult do
   ## Examples
 
       # Boolean flag result
-      %PostHog.FeatureFlagResult{
+      %PostHog.FeatureFlags.Result{
         key: "my-feature",
         enabled: true,
         variant: nil,
@@ -19,7 +19,7 @@ defmodule PostHog.FeatureFlagResult do
       }
 
       # Multivariant flag result with payload
-      %PostHog.FeatureFlagResult{
+      %PostHog.FeatureFlags.Result{
         key: "my-experiment",
         enabled: true,
         variant: "control",
@@ -27,14 +27,17 @@ defmodule PostHog.FeatureFlagResult do
       }
   """
 
+  @type json :: String.t() | number() | boolean() | nil | [json()] | %{String.t() => json()}
+
   @type t :: %__MODULE__{
           key: String.t(),
           enabled: boolean(),
           variant: String.t() | nil,
-          payload: any()
+          payload: json()
         }
 
-  defstruct key: nil, enabled: false, variant: nil, payload: nil
+  @enforce_keys [:key, :enabled]
+  defstruct [:key, :enabled, :variant, :payload]
 
   @doc """
   Returns the value of the feature flag result.
@@ -45,16 +48,16 @@ defmodule PostHog.FeatureFlagResult do
 
   ## Examples
 
-      iex> result = %PostHog.FeatureFlagResult{key: "flag", enabled: true, variant: "control", payload: nil}
-      iex> PostHog.FeatureFlagResult.value(result)
+      iex> result = %PostHog.FeatureFlags.Result{key: "flag", enabled: true, variant: "control", payload: nil}
+      iex> PostHog.FeatureFlags.Result.value(result)
       "control"
 
-      iex> result = %PostHog.FeatureFlagResult{key: "flag", enabled: true, variant: nil, payload: nil}
-      iex> PostHog.FeatureFlagResult.value(result)
+      iex> result = %PostHog.FeatureFlags.Result{key: "flag", enabled: true, variant: nil, payload: nil}
+      iex> PostHog.FeatureFlags.Result.value(result)
       true
 
-      iex> result = %PostHog.FeatureFlagResult{key: "flag", enabled: false, variant: nil, payload: nil}
-      iex> PostHog.FeatureFlagResult.value(result)
+      iex> result = %PostHog.FeatureFlags.Result{key: "flag", enabled: false, variant: nil, payload: nil}
+      iex> PostHog.FeatureFlags.Result.value(result)
       false
   """
   @spec value(t()) :: boolean() | String.t()

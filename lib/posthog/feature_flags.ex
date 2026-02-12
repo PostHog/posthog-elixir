@@ -3,8 +3,6 @@ defmodule PostHog.FeatureFlags do
   Convenience functions to work with Feature Flags API
   """
 
-  alias PostHog.FeatureFlagResult
-
   @doc """
   Make request to [`/flags`](https://posthog.com/docs/api/flags) API.
 
@@ -128,17 +126,17 @@ defmodule PostHog.FeatureFlags do
           {:ok, boolean()} | {:ok, String.t()} | {:error, Exception.t()}
   def check(name \\ PostHog, flag_name, distinct_id_or_body \\ nil) do
     case evaluate_flag(name, flag_name, distinct_id_or_body, []) do
-      {:ok, %FeatureFlagResult{} = flag_result, _resp_body} ->
-        {:ok, FeatureFlagResult.value(flag_result)}
+      {:ok, %__MODULE__.Result{} = flag_result, _body} ->
+        {:ok, __MODULE__.Result.value(flag_result)}
 
-      {:ok, nil, resp_body} ->
+      {:ok, nil, body} ->
         {:error,
          %PostHog.UnexpectedResponseError{
-           response: resp_body,
+           response: body,
            message: "Feature flag #{flag_name} was not found in the response"
          }}
 
-      {:error, reason, _resp_body} ->
+      {:error, reason, _body} ->
         {:error, reason}
     end
   end
@@ -156,10 +154,10 @@ defmodule PostHog.FeatureFlags do
   @doc """
   Gets the full feature flag result including value and payload.
 
-  Returns `{:ok, %FeatureFlagResult{}}` on success, `{:ok, nil}` if the flag
+  Returns `{:ok, %PostHog.FeatureFlags.Result{}}` on success, `{:ok, nil}` if the flag
   is not found, or `{:error, reason}` on failure.
 
-  The `FeatureFlagResult` struct contains:
+  The `PostHog.FeatureFlags.Result` struct contains:
   - `key` - The flag name
   - `enabled` - Whether the flag is enabled
   - `variant` - The variant string (nil for boolean flags)
@@ -180,17 +178,17 @@ defmodule PostHog.FeatureFlags do
   Get feature flag result for `distinct_id`:
 
       iex> PostHog.FeatureFlags.get_feature_flag_result("example-feature-flag-1", "user123")
-      {:ok, %PostHog.FeatureFlagResult{key: "example-feature-flag-1", enabled: true, variant: nil, payload: nil}}
+      {:ok, %PostHog.FeatureFlags.Result{key: "example-feature-flag-1", enabled: true, variant: nil, payload: nil}}
 
   Get feature flag result with payload:
 
       iex> PostHog.FeatureFlags.get_feature_flag_result("feature-with-payload", "user123")
-      {:ok, %PostHog.FeatureFlagResult{key: "feature-with-payload", enabled: true, variant: "variant1", payload: %{"key" => "value"}}}
+      {:ok, %PostHog.FeatureFlags.Result{key: "feature-with-payload", enabled: true, variant: "variant1", payload: %{"key" => "value"}}}
 
   Get feature flag result without sending event:
 
       iex> PostHog.FeatureFlags.get_feature_flag_result("my-flag", "user123", send_event: false)
-      {:ok, %PostHog.FeatureFlagResult{key: "my-flag", enabled: true, variant: nil, payload: nil}}
+      {:ok, %PostHog.FeatureFlags.Result{key: "my-flag", enabled: true, variant: nil, payload: nil}}
 
   Flag not found returns `{:ok, nil}`:
 
@@ -201,7 +199,7 @@ defmodule PostHog.FeatureFlags do
 
       iex> PostHog.set_context(%{distinct_id: "user123"})
       iex> PostHog.FeatureFlags.get_feature_flag_result("example-feature-flag-1")
-      {:ok, %PostHog.FeatureFlagResult{key: "example-feature-flag-1", enabled: true, variant: nil, payload: nil}}
+      {:ok, %PostHog.FeatureFlags.Result{key: "example-feature-flag-1", enabled: true, variant: nil, payload: nil}}
 
   Get feature flag result through a named PostHog instance:
 
@@ -213,12 +211,12 @@ defmodule PostHog.FeatureFlags do
           PostHog.distinct_id() | map() | nil,
           keyword()
         ) ::
-          {:ok, FeatureFlagResult.t() | nil} | {:error, Exception.t()}
+          {:ok, __MODULE__.Result.t() | nil} | {:error, Exception.t()}
   def get_feature_flag_result(name \\ PostHog, flag_name, distinct_id_or_body \\ nil, opts \\ []) do
     case evaluate_flag(name, flag_name, distinct_id_or_body, opts) do
-      {:ok, %FeatureFlagResult{} = result, _resp_body} -> {:ok, result}
-      {:ok, nil, _resp_body} -> {:ok, nil}
-      {:error, reason, _resp_body} -> {:error, reason}
+      {:ok, %__MODULE__.Result{} = result, _body} -> {:ok, result}
+      {:ok, nil, _body} -> {:ok, nil}
+      {:error, reason, _body} -> {:error, reason}
     end
   end
 
@@ -257,7 +255,7 @@ defmodule PostHog.FeatureFlags do
   Get feature flag result for `distinct_id`:
 
       iex> PostHog.FeatureFlags.get_feature_flag_result!("example-feature-flag-1", "user123")
-      %PostHog.FeatureFlagResult{key: "example-feature-flag-1", enabled: true, variant: nil, payload: nil}
+      %PostHog.FeatureFlags.Result{key: "example-feature-flag-1", enabled: true, variant: nil, payload: nil}
 
   Returns `nil` when flag is not found:
 
@@ -275,7 +273,7 @@ defmodule PostHog.FeatureFlags do
           PostHog.distinct_id() | map() | nil,
           keyword()
         ) ::
-          FeatureFlagResult.t() | nil | no_return()
+          __MODULE__.Result.t() | nil | no_return()
   def get_feature_flag_result!(name \\ PostHog, flag_name, distinct_id_or_body \\ nil, opts \\ []) do
     case get_feature_flag_result(name, flag_name, distinct_id_or_body, opts) do
       {:ok, result} -> result
@@ -287,30 +285,30 @@ defmodule PostHog.FeatureFlags do
     send_event = Keyword.get(opts, :send_event, true)
 
     with {:ok, %{distinct_id: distinct_id} = body} <- body_for_flags(distinct_id_or_body),
-         {:ok, %{body: resp_body}} <- flags(name, body) do
-      case resp_body do
+         {:ok, %{body: body}} <- flags(name, body) do
+      case body do
         %{"flags" => %{^flag_name => flag_data}} ->
           {enabled, variant} = extract_flag_enabled_and_variant(flag_data)
           payload = get_in(flag_data, ["metadata", "payload"])
 
-          flag_result = %FeatureFlagResult{
+          flag_result = %__MODULE__.Result{
             key: flag_name,
             enabled: enabled,
             variant: variant,
             payload: payload
           }
 
-          evaluated_at = Map.get(resp_body, "evaluatedAt")
+          evaluated_at = Map.get(body, "evaluatedAt")
 
           if send_event do
-            value = FeatureFlagResult.value(flag_result)
+            value = __MODULE__.Result.value(flag_result)
             log_feature_flag_usage(name, distinct_id, flag_name, {:ok, value}, evaluated_at)
           end
 
-          {:ok, flag_result, resp_body}
+          {:ok, flag_result, body}
 
         %{"flags" => _} ->
-          {:ok, nil, resp_body}
+          {:ok, nil, body}
       end
     else
       {:error, reason} -> {:error, reason, nil}

@@ -8,7 +8,7 @@ defmodule PostHog.FeatureFlagsTest do
   import Mox
 
   alias PostHog.API
-  alias PostHog.FeatureFlagResult
+  alias PostHog.FeatureFlags.Result
   alias PostHog.FeatureFlags
 
   setup :setup_supervisor
@@ -320,7 +320,7 @@ defmodule PostHog.FeatureFlagsTest do
   end
 
   describe "get_feature_flag_result/4" do
-    test "returns FeatureFlagResult struct for boolean flag" do
+    test "returns Result struct for boolean flag" do
       expect(API.Mock, :request, fn _client, method, url, opts ->
         assert method == :post
         assert url == "/flags"
@@ -345,7 +345,7 @@ defmodule PostHog.FeatureFlagsTest do
       end)
 
       assert {:ok,
-              %FeatureFlagResult{
+              %Result{
                 key: "myflag",
                 enabled: true,
                 variant: nil,
@@ -371,7 +371,7 @@ defmodule PostHog.FeatureFlagsTest do
       end)
 
       assert {:ok,
-              %FeatureFlagResult{
+              %Result{
                 key: "myflag",
                 enabled: true,
                 variant: "variant1",
@@ -396,7 +396,7 @@ defmodule PostHog.FeatureFlagsTest do
       end)
 
       assert {:ok,
-              %FeatureFlagResult{
+              %Result{
                 key: "myflag",
                 enabled: false,
                 variant: nil,
@@ -422,7 +422,7 @@ defmodule PostHog.FeatureFlagsTest do
          }}
       end)
 
-      assert {:ok, %FeatureFlagResult{key: "myflag", enabled: true}} =
+      assert {:ok, %Result{key: "myflag", enabled: true}} =
                FeatureFlags.get_feature_flag_result("myflag", %{
                  distinct_id: "foo",
                  personal_properties: %{foo: "bar"}
@@ -449,7 +449,7 @@ defmodule PostHog.FeatureFlagsTest do
          }}
       end)
 
-      assert {:ok, %FeatureFlagResult{key: "myflag", enabled: true}} =
+      assert {:ok, %Result{key: "myflag", enabled: true}} =
                FeatureFlags.get_feature_flag_result("myflag")
     end
 
@@ -473,7 +473,7 @@ defmodule PostHog.FeatureFlagsTest do
          }}
       end)
 
-      assert {:ok, %FeatureFlagResult{key: "myflag", enabled: true}} =
+      assert {:ok, %Result{key: "myflag", enabled: true}} =
                FeatureFlags.get_feature_flag_result("myflag", "bar")
     end
 
@@ -512,7 +512,7 @@ defmodule PostHog.FeatureFlagsTest do
       end)
 
       assert {:ok,
-              %FeatureFlagResult{
+              %Result{
                 key: "myflag",
                 enabled: true,
                 variant: "variant1",
@@ -539,7 +539,7 @@ defmodule PostHog.FeatureFlagsTest do
          }}
       end)
 
-      assert {:ok, %FeatureFlagResult{variant: "variant1"}} =
+      assert {:ok, %Result{variant: "variant1"}} =
                FeatureFlags.get_feature_flag_result("myflag", "foo")
 
       assert [
@@ -569,7 +569,7 @@ defmodule PostHog.FeatureFlagsTest do
          }}
       end)
 
-      assert {:ok, %FeatureFlagResult{variant: "variant1"}} =
+      assert {:ok, %Result{variant: "variant1"}} =
                FeatureFlags.get_feature_flag_result("myflag", "foo")
 
       assert [
@@ -602,7 +602,7 @@ defmodule PostHog.FeatureFlagsTest do
          }}
       end)
 
-      assert {:ok, %FeatureFlagResult{variant: "variant1"}} =
+      assert {:ok, %Result{variant: "variant1"}} =
                FeatureFlags.get_feature_flag_result("myflag", "foo", send_event: false)
 
       assert [] = all_captured()
@@ -625,7 +625,7 @@ defmodule PostHog.FeatureFlagsTest do
          }}
       end)
 
-      assert {:ok, %FeatureFlagResult{enabled: true}} =
+      assert {:ok, %Result{enabled: true}} =
                FeatureFlags.get_feature_flag_result("myflag", "foo", send_event: true)
 
       assert [%{event: "$feature_flag_called"}] = all_captured()
@@ -660,7 +660,7 @@ defmodule PostHog.FeatureFlagsTest do
          }}
       end)
 
-      assert {:ok, %FeatureFlagResult{key: "myflag", enabled: true}} =
+      assert {:ok, %Result{key: "myflag", enabled: true}} =
                FeatureFlags.get_feature_flag_result(MyPostHog, "myflag", "foo")
     end
 
@@ -683,7 +683,7 @@ defmodule PostHog.FeatureFlagsTest do
          }}
       end)
 
-      assert {:ok, %FeatureFlagResult{key: "myflag", enabled: true}} =
+      assert {:ok, %Result{key: "myflag", enabled: true}} =
                FeatureFlags.get_feature_flag_result(MyPostHog, "myflag", "foo", send_event: false)
 
       assert [] = all_captured()
@@ -691,7 +691,7 @@ defmodule PostHog.FeatureFlagsTest do
   end
 
   describe "get_feature_flag_result!/4" do
-    test "returns FeatureFlagResult struct for found flag" do
+    test "returns Result struct for found flag" do
       expect(API.Mock, :request, fn _client, _method, _url, _opts ->
         {:ok,
          %{
@@ -708,7 +708,7 @@ defmodule PostHog.FeatureFlagsTest do
          }}
       end)
 
-      assert %FeatureFlagResult{
+      assert %Result{
                key: "myflag",
                enabled: true,
                variant: "variant1",
@@ -749,7 +749,7 @@ defmodule PostHog.FeatureFlagsTest do
          }}
       end)
 
-      assert %FeatureFlagResult{key: "myflag", enabled: true} =
+      assert %Result{key: "myflag", enabled: true} =
                FeatureFlags.get_feature_flag_result!(MyPostHog, "myflag", "foo")
     end
 
@@ -770,7 +770,7 @@ defmodule PostHog.FeatureFlagsTest do
          }}
       end)
 
-      assert %FeatureFlagResult{variant: "variant1"} =
+      assert %Result{variant: "variant1"} =
                FeatureFlags.get_feature_flag_result!("myflag", "foo", send_event: false)
 
       assert [] = all_captured()
