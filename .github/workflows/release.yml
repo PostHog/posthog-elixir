@@ -31,21 +31,13 @@ jobs:
           ref: master
           fetch-depth: 0
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@0b1efabc08b657293548b77fb76cc02d26091c7e
-        with:
-          toolchain: 1.91.1
-          components: cargo
-
-      - name: Install Sampo CLI
-        run: cargo install sampo
-
       - name: Check release conditions
         id: check
         run: |
-          if sampo release --dry-run; then
+          changeset_count=$(find .sampo/changesets -name '*.md' 2>/dev/null | wc -l)
+          if [ "$changeset_count" -gt 0 ]; then
             echo "should-release=true" >> "$GITHUB_OUTPUT"
-            echo "Changesets found, ready to release"
+            echo "Found $changeset_count changeset(s), ready to release"
           else
             echo "should-release=false" >> "$GITHUB_OUTPUT"
             echo "No changesets to release"
@@ -112,7 +104,15 @@ jobs:
             toolchain: 1.91.1
             components: cargo
 
+      - name: Cache Sampo CLI
+        id: cache-sampo
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/bin/sampo
+          key: sampo-${{ runner.os }}-${{ runner.arch }}
+
       - name: Install Sampo CLI
+        if: steps.cache-sampo.outputs.cache-hit != 'true'
         run: cargo install sampo
 
       - name: Install Hex dependencies
