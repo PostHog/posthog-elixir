@@ -1,5 +1,11 @@
 # posthog
 
+## 2.4.0 — 2026-02-16
+
+### Minor changes
+
+- [0f1f78e](https://github.com/posthog/posthog-elixir/commit/0f1f78e120a4a2ac6d8d0a25ae233a62082e1d17) This is *technically* a breaking change because we're now always sending data gzip compressed and people might not want that, but this will not break anyone's code so we'll release it as a minor knowing that it's an improvement. It's always been possible to swap the client off, but we weren't documenting how to do that exactly - this is now solved too. — Thanks @rafaeelaudibert!
+
 ## 2.3.0 — 2026-02-12
 
 ### Minor changes
