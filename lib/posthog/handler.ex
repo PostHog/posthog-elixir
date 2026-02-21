@@ -40,16 +40,7 @@ defmodule PostHog.Handler do
   end
 
   defp properties(log_event, config) do
-    exception =
-      Enum.reduce(
-        [&type/1, &value/1, &stacktrace(&1, config.in_app_modules)],
-        %{
-          mechanism: %{handled: not Map.has_key?(log_event.meta, :crash_reason), type: "generic"}
-        },
-        fn fun, acc ->
-          Map.merge(acc, fun.(log_event))
-        end
-      )
+    exceptions = exceptions(log_event, config)
 
     metadata =
       log_event.meta
@@ -65,8 +56,55 @@ defmodule PostHog.Handler do
 
     Context.get(config.supervisor_name, "$exception")
     |> enrich_context(log_event)
-    |> Map.put(:"$exception_list", [exception])
+    |> Map.put(:"$exception_list", exceptions)
     |> Map.merge(metadata)
+  end
+
+  # Reports, such as GenServer crash, should be seen as downstream effects of
+  # initial exceptions
+  defp exceptions(%{meta: %{crash_reason: _}, msg: {:report, _}} = log_event, config) do
+    initial_exception = exception(log_event, config)
+
+    reporter_exception =
+      log_event |> Map.update!(:meta, &Map.delete(&1, :crash_reason)) |> exception(config)
+
+    [initial_exception, reporter_exception]
+  end
+
+  # Bare process crash shaped like complex error but it really isnt
+  defp exceptions(
+         %{meta: %{crash_reason: _, error_logger: %{emulator: true}}, msg: {:string, _}} =
+           log_event,
+         config
+       ) do
+    [exception(log_event, config)]
+  end
+
+  # Non-reports, such as log messages with attached crash_reason, should be seen
+  # as primary errors and define grouping. 
+  defp exceptions(%{meta: %{crash_reason: _}} = log_event, config) do
+    initial_exception = exception(log_event, config)
+
+    reporter_exception =
+      log_event |> Map.update!(:meta, &Map.delete(&1, :crash_reason)) |> exception(config)
+
+    [reporter_exception, initial_exception]
+  end
+
+  defp exceptions(log_event, config) do
+    [exception(log_event, config)]
+  end
+
+  defp exception(log_event, config) do
+    [&type/1, &value/1, &stacktrace(&1, config.in_app_modules)]
+    |> Enum.reduce(
+      %{
+        mechanism: %{handled: not Map.has_key?(log_event.meta, :crash_reason), type: "generic"}
+      },
+      fn fun, acc ->
+        Map.merge(acc, fun.(log_event))
+      end
+    )
   end
 
   defp type(log_event) do
@@ -86,6 +124,22 @@ defmodule PostHog.Handler do
     do: Exception.format_banner(:exit, reason)
 
   defp do_type(%{msg: {:string, chardata}}), do: IO.chardata_to_string(chardata)
+
+  defp do_type(%{msg: {:report, %{label: {:gen_server, :terminate}}}}) do
+    "GenServer terminating"
+  end
+
+  defp do_type(%{msg: {:report, %{label: {Task.Supervisor, :terminating}}}}) do
+    "Task terminating"
+  end
+
+  defp do_type(%{msg: {:report, %{label: {:gen_statem, :terminate}}}}) do
+    ":gen_statem terminating"
+  end
+
+  defp do_type(%{msg: {:report, %{label: {:proc_lib, :crash}}}}) do
+    "Process terminating"
+  end
 
   defp do_type(%{msg: {:report, report}, meta: %{report_cb: report_cb}})
        when is_function(report_cb, 1) do
@@ -123,7 +177,18 @@ defmodule PostHog.Handler do
   defp value(%{msg: {io_format, data}}),
     do: io_format |> :io_lib.format(data) |> IO.chardata_to_string() |> then(&%{value: &1})
 
-  defp stacktrace(%{meta: %{crash_reason: {_reason, [_ | _] = stacktrace}}}, in_app_modules) do
+  defp stacktrace(%{meta: %{crash_reason: {_reason, [_ | _] = stacktrace}}}, in_app_modules),
+    do: %{stacktrace: do_stacktrace(stacktrace, in_app_modules)}
+
+  defp stacktrace(
+         %{msg: {:report, %{client_info: {_, {_, [_ | _] = stacktrace}}}}},
+         in_app_modules
+       ),
+       do: %{stacktrace: do_stacktrace(stacktrace, in_app_modules)}
+
+  defp stacktrace(_event, _), do: %{}
+
+  defp do_stacktrace([_ | _] = stacktrace, in_app_modules) do
     frames =
       for {module, function, arity_or_args, location} <- stacktrace do
         in_app = module in in_app_modules
@@ -141,14 +206,10 @@ defmodule PostHog.Handler do
       end
 
     %{
-      stacktrace: %{
-        type: "raw",
-        frames: frames
-      }
+      type: "raw",
+      frames: frames
     }
   end
-
-  defp stacktrace(_event, _), do: %{}
 
   defp enrich_context(context, %{meta: %{conn: conn}}) when is_struct(conn, Plug.Conn) do
     case context do

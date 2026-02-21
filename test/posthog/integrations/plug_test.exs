@@ -62,6 +62,11 @@ defmodule PostHog.Integrations.PlugTest do
                "$lib_version": _,
                "$exception_list": [
                  %{
+                   mechanism: %{handled: true, type: "generic"},
+                   type: "** (RuntimeError) oops",
+                   value: "** (RuntimeError) oops\n" <> _
+                 },
+                 %{
                    type: "RuntimeError",
                    value: "** (RuntimeError) oops",
                    mechanism: %{handled: false, type: "generic"},
@@ -93,6 +98,11 @@ defmodule PostHog.Integrations.PlugTest do
                "$lib_version": _,
                "$exception_list": [
                  %{
+                   mechanism: %{handled: true, type: "generic"},
+                   type: "** (throw) \"catch!\"",
+                   value: "** (throw) \"catch!\"\n" <> _
+                 },
+                 %{
                    type: "** (throw) \"catch!\"",
                    value: "** (throw) \"catch!\"",
                    mechanism: %{handled: false, type: "generic"},
@@ -123,6 +133,11 @@ defmodule PostHog.Integrations.PlugTest do
                "$lib": "posthog-elixir",
                "$lib_version": _,
                "$exception_list": [
+                 %{
+                   mechanism: %{handled: true, type: "generic"},
+                   type: "** (exit) \"i quit\"",
+                   value: "** (exit) \"i quit\"\n" <> _
+                 },
                  %{
                    type: "** (exit) \"i quit\"",
                    value: "** (exit) \"i quit\"",
@@ -159,6 +174,11 @@ defmodule PostHog.Integrations.PlugTest do
                    value: "** (RuntimeError) oops",
                    mechanism: %{handled: false, type: "generic"},
                    stacktrace: %{type: "raw", frames: _frames}
+                 },
+                 %{
+                   type: "#PID<" <> _,
+                   value: "#PID<" <> _,
+                   mechanism: %{handled: true, type: "generic"}
                  }
                ]
              } = properties
@@ -189,6 +209,11 @@ defmodule PostHog.Integrations.PlugTest do
                    value: "** (throw) \"catch!\"",
                    mechanism: %{handled: false, type: "generic"},
                    stacktrace: %{type: "raw", frames: _frames}
+                 },
+                 %{
+                   type: "#PID<" <> _,
+                   value: "#PID<" <> _,
+                   mechanism: %{handled: true, type: "generic"}
                  }
                ]
              } = properties
@@ -218,6 +243,11 @@ defmodule PostHog.Integrations.PlugTest do
                    type: "** (exit) \"i quit\"",
                    value: "** (exit) \"i quit\"",
                    mechanism: %{handled: false, type: "generic"}
+                 },
+                 %{
+                   type: "#PID<" <> _,
+                   value: "#PID<" <> _,
+                   mechanism: %{handled: true, type: "generic"}
                  }
                ]
              } = properties

@@ -89,6 +89,11 @@ defmodule PostHog.HandlerTest do
              properties: %{
                "$exception_list": [
                  %{
+                   mechanism: %{handled: true, type: "generic"},
+                   type: "Hello World",
+                   value: "Hello World"
+                 },
+                 %{
                    type: "** (exit) \"exit reason\"",
                    value: "** (exit) \"exit reason\"",
                    mechanism: %{handled: false, type: "generic"}
@@ -328,6 +333,11 @@ defmodule PostHog.HandlerTest do
                        }
                      ]
                    }
+                 },
+                 %{
+                   mechanism: %{handled: true, type: "generic"},
+                   type: "Task terminating",
+                   value: "Task" <> _
                  }
                ]
              }
@@ -371,6 +381,11 @@ defmodule PostHog.HandlerTest do
                        }
                      ]
                    }
+                 },
+                 %{
+                   mechanism: %{handled: true, type: "generic"},
+                   type: "Task terminating",
+                   value: "Task" <> _
                  }
                ]
              }
@@ -414,6 +429,11 @@ defmodule PostHog.HandlerTest do
                        }
                      ]
                    }
+                 },
+                 %{
+                   mechanism: %{handled: true, type: "generic"},
+                   type: "Task terminating",
+                   value: "Task" <> _
                  }
                ]
              }
@@ -478,6 +498,11 @@ defmodule PostHog.HandlerTest do
                        }
                      ]
                    }
+                 },
+                 %{
+                   mechanism: %{handled: true, type: "generic"},
+                   type: "GenServer terminating",
+                   value: "GenServer" <> _
                  }
                ]
              }
@@ -539,6 +564,11 @@ defmodule PostHog.HandlerTest do
                        }
                      ]
                    }
+                 },
+                 %{
+                   mechanism: %{handled: true, type: "generic"},
+                   type: "GenServer terminating",
+                   value: "GenServer" <> _
                  }
                ]
              }
@@ -562,6 +592,11 @@ defmodule PostHog.HandlerTest do
                    type: "** (exit) %LoggerHandlerKit.FakeStruct{hello: \"world\"}",
                    value: "** (exit) %LoggerHandlerKit.FakeStruct{hello: \"world\"}",
                    mechanism: %{handled: false, type: "generic"}
+                 },
+                 %{
+                   mechanism: %{handled: true, type: "generic"},
+                   type: "GenServer terminating",
+                   value: "GenServer" <> _
                  }
                ]
              }
@@ -582,6 +617,11 @@ defmodule PostHog.HandlerTest do
                    type: "** (exit) bad return value: \"catch!\"",
                    value: "** (exit) bad return value: \"catch!\"",
                    mechanism: %{handled: false, type: "generic"}
+                 },
+                 %{
+                   mechanism: %{handled: true, type: "generic"},
+                   type: "GenServer terminating",
+                   value: "GenServer" <> _
                  }
                ]
              }
@@ -637,6 +677,46 @@ defmodule PostHog.HandlerTest do
                      ],
                      type: "raw"
                    }
+                 },
+                 %{
+                   mechanism: %{handled: true, type: "generic"},
+                   stacktrace: %{
+                     frames: [
+                       %{
+                         function: ":gen.do_call/4",
+                         module: ":gen",
+                         filename: "gen.erl",
+                         in_app: false,
+                         lineno: _,
+                         platform: "custom",
+                         lang: "elixir"
+                       },
+                       %{
+                         function: ":gen_statem.call/3",
+                         module: ":gen_statem",
+                         filename: "gen_statem.erl",
+                         resolved: true,
+                         in_app: false,
+                         lineno: _,
+                         platform: "custom",
+                         lang: "elixir"
+                       },
+                       %{
+                         function: "LoggerHandlerKit.Act.gen_statem_crash/1",
+                         module: "LoggerHandlerKit.Act",
+                         filename: "lib/logger_handler_kit/act.ex",
+                         resolved: true,
+                         in_app: false,
+                         lineno: _,
+                         platform: "custom",
+                         lang: "elixir"
+                       }
+                       | _
+                     ],
+                     type: "raw"
+                   },
+                   type: ":gen_statem terminating",
+                   value: ":gen_statem" <> _
                  }
                ]
              }
@@ -782,6 +862,11 @@ defmodule PostHog.HandlerTest do
                      ],
                      type: "raw"
                    }
+                 },
+                 %{
+                   mechanism: %{handled: true, type: "generic"},
+                   type: "Process terminating",
+                   value: "Process" <> _
                  }
                ]
              }
@@ -829,6 +914,11 @@ defmodule PostHog.HandlerTest do
                      ],
                      type: "raw"
                    }
+                 },
+                 %{
+                   mechanism: %{handled: true, type: "generic"},
+                   type: "Process terminating",
+                   value: "Process" <> _
                  }
                ]
              }
@@ -1103,6 +1193,10 @@ defmodule PostHog.HandlerTest do
                      ]
                    },
                    mechanism: %{type: "generic", handled: false}
+                 },
+                 %{
+                   mechanism: %{handled: true, type: "generic"},
+                   type: "Task terminating"
                  }
                ]
              }
@@ -1137,7 +1231,8 @@ defmodule PostHog.HandlerTest do
                        }
                      ]
                    }
-                 }
+                 },
+                 _
                ]
              }
            } = event
