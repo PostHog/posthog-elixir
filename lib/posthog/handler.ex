@@ -46,7 +46,14 @@ defmodule PostHog.Handler do
       log_event.meta
       |> then(fn metadata ->
         if config.metadata == :all do
-          Map.delete(metadata, Context.logger_metadata_key())
+          metadata
+          |> Map.delete(Context.logger_metadata_key())
+          |> Map.drop([
+            :crash_reason,
+            :error_logger,
+            :gl,
+            :report_cb
+          ])
         else
           Map.take(metadata, [:distinct_id | config.metadata])
         end
