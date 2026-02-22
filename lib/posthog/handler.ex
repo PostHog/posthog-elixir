@@ -52,6 +52,7 @@ defmodule PostHog.Handler do
         end
       end)
       |> Map.drop(["$exception_list"])
+      |> enrich_metadata(log_event)
       |> maybe_update_file_key()
 
     Context.get(config.supervisor_name, "$exception")
@@ -233,4 +234,122 @@ defmodule PostHog.Handler do
   end
 
   defp maybe_update_file_key(metadata), do: metadata
+
+  defp enrich_metadata(metadata, log_event) do
+    [
+      :genserver_name,
+      :genserver_state,
+      :genserver_last_message,
+      :genserver_process_label,
+      :genserver_client,
+      :task_name,
+      :task_process_label,
+      :task_starter,
+      :gen_statem_name,
+      :gen_statem_state,
+      :gen_statem_queue,
+      :gen_statem_client,
+      :gen_statem_process_label,
+      :gen_statem_callback_mode,
+      :gen_statem_postponed,
+      :gen_statem_state_enter
+    ]
+    |> Enum.reduce(metadata, fn key, acc ->
+      key |> extract_extra_meta(log_event) |> Map.merge(acc)
+    end)
+  end
+
+  defp extract_extra_meta(:genserver_name, %{
+         msg: {:report, %{label: {:gen_server, :terminate}, name: name}}
+       }),
+       do: %{genserver_name: name}
+
+  defp extract_extra_meta(:genserver_state, %{
+         msg: {:report, %{label: {:gen_server, :terminate}, state: state}}
+       }),
+       do: %{genserver_state: state}
+
+  defp extract_extra_meta(:genserver_last_message, %{
+         msg: {:report, %{label: {:gen_server, :terminate}, last_message: last_message}}
+       }),
+       do: %{genserver_last_message: last_message}
+
+  defp extract_extra_meta(:genserver_process_label, %{
+         msg: {:report, %{label: {:gen_server, :terminate}, process_label: process_label}}
+       }),
+       do: %{genserver_process_label: process_label}
+
+  defp extract_extra_meta(:genserver_client, %{
+         msg: {:report, %{label: {:gen_server, :terminate}, client_info: {_, {client, _}}}}
+       }),
+       do: %{genserver_client: client}
+
+  defp extract_extra_meta(:genserver_client, %{
+         msg: {:report, %{label: {:gen_server, :terminate}, client_info: {client, _}}}
+       }),
+       do: %{genserver_client: client}
+
+  defp extract_extra_meta(:task_name, %{
+         msg: {:report, %{label: {Task.Supervisor, :terminating}, report: %{name: name}}}
+       }),
+       do: %{task_name: name}
+
+  defp extract_extra_meta(:task_process_label, %{
+         msg:
+           {:report,
+            %{label: {Task.Supervisor, :terminating}, report: %{process_label: process_label}}}
+       }),
+       do: %{task_process_label: process_label}
+
+  defp extract_extra_meta(:task_starter, %{
+         msg: {:report, %{label: {Task.Supervisor, :terminating}, report: %{starter: starter}}}
+       }),
+       do: %{task_starter: starter}
+
+  defp extract_extra_meta(:gen_statem_name, %{
+         msg: {:report, %{label: {:gen_statem, :terminate}, name: name}}
+       }),
+       do: %{gen_statem_name: name}
+
+  defp extract_extra_meta(:gen_statem_state, %{
+         msg: {:report, %{label: {:gen_statem, :terminate}, state: state}}
+       }),
+       do: %{gen_statem_state: state}
+
+  defp extract_extra_meta(:gen_statem_queue, %{
+         msg: {:report, %{label: {:gen_statem, :terminate}, queue: queue}}
+       }),
+       do: %{gen_statem_queue: queue}
+
+  defp extract_extra_meta(:gen_statem_client, %{
+         msg: {:report, %{label: {:gen_statem, :terminate}, client_info: {_, {client, _}}}}
+       }),
+       do: %{gen_statem_client: client}
+
+  defp extract_extra_meta(:gen_statem_client, %{
+         msg: {:report, %{label: {:gen_statem, :terminate}, client_info: {client, _}}}
+       }),
+       do: %{gen_statem_client: client}
+
+  defp extract_extra_meta(:gen_statem_process_label, %{
+         msg: {:report, %{label: {:gen_statem, :terminate}, process_label: process_label}}
+       }),
+       do: %{gen_statem_process_label: process_label}
+
+  defp extract_extra_meta(:gen_statem_callback_mode, %{
+         msg: {:report, %{label: {:gen_statem, :terminate}, callback_mode: callback_mode}}
+       }),
+       do: %{gen_statem_callback_mode: callback_mode}
+
+  defp extract_extra_meta(:gen_statem_postponed, %{
+         msg: {:report, %{label: {:gen_statem, :terminate}, postponed: postponed}}
+       }),
+       do: %{gen_statem_postponed: postponed}
+
+  defp extract_extra_meta(:gen_statem_state_enter, %{
+         msg: {:report, %{label: {:gen_statem, :terminate}, state_enter: state_enter}}
+       }),
+       do: %{gen_statem_state_enter: state_enter}
+
+  defp extract_extra_meta(_, _), do: %{}
 end

@@ -305,6 +305,9 @@ defmodule PostHog.HandlerTest do
     assert %{
              event: "$exception",
              properties: %{
+               task_process_label: :undefined,
+               task_starter: "#PID<" <> _,
+               task_name: "#PID<" <> _,
                "$exception_list": [
                  %{
                    type: "RuntimeError",
@@ -353,6 +356,9 @@ defmodule PostHog.HandlerTest do
     assert %{
              event: "$exception",
              properties: %{
+               task_process_label: :undefined,
+               task_starter: "#PID<" <> _,
+               task_name: "#PID<" <> _,
                "$exception_list": [
                  %{
                    type: "** (throw) \"catch!\"",
@@ -401,6 +407,9 @@ defmodule PostHog.HandlerTest do
     assert %{
              event: "$exception",
              properties: %{
+               task_process_label: :undefined,
+               task_starter: "#PID<" <> _,
+               task_name: "#PID<" <> _,
                "$exception_list": [
                  %{
                    type: "** (exit) \"i quit\"",
@@ -452,6 +461,11 @@ defmodule PostHog.HandlerTest do
     assert %{
              event: "$exception",
              properties: %{
+               genserver_name: "#PID<" <> _,
+               genserver_state: nil,
+               genserver_last_message: [:run, _fun_name],
+               genserver_process_label: :undefined,
+               genserver_client: "#PID<" <> _,
                "$exception_list": [
                  %{
                    type: "RuntimeError",
@@ -518,6 +532,11 @@ defmodule PostHog.HandlerTest do
     assert %{
              event: "$exception",
              properties: %{
+               genserver_name: "#PID<" <> _,
+               genserver_state: nil,
+               genserver_last_message: [:run, _fun_name],
+               genserver_process_label: :undefined,
+               genserver_client: "#PID<" <> _,
                "$exception_list": [
                  %{
                    type: "** (exit) \"i quit\"",
@@ -587,6 +606,11 @@ defmodule PostHog.HandlerTest do
     assert %{
              event: "$exception",
              properties: %{
+               genserver_name: "#PID<" <> _,
+               genserver_state: :no_state,
+               genserver_last_message: [:run, _fun_name],
+               genserver_process_label: :undefined,
+               genserver_client: "#PID<" <> _,
                "$exception_list": [
                  %{
                    type: "** (exit) %LoggerHandlerKit.FakeStruct{hello: \"world\"}",
@@ -612,6 +636,11 @@ defmodule PostHog.HandlerTest do
     assert %{
              event: "$exception",
              properties: %{
+               genserver_name: "#PID<" <> _,
+               genserver_state: nil,
+               genserver_last_message: [:run, _fun_name],
+               genserver_process_label: :undefined,
+               genserver_client: "#PID<" <> _,
                "$exception_list": [
                  %{
                    type: "** (exit) bad return value: \"catch!\"",
@@ -640,6 +669,19 @@ defmodule PostHog.HandlerTest do
     assert %{
              event: "$exception",
              properties: %{
+               gen_statem_name: "#PID<" <> _,
+               gen_statem_state: [:started, nil],
+               gen_statem_queue: [
+                 %{
+                   call: _,
+                   run: _
+                 }
+               ],
+               gen_statem_client: "#PID<" <> _,
+               gen_statem_process_label: :undefined,
+               gen_statem_callback_mode: :state_functions,
+               gen_statem_postponed: [],
+               gen_statem_state_enter: false,
                "$exception_list": [
                  %{
                    type: "RuntimeError",
