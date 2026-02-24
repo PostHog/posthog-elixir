@@ -89,7 +89,7 @@ defmodule PostHog.Handler do
   end
 
   # Non-reports, such as log messages with attached crash_reason, should be seen
-  # as primary errors and define grouping. 
+  # as primary errors and define grouping.
   defp exceptions(%{meta: %{crash_reason: _}} = log_event, config) do
     initial_exception = exception(log_event, config)
 
