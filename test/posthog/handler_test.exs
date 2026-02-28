@@ -83,19 +83,40 @@ defmodule PostHog.HandlerTest do
 
     assert [event] = all_captured(supervisor_name)
 
-    assert %{
-             event: "$exception",
-             uuid: _,
-             properties: %{
-               "$exception_list": [
-                 %{
-                   type: "** (exit) \"exit reason\"",
-                   value: "** (exit) \"exit reason\"",
-                   mechanism: %{handled: false, type: "generic"}
-                 }
-               ]
-             }
-           } = event
+    if pre_19?() do
+      assert %{
+               event: "$exception",
+               uuid: _,
+               properties: %{
+                 "$exception_list": [
+                   %{
+                     type: "** (exit) \"exit reason\"",
+                     value: "** (exit) \"exit reason\"",
+                     mechanism: %{handled: false, type: "generic"}
+                   }
+                 ]
+               }
+             } = event
+    else
+      assert %{
+               event: "$exception",
+               uuid: _,
+               properties: %{
+                 "$exception_list": [
+                   %{
+                     mechanism: %{handled: true, type: "generic"},
+                     type: "Hello World",
+                     value: "Hello World"
+                   },
+                   %{
+                     type: "** (exit) \"exit reason\"",
+                     value: "** (exit) \"exit reason\"",
+                     mechanism: %{handled: false, type: "generic"}
+                   }
+                 ]
+               }
+             } = event
+    end
   end
 
   test "string message", %{handler_ref: ref, config: %{supervisor_name: supervisor_name}} do
@@ -297,41 +318,87 @@ defmodule PostHog.HandlerTest do
 
     assert [event] = all_captured(supervisor_name)
 
-    assert %{
-             event: "$exception",
-             properties: %{
-               "$exception_list": [
-                 %{
-                   type: "RuntimeError",
-                   value: "** (RuntimeError) oops",
-                   mechanism: %{handled: false, type: "generic"},
-                   stacktrace: %{
-                     type: "raw",
-                     frames: [
-                       %{
-                         in_app: false,
-                         filename: "lib/logger_handler_kit/act.ex",
-                         function: "anonymous fn/0 in LoggerHandlerKit.Act.task_error/1",
-                         lineno: _,
-                         module: "LoggerHandlerKit.Act",
-                         platform: "custom",
-                         lang: "elixir"
-                       },
-                       %{
-                         in_app: false,
-                         filename: "lib/task/supervised.ex",
-                         function: "Task.Supervised.invoke_mfa/2",
-                         lineno: _,
-                         module: "Task.Supervised",
-                         platform: "custom",
-                         lang: "elixir"
-                       }
-                     ]
+    if pre_19?() do
+      assert %{
+               event: "$exception",
+               properties: %{
+                 "$exception_list": [
+                   %{
+                     type: "RuntimeError",
+                     value: "** (RuntimeError) oops",
+                     mechanism: %{handled: false, type: "generic"},
+                     stacktrace: %{
+                       type: "raw",
+                       frames: [
+                         %{
+                           in_app: false,
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function: "anonymous fn/0 in LoggerHandlerKit.Act.task_error/1",
+                           lineno: _,
+                           module: "LoggerHandlerKit.Act",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           in_app: false,
+                           filename: "lib/task/supervised.ex",
+                           function: "Task.Supervised.invoke_mfa/2",
+                           lineno: _,
+                           module: "Task.Supervised",
+                           platform: "custom",
+                           lang: "elixir"
+                         }
+                       ]
+                     }
                    }
-                 }
-               ]
-             }
-           } = event
+                 ]
+               }
+             } = event
+    else
+      assert %{
+               event: "$exception",
+               properties: %{
+                 task_process_label: :undefined,
+                 task_starter: "#PID<" <> _,
+                 task_name: "#PID<" <> _,
+                 "$exception_list": [
+                   %{
+                     type: "RuntimeError",
+                     value: "** (RuntimeError) oops",
+                     mechanism: %{handled: false, type: "generic"},
+                     stacktrace: %{
+                       type: "raw",
+                       frames: [
+                         %{
+                           in_app: false,
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function: "anonymous fn/0 in LoggerHandlerKit.Act.task_error/1",
+                           lineno: _,
+                           module: "LoggerHandlerKit.Act",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           in_app: false,
+                           filename: "lib/task/supervised.ex",
+                           function: "Task.Supervised.invoke_mfa/2",
+                           lineno: _,
+                           module: "Task.Supervised",
+                           platform: "custom",
+                           lang: "elixir"
+                         }
+                       ]
+                     }
+                   },
+                   %{
+                     mechanism: %{handled: true, type: "generic"},
+                     type: "Task terminating",
+                     value: "Task" <> _
+                   }
+                 ]
+               }
+             } = event
+    end
   end
 
   test "task error throw", %{handler_ref: ref, config: %{supervisor_name: supervisor_name}} do
@@ -340,41 +407,87 @@ defmodule PostHog.HandlerTest do
 
     assert [event] = all_captured(supervisor_name)
 
-    assert %{
-             event: "$exception",
-             properties: %{
-               "$exception_list": [
-                 %{
-                   type: "** (throw) \"catch!\"",
-                   value: "** (throw) \"catch!\"",
-                   mechanism: %{handled: false, type: "generic"},
-                   stacktrace: %{
-                     type: "raw",
-                     frames: [
-                       %{
-                         in_app: false,
-                         filename: "lib/logger_handler_kit/act.ex",
-                         function: "anonymous fn/0 in LoggerHandlerKit.Act.task_error/1",
-                         lineno: _,
-                         module: "LoggerHandlerKit.Act",
-                         platform: "custom",
-                         lang: "elixir"
-                       },
-                       %{
-                         in_app: false,
-                         filename: "lib/task/supervised.ex",
-                         function: "Task.Supervised.invoke_mfa/2",
-                         lineno: _,
-                         module: "Task.Supervised",
-                         platform: "custom",
-                         lang: "elixir"
-                       }
-                     ]
+    if pre_19?() do
+      assert %{
+               event: "$exception",
+               properties: %{
+                 "$exception_list": [
+                   %{
+                     type: "** (throw) \"catch!\"",
+                     value: "** (throw) \"catch!\"",
+                     mechanism: %{handled: false, type: "generic"},
+                     stacktrace: %{
+                       type: "raw",
+                       frames: [
+                         %{
+                           in_app: false,
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function: "anonymous fn/0 in LoggerHandlerKit.Act.task_error/1",
+                           lineno: _,
+                           module: "LoggerHandlerKit.Act",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           in_app: false,
+                           filename: "lib/task/supervised.ex",
+                           function: "Task.Supervised.invoke_mfa/2",
+                           lineno: _,
+                           module: "Task.Supervised",
+                           platform: "custom",
+                           lang: "elixir"
+                         }
+                       ]
+                     }
                    }
-                 }
-               ]
-             }
-           } = event
+                 ]
+               }
+             } = event
+    else
+      assert %{
+               event: "$exception",
+               properties: %{
+                 task_process_label: :undefined,
+                 task_starter: "#PID<" <> _,
+                 task_name: "#PID<" <> _,
+                 "$exception_list": [
+                   %{
+                     type: "** (throw) \"catch!\"",
+                     value: "** (throw) \"catch!\"",
+                     mechanism: %{handled: false, type: "generic"},
+                     stacktrace: %{
+                       type: "raw",
+                       frames: [
+                         %{
+                           in_app: false,
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function: "anonymous fn/0 in LoggerHandlerKit.Act.task_error/1",
+                           lineno: _,
+                           module: "LoggerHandlerKit.Act",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           in_app: false,
+                           filename: "lib/task/supervised.ex",
+                           function: "Task.Supervised.invoke_mfa/2",
+                           lineno: _,
+                           module: "Task.Supervised",
+                           platform: "custom",
+                           lang: "elixir"
+                         }
+                       ]
+                     }
+                   },
+                   %{
+                     mechanism: %{handled: true, type: "generic"},
+                     type: "Task terminating",
+                     value: "Task" <> _
+                   }
+                 ]
+               }
+             } = event
+    end
   end
 
   test "task error exit", %{handler_ref: ref, config: %{supervisor_name: supervisor_name}} do
@@ -383,41 +496,87 @@ defmodule PostHog.HandlerTest do
 
     assert [event] = all_captured(supervisor_name)
 
-    assert %{
-             event: "$exception",
-             properties: %{
-               "$exception_list": [
-                 %{
-                   type: "** (exit) \"i quit\"",
-                   value: "** (exit) \"i quit\"",
-                   mechanism: %{handled: false, type: "generic"},
-                   stacktrace: %{
-                     type: "raw",
-                     frames: [
-                       %{
-                         in_app: false,
-                         filename: "lib/logger_handler_kit/act.ex",
-                         function: "anonymous fn/0 in LoggerHandlerKit.Act.task_error/1",
-                         lineno: _,
-                         module: "LoggerHandlerKit.Act",
-                         platform: "custom",
-                         lang: "elixir"
-                       },
-                       %{
-                         in_app: false,
-                         filename: "lib/task/supervised.ex",
-                         function: "Task.Supervised.invoke_mfa/2",
-                         lineno: _,
-                         module: "Task.Supervised",
-                         platform: "custom",
-                         lang: "elixir"
-                       }
-                     ]
+    if pre_19?() do
+      assert %{
+               event: "$exception",
+               properties: %{
+                 "$exception_list": [
+                   %{
+                     type: "** (exit) \"i quit\"",
+                     value: "** (exit) \"i quit\"",
+                     mechanism: %{handled: false, type: "generic"},
+                     stacktrace: %{
+                       type: "raw",
+                       frames: [
+                         %{
+                           in_app: false,
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function: "anonymous fn/0 in LoggerHandlerKit.Act.task_error/1",
+                           lineno: _,
+                           module: "LoggerHandlerKit.Act",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           in_app: false,
+                           filename: "lib/task/supervised.ex",
+                           function: "Task.Supervised.invoke_mfa/2",
+                           lineno: _,
+                           module: "Task.Supervised",
+                           platform: "custom",
+                           lang: "elixir"
+                         }
+                       ]
+                     }
                    }
-                 }
-               ]
-             }
-           } = event
+                 ]
+               }
+             } = event
+    else
+      assert %{
+               event: "$exception",
+               properties: %{
+                 task_process_label: :undefined,
+                 task_starter: "#PID<" <> _,
+                 task_name: "#PID<" <> _,
+                 "$exception_list": [
+                   %{
+                     type: "** (exit) \"i quit\"",
+                     value: "** (exit) \"i quit\"",
+                     mechanism: %{handled: false, type: "generic"},
+                     stacktrace: %{
+                       type: "raw",
+                       frames: [
+                         %{
+                           in_app: false,
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function: "anonymous fn/0 in LoggerHandlerKit.Act.task_error/1",
+                           lineno: _,
+                           module: "LoggerHandlerKit.Act",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           in_app: false,
+                           filename: "lib/task/supervised.ex",
+                           function: "Task.Supervised.invoke_mfa/2",
+                           lineno: _,
+                           module: "Task.Supervised",
+                           platform: "custom",
+                           lang: "elixir"
+                         }
+                       ]
+                     }
+                   },
+                   %{
+                     mechanism: %{handled: true, type: "generic"},
+                     type: "Task terminating",
+                     value: "Task" <> _
+                   }
+                 ]
+               }
+             } = event
+    end
   end
 
   test "genserver crash exception", %{
@@ -429,59 +588,125 @@ defmodule PostHog.HandlerTest do
 
     assert [event] = all_captured(supervisor_name)
 
-    assert %{
-             event: "$exception",
-             properties: %{
-               "$exception_list": [
-                 %{
-                   type: "RuntimeError",
-                   value: "** (RuntimeError) oops",
-                   mechanism: %{handled: false, type: "generic"},
-                   stacktrace: %{
-                     type: "raw",
-                     frames: [
-                       %{
-                         in_app: false,
-                         filename: "lib/logger_handler_kit/act.ex",
-                         function: "anonymous fn/0 in LoggerHandlerKit.Act.genserver_crash/1",
-                         lineno: _,
-                         module: "LoggerHandlerKit.Act",
-                         platform: "custom",
-                         lang: "elixir"
-                       },
-                       %{
-                         filename: "gen_server.erl",
-                         function: ":gen_server.try_handle_call/4",
-                         in_app: false,
-                         lineno: _,
-                         module: ":gen_server",
-                         platform: "custom",
-                         lang: "elixir"
-                       },
-                       %{
-                         filename: "gen_server.erl",
-                         function: ":gen_server.handle_msg" <> _,
-                         in_app: false,
-                         lineno: _,
-                         module: ":gen_server",
-                         platform: "custom",
-                         lang: "elixir"
-                       },
-                       %{
-                         filename: "proc_lib.erl",
-                         function: ":proc_lib.init_p_do_apply/3",
-                         in_app: false,
-                         lineno: _,
-                         module: ":proc_lib",
-                         platform: "custom",
-                         lang: "elixir"
-                       }
-                     ]
+    if pre_19?() do
+      assert %{
+               event: "$exception",
+               properties: %{
+                 "$exception_list": [
+                   %{
+                     type: "RuntimeError",
+                     value: "** (RuntimeError) oops",
+                     mechanism: %{handled: false, type: "generic"},
+                     stacktrace: %{
+                       type: "raw",
+                       frames: [
+                         %{
+                           in_app: false,
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function: "anonymous fn/0 in LoggerHandlerKit.Act.genserver_crash/1",
+                           lineno: _,
+                           module: "LoggerHandlerKit.Act",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           filename: "gen_server.erl",
+                           function: ":gen_server.try_handle_call/4",
+                           in_app: false,
+                           lineno: _,
+                           module: ":gen_server",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           filename: "gen_server.erl",
+                           function: ":gen_server.handle_msg" <> _,
+                           in_app: false,
+                           lineno: _,
+                           module: ":gen_server",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           filename: "proc_lib.erl",
+                           function: ":proc_lib.init_p_do_apply/3",
+                           in_app: false,
+                           lineno: _,
+                           module: ":proc_lib",
+                           platform: "custom",
+                           lang: "elixir"
+                         }
+                       ]
+                     }
                    }
-                 }
-               ]
-             }
-           } = event
+                 ]
+               }
+             } = event
+    else
+      assert %{
+               event: "$exception",
+               properties: %{
+                 genserver_name: "#PID<" <> _,
+                 genserver_state: nil,
+                 genserver_last_message: [:run, _fun_name],
+                 genserver_process_label: :undefined,
+                 genserver_client: "#PID<" <> _,
+                 "$exception_list": [
+                   %{
+                     type: "RuntimeError",
+                     value: "** (RuntimeError) oops",
+                     mechanism: %{handled: false, type: "generic"},
+                     stacktrace: %{
+                       type: "raw",
+                       frames: [
+                         %{
+                           in_app: false,
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function: "anonymous fn/0 in LoggerHandlerKit.Act.genserver_crash/1",
+                           lineno: _,
+                           module: "LoggerHandlerKit.Act",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           filename: "gen_server.erl",
+                           function: ":gen_server.try_handle_call/4",
+                           in_app: false,
+                           lineno: _,
+                           module: ":gen_server",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           filename: "gen_server.erl",
+                           function: ":gen_server.handle_msg" <> _,
+                           in_app: false,
+                           lineno: _,
+                           module: ":gen_server",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           filename: "proc_lib.erl",
+                           function: ":proc_lib.init_p_do_apply/3",
+                           in_app: false,
+                           lineno: _,
+                           module: ":proc_lib",
+                           platform: "custom",
+                           lang: "elixir"
+                         }
+                       ]
+                     }
+                   },
+                   %{
+                     mechanism: %{handled: true, type: "generic"},
+                     type: "GenServer terminating",
+                     value: "GenServer" <> _
+                   }
+                 ]
+               }
+             } = event
+    end
   end
 
   test "genserver crash exit", %{handler_ref: ref, config: %{supervisor_name: supervisor_name}} do
@@ -490,59 +715,125 @@ defmodule PostHog.HandlerTest do
 
     assert [event] = all_captured(supervisor_name)
 
-    assert %{
-             event: "$exception",
-             properties: %{
-               "$exception_list": [
-                 %{
-                   type: "** (exit) \"i quit\"",
-                   value: "** (exit) \"i quit\"",
-                   mechanism: %{handled: false, type: "generic"},
-                   stacktrace: %{
-                     type: "raw",
-                     frames: [
-                       %{
-                         in_app: false,
-                         filename: "lib/logger_handler_kit/act.ex",
-                         function: "anonymous fn/0 in LoggerHandlerKit.Act.genserver_crash/1",
-                         lineno: _,
-                         module: "LoggerHandlerKit.Act",
-                         platform: "custom",
-                         lang: "elixir"
-                       },
-                       %{
-                         filename: "gen_server.erl",
-                         function: ":gen_server.try_handle_call/4",
-                         lineno: _,
-                         module: ":gen_server",
-                         platform: "custom",
-                         lang: "elixir",
-                         in_app: false
-                       },
-                       %{
-                         filename: "gen_server.erl",
-                         function: ":gen_server.handle_msg" <> _,
-                         lineno: _,
-                         module: ":gen_server",
-                         platform: "custom",
-                         lang: "elixir",
-                         in_app: false
-                       },
-                       %{
-                         filename: "proc_lib.erl",
-                         function: ":proc_lib.init_p_do_apply/3",
-                         in_app: false,
-                         lineno: _,
-                         module: ":proc_lib",
-                         platform: "custom",
-                         lang: "elixir"
-                       }
-                     ]
+    if pre_19?() do
+      assert %{
+               event: "$exception",
+               properties: %{
+                 "$exception_list": [
+                   %{
+                     type: "** (exit) \"i quit\"",
+                     value: "** (exit) \"i quit\"",
+                     mechanism: %{handled: false, type: "generic"},
+                     stacktrace: %{
+                       type: "raw",
+                       frames: [
+                         %{
+                           in_app: false,
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function: "anonymous fn/0 in LoggerHandlerKit.Act.genserver_crash/1",
+                           lineno: _,
+                           module: "LoggerHandlerKit.Act",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           filename: "gen_server.erl",
+                           function: ":gen_server.try_handle_call/4",
+                           lineno: _,
+                           module: ":gen_server",
+                           platform: "custom",
+                           lang: "elixir",
+                           in_app: false
+                         },
+                         %{
+                           filename: "gen_server.erl",
+                           function: ":gen_server.handle_msg" <> _,
+                           lineno: _,
+                           module: ":gen_server",
+                           platform: "custom",
+                           lang: "elixir",
+                           in_app: false
+                         },
+                         %{
+                           filename: "proc_lib.erl",
+                           function: ":proc_lib.init_p_do_apply/3",
+                           in_app: false,
+                           lineno: _,
+                           module: ":proc_lib",
+                           platform: "custom",
+                           lang: "elixir"
+                         }
+                       ]
+                     }
                    }
-                 }
-               ]
-             }
-           } = event
+                 ]
+               }
+             } = event
+    else
+      assert %{
+               event: "$exception",
+               properties: %{
+                 genserver_name: "#PID<" <> _,
+                 genserver_state: nil,
+                 genserver_last_message: [:run, _fun_name],
+                 genserver_process_label: :undefined,
+                 genserver_client: "#PID<" <> _,
+                 "$exception_list": [
+                   %{
+                     type: "** (exit) \"i quit\"",
+                     value: "** (exit) \"i quit\"",
+                     mechanism: %{handled: false, type: "generic"},
+                     stacktrace: %{
+                       type: "raw",
+                       frames: [
+                         %{
+                           in_app: false,
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function: "anonymous fn/0 in LoggerHandlerKit.Act.genserver_crash/1",
+                           lineno: _,
+                           module: "LoggerHandlerKit.Act",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           filename: "gen_server.erl",
+                           function: ":gen_server.try_handle_call/4",
+                           lineno: _,
+                           module: ":gen_server",
+                           platform: "custom",
+                           lang: "elixir",
+                           in_app: false
+                         },
+                         %{
+                           filename: "gen_server.erl",
+                           function: ":gen_server.handle_msg" <> _,
+                           lineno: _,
+                           module: ":gen_server",
+                           platform: "custom",
+                           lang: "elixir",
+                           in_app: false
+                         },
+                         %{
+                           filename: "proc_lib.erl",
+                           function: ":proc_lib.init_p_do_apply/3",
+                           in_app: false,
+                           lineno: _,
+                           module: ":proc_lib",
+                           platform: "custom",
+                           lang: "elixir"
+                         }
+                       ]
+                     }
+                   },
+                   %{
+                     mechanism: %{handled: true, type: "generic"},
+                     type: "GenServer terminating",
+                     value: "GenServer" <> _
+                   }
+                 ]
+               }
+             } = event
+    end
   end
 
   test "genserver crash exit with struct", %{
@@ -554,18 +845,43 @@ defmodule PostHog.HandlerTest do
 
     assert [event] = all_captured(supervisor_name)
 
-    assert %{
-             event: "$exception",
-             properties: %{
-               "$exception_list": [
-                 %{
-                   type: "** (exit) %LoggerHandlerKit.FakeStruct{hello: \"world\"}",
-                   value: "** (exit) %LoggerHandlerKit.FakeStruct{hello: \"world\"}",
-                   mechanism: %{handled: false, type: "generic"}
-                 }
-               ]
-             }
-           } = event
+    if pre_19?() do
+      assert %{
+               event: "$exception",
+               properties: %{
+                 "$exception_list": [
+                   %{
+                     type: "** (exit) %LoggerHandlerKit.FakeStruct{hello: \"world\"}",
+                     value: "** (exit) %LoggerHandlerKit.FakeStruct{hello: \"world\"}",
+                     mechanism: %{handled: false, type: "generic"}
+                   }
+                 ]
+               }
+             } = event
+    else
+      assert %{
+               event: "$exception",
+               properties: %{
+                 genserver_name: "#PID<" <> _,
+                 genserver_state: :no_state,
+                 genserver_last_message: [:run, _fun_name],
+                 genserver_process_label: :undefined,
+                 genserver_client: "#PID<" <> _,
+                 "$exception_list": [
+                   %{
+                     type: "** (exit) %LoggerHandlerKit.FakeStruct{hello: \"world\"}",
+                     value: "** (exit) %LoggerHandlerKit.FakeStruct{hello: \"world\"}",
+                     mechanism: %{handled: false, type: "generic"}
+                   },
+                   %{
+                     mechanism: %{handled: true, type: "generic"},
+                     type: "GenServer terminating",
+                     value: "GenServer" <> _
+                   }
+                 ]
+               }
+             } = event
+    end
   end
 
   test "genserver crash throw", %{handler_ref: ref, config: %{supervisor_name: supervisor_name}} do
@@ -574,18 +890,43 @@ defmodule PostHog.HandlerTest do
 
     assert [event] = all_captured(supervisor_name)
 
-    assert %{
-             event: "$exception",
-             properties: %{
-               "$exception_list": [
-                 %{
-                   type: "** (exit) bad return value: \"catch!\"",
-                   value: "** (exit) bad return value: \"catch!\"",
-                   mechanism: %{handled: false, type: "generic"}
-                 }
-               ]
-             }
-           } = event
+    if pre_19?() do
+      assert %{
+               event: "$exception",
+               properties: %{
+                 "$exception_list": [
+                   %{
+                     type: "** (exit) bad return value: \"catch!\"",
+                     value: "** (exit) bad return value: \"catch!\"",
+                     mechanism: %{handled: false, type: "generic"}
+                   }
+                 ]
+               }
+             } = event
+    else
+      assert %{
+               event: "$exception",
+               properties: %{
+                 genserver_name: "#PID<" <> _,
+                 genserver_state: nil,
+                 genserver_last_message: [:run, _fun_name],
+                 genserver_process_label: :undefined,
+                 genserver_client: "#PID<" <> _,
+                 "$exception_list": [
+                   %{
+                     type: "** (exit) bad return value: \"catch!\"",
+                     value: "** (exit) bad return value: \"catch!\"",
+                     mechanism: %{handled: false, type: "generic"}
+                   },
+                   %{
+                     mechanism: %{handled: true, type: "generic"},
+                     type: "GenServer terminating",
+                     value: "GenServer" <> _
+                   }
+                 ]
+               }
+             } = event
+    end
   end
 
   test "gen_state_m crash exception", %{
@@ -597,50 +938,150 @@ defmodule PostHog.HandlerTest do
 
     assert [event] = all_captured(supervisor_name)
 
-    assert %{
-             event: "$exception",
-             properties: %{
-               "$exception_list": [
-                 %{
-                   type: "RuntimeError",
-                   value: "** (RuntimeError) oops",
-                   mechanism: %{handled: false, type: "generic"},
-                   stacktrace: %{
-                     frames: [
-                       %{
-                         function: "anonymous fn/0 in LoggerHandlerKit.Act.gen_statem_crash/1",
-                         module: "LoggerHandlerKit.Act",
-                         filename: "lib/logger_handler_kit/act.ex",
-                         in_app: false,
-                         lineno: _,
-                         platform: "custom",
-                         lang: "elixir"
-                       },
-                       %{
-                         function: ":gen_statem.loop_state_callback/11",
-                         module: ":gen_statem",
-                         filename: "gen_statem.erl",
-                         in_app: false,
-                         lineno: _,
-                         platform: "custom",
-                         lang: "elixir"
-                       },
-                       %{
-                         function: ":proc_lib.init_p_do_apply/3",
-                         module: ":proc_lib",
-                         filename: "proc_lib.erl",
-                         in_app: false,
-                         lineno: _,
-                         platform: "custom",
-                         lang: "elixir"
-                       }
-                     ],
-                     type: "raw"
+    if pre_19?() do
+      assert %{
+               event: "$exception",
+               properties: %{
+                 "$exception_list": [
+                   %{
+                     type: "RuntimeError",
+                     value: "** (RuntimeError) oops",
+                     mechanism: %{handled: false, type: "generic"},
+                     stacktrace: %{
+                       frames: [
+                         %{
+                           function: "anonymous fn/0 in LoggerHandlerKit.Act.gen_statem_crash/1",
+                           module: "LoggerHandlerKit.Act",
+                           filename: "lib/logger_handler_kit/act.ex",
+                           in_app: false,
+                           lineno: _,
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           function: ":gen_statem.loop_state_callback/11",
+                           module: ":gen_statem",
+                           filename: "gen_statem.erl",
+                           in_app: false,
+                           lineno: _,
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           function: ":proc_lib.init_p_do_apply/3",
+                           module: ":proc_lib",
+                           filename: "proc_lib.erl",
+                           in_app: false,
+                           lineno: _,
+                           platform: "custom",
+                           lang: "elixir"
+                         }
+                       ],
+                       type: "raw"
+                     }
                    }
-                 }
-               ]
-             }
-           } = event
+                 ]
+               }
+             } = event
+    else
+      assert %{
+               event: "$exception",
+               properties: %{
+                 gen_statem_name: "#PID<" <> _,
+                 gen_statem_state: [:started, nil],
+                 gen_statem_queue: [
+                   %{
+                     call: _,
+                     run: _
+                   }
+                 ],
+                 gen_statem_client: "#PID<" <> _,
+                 gen_statem_process_label: :undefined,
+                 gen_statem_callback_mode: :state_functions,
+                 gen_statem_postponed: [],
+                 gen_statem_state_enter: false,
+                 "$exception_list": [
+                   %{
+                     type: "RuntimeError",
+                     value: "** (RuntimeError) oops",
+                     mechanism: %{handled: false, type: "generic"},
+                     stacktrace: %{
+                       frames: [
+                         %{
+                           function: "anonymous fn/0 in LoggerHandlerKit.Act.gen_statem_crash/1",
+                           module: "LoggerHandlerKit.Act",
+                           filename: "lib/logger_handler_kit/act.ex",
+                           in_app: false,
+                           lineno: _,
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           function: ":gen_statem.loop_state_callback/11",
+                           module: ":gen_statem",
+                           filename: "gen_statem.erl",
+                           in_app: false,
+                           lineno: _,
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           function: ":proc_lib.init_p_do_apply/3",
+                           module: ":proc_lib",
+                           filename: "proc_lib.erl",
+                           in_app: false,
+                           lineno: _,
+                           platform: "custom",
+                           lang: "elixir"
+                         }
+                       ],
+                       type: "raw"
+                     }
+                   },
+                   %{
+                     mechanism: %{handled: true, type: "generic"},
+                     stacktrace: %{
+                       frames: [
+                         %{
+                           function: ":gen.do_call/4",
+                           module: ":gen",
+                           filename: "gen.erl",
+                           in_app: false,
+                           lineno: _,
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           function: ":gen_statem.call/3",
+                           module: ":gen_statem",
+                           filename: "gen_statem.erl",
+                           resolved: true,
+                           in_app: false,
+                           lineno: _,
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           function: "LoggerHandlerKit.Act.gen_statem_crash/1",
+                           module: "LoggerHandlerKit.Act",
+                           filename: "lib/logger_handler_kit/act.ex",
+                           resolved: true,
+                           in_app: false,
+                           lineno: _,
+                           platform: "custom",
+                           lang: "elixir"
+                         }
+                         | _
+                       ],
+                       type: "raw"
+                     },
+                     type: ":gen_statem terminating",
+                     value: ":gen_statem" <> _
+                   }
+                 ]
+               }
+             } = event
+    end
   end
 
   test "bare process crash exception", %{
@@ -732,60 +1173,122 @@ defmodule PostHog.HandlerTest do
 
     assert [event] = all_captured(supervisor_name)
 
-    assert %{
-             event: "$exception",
-             properties: %{
-               "$exception_list": [
-                 %{
-                   type: "RuntimeError",
-                   value: "** (RuntimeError) oops",
-                   mechanism: %{handled: false, type: "generic"},
-                   stacktrace: %{
-                     frames: [
-                       %{
-                         filename: "lib/logger_handler_kit/act.ex",
-                         function:
-                           "anonymous fn/0 in LoggerHandlerKit.Act.genserver_init_crash/0",
-                         in_app: false,
-                         lineno: _,
-                         module: "LoggerHandlerKit.Act",
-                         platform: "custom",
-                         lang: "elixir"
-                       },
-                       %{
-                         filename: "gen_server.erl",
-                         function: ":gen_server.init_it/2",
-                         in_app: false,
-                         lineno: _,
-                         module: ":gen_server",
-                         platform: "custom",
-                         lang: "elixir"
-                       },
-                       %{
-                         filename: "gen_server.erl",
-                         function: ":gen_server.init_it/6",
-                         in_app: false,
-                         lineno: _,
-                         module: ":gen_server",
-                         platform: "custom",
-                         lang: "elixir"
-                       },
-                       %{
-                         filename: "proc_lib.erl",
-                         function: ":proc_lib.init_p_do_apply/3",
-                         in_app: false,
-                         lineno: _,
-                         module: ":proc_lib",
-                         platform: "custom",
-                         lang: "elixir"
-                       }
-                     ],
-                     type: "raw"
+    if pre_19?() do
+      assert %{
+               event: "$exception",
+               properties: %{
+                 "$exception_list": [
+                   %{
+                     type: "RuntimeError",
+                     value: "** (RuntimeError) oops",
+                     mechanism: %{handled: false, type: "generic"},
+                     stacktrace: %{
+                       frames: [
+                         %{
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function:
+                             "anonymous fn/0 in LoggerHandlerKit.Act.genserver_init_crash/0",
+                           in_app: false,
+                           lineno: _,
+                           module: "LoggerHandlerKit.Act",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           filename: "gen_server.erl",
+                           function: ":gen_server.init_it/2",
+                           in_app: false,
+                           lineno: _,
+                           module: ":gen_server",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           filename: "gen_server.erl",
+                           function: ":gen_server.init_it/6",
+                           in_app: false,
+                           lineno: _,
+                           module: ":gen_server",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           filename: "proc_lib.erl",
+                           function: ":proc_lib.init_p_do_apply/3",
+                           in_app: false,
+                           lineno: _,
+                           module: ":proc_lib",
+                           platform: "custom",
+                           lang: "elixir"
+                         }
+                       ],
+                       type: "raw"
+                     }
                    }
-                 }
-               ]
-             }
-           } = event
+                 ]
+               }
+             } = event
+    else
+      assert %{
+               event: "$exception",
+               properties: %{
+                 "$exception_list": [
+                   %{
+                     type: "RuntimeError",
+                     value: "** (RuntimeError) oops",
+                     mechanism: %{handled: false, type: "generic"},
+                     stacktrace: %{
+                       frames: [
+                         %{
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function:
+                             "anonymous fn/0 in LoggerHandlerKit.Act.genserver_init_crash/0",
+                           in_app: false,
+                           lineno: _,
+                           module: "LoggerHandlerKit.Act",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           filename: "gen_server.erl",
+                           function: ":gen_server.init_it/2",
+                           in_app: false,
+                           lineno: _,
+                           module: ":gen_server",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           filename: "gen_server.erl",
+                           function: ":gen_server.init_it/6",
+                           in_app: false,
+                           lineno: _,
+                           module: ":gen_server",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           filename: "proc_lib.erl",
+                           function: ":proc_lib.init_p_do_apply/3",
+                           in_app: false,
+                           lineno: _,
+                           module: ":proc_lib",
+                           platform: "custom",
+                           lang: "elixir"
+                         }
+                       ],
+                       type: "raw"
+                     }
+                   },
+                   %{
+                     mechanism: %{handled: true, type: "generic"},
+                     type: "Process terminating",
+                     value: "Process" <> _
+                   }
+                 ]
+               }
+             } = event
+    end
   end
 
   @tag handle_sasl_reports: true
@@ -798,41 +1301,84 @@ defmodule PostHog.HandlerTest do
 
     assert [event] = all_captured(supervisor_name)
 
-    assert %{
-             event: "$exception",
-             properties: %{
-               "$exception_list": [
-                 %{
-                   type: "RuntimeError",
-                   value: "** (RuntimeError) oops",
-                   mechanism: %{handled: false, type: "generic"},
-                   stacktrace: %{
-                     frames: [
-                       %{
-                         filename: "lib/logger_handler_kit/act.ex",
-                         function: "anonymous fn/1 in LoggerHandlerKit.Act.proc_lib_crash/1",
-                         in_app: false,
-                         lineno: _,
-                         module: "LoggerHandlerKit.Act",
-                         platform: "custom",
-                         lang: "elixir"
-                       },
-                       %{
-                         filename: "proc_lib.erl",
-                         function: ":proc_lib.init_p/3",
-                         in_app: false,
-                         lineno: _,
-                         module: ":proc_lib",
-                         platform: "custom",
-                         lang: "elixir"
-                       }
-                     ],
-                     type: "raw"
+    if pre_19?() do
+      assert %{
+               event: "$exception",
+               properties: %{
+                 "$exception_list": [
+                   %{
+                     type: "RuntimeError",
+                     value: "** (RuntimeError) oops",
+                     mechanism: %{handled: false, type: "generic"},
+                     stacktrace: %{
+                       frames: [
+                         %{
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function: "anonymous fn/1 in LoggerHandlerKit.Act.proc_lib_crash/1",
+                           in_app: false,
+                           lineno: _,
+                           module: "LoggerHandlerKit.Act",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           filename: "proc_lib.erl",
+                           function: ":proc_lib.init_p/3",
+                           in_app: false,
+                           lineno: _,
+                           module: ":proc_lib",
+                           platform: "custom",
+                           lang: "elixir"
+                         }
+                       ],
+                       type: "raw"
+                     }
                    }
-                 }
-               ]
-             }
-           } = event
+                 ]
+               }
+             } = event
+    else
+      assert %{
+               event: "$exception",
+               properties: %{
+                 "$exception_list": [
+                   %{
+                     type: "RuntimeError",
+                     value: "** (RuntimeError) oops",
+                     mechanism: %{handled: false, type: "generic"},
+                     stacktrace: %{
+                       frames: [
+                         %{
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function: "anonymous fn/1 in LoggerHandlerKit.Act.proc_lib_crash/1",
+                           in_app: false,
+                           lineno: _,
+                           module: "LoggerHandlerKit.Act",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           filename: "proc_lib.erl",
+                           function: ":proc_lib.init_p/3",
+                           in_app: false,
+                           lineno: _,
+                           module: ":proc_lib",
+                           platform: "custom",
+                           lang: "elixir"
+                         }
+                       ],
+                       type: "raw"
+                     }
+                   },
+                   %{
+                     mechanism: %{handled: true, type: "generic"},
+                     type: "Process terminating",
+                     value: "Process" <> _
+                   }
+                 ]
+               }
+             } = event
+    end
   end
 
   @tag handle_sasl_reports: true
@@ -1079,34 +1625,69 @@ defmodule PostHog.HandlerTest do
 
     assert [event] = all_captured(supervisor_name)
 
-    assert %{
-             event: "$exception",
-             properties: %{
-               "$exception_list": [
-                 %{
-                   type: "ArgumentError",
-                   value:
-                     "** (ArgumentError) errors were found at the given arguments:\n\n  * 1st argument: invalid time unit\n",
-                   stacktrace: %{
-                     type: "raw",
-                     frames: [
-                       %{
-                         filename: "",
-                         function: ":erlang.system_time(:foo)",
-                         in_app: false,
-                         lineno: nil,
-                         module: ":erlang",
-                         platform: "custom",
-                         lang: "elixir"
-                       }
-                       | _
-                     ]
+    if pre_19?() do
+      assert %{
+               event: "$exception",
+               properties: %{
+                 "$exception_list": [
+                   %{
+                     type: "ArgumentError",
+                     value:
+                       "** (ArgumentError) errors were found at the given arguments:\n\n  * 1st argument: invalid time unit\n",
+                     stacktrace: %{
+                       type: "raw",
+                       frames: [
+                         %{
+                           filename: "",
+                           function: ":erlang.system_time(:foo)",
+                           in_app: false,
+                           lineno: nil,
+                           module: ":erlang",
+                           platform: "custom",
+                           lang: "elixir"
+                         }
+                         | _
+                       ]
+                     },
+                     mechanism: %{type: "generic", handled: false}
+                   }
+                 ]
+               }
+             } = event
+    else
+      assert %{
+               event: "$exception",
+               properties: %{
+                 "$exception_list": [
+                   %{
+                     type: "ArgumentError",
+                     value:
+                       "** (ArgumentError) errors were found at the given arguments:\n\n  * 1st argument: invalid time unit\n",
+                     stacktrace: %{
+                       type: "raw",
+                       frames: [
+                         %{
+                           filename: "",
+                           function: ":erlang.system_time(:foo)",
+                           in_app: false,
+                           lineno: nil,
+                           module: ":erlang",
+                           platform: "custom",
+                           lang: "elixir"
+                         }
+                         | _
+                       ]
+                     },
+                     mechanism: %{type: "generic", handled: false}
                    },
-                   mechanism: %{type: "generic", handled: false}
-                 }
-               ]
-             }
-           } = event
+                   %{
+                     mechanism: %{handled: true, type: "generic"},
+                     type: "Task terminating"
+                   }
+                 ]
+               }
+             } = event
+    end
   end
 
   @tag config: [in_app_otp_apps: [:logger_handler_kit]]
@@ -1119,27 +1700,53 @@ defmodule PostHog.HandlerTest do
 
     assert [event] = all_captured(supervisor_name)
 
-    assert %{
-             event: "$exception",
-             properties: %{
-               "$exception_list": [
-                 %{
-                   stacktrace: %{
-                     type: "raw",
-                     frames: [
-                       %{
-                         in_app: true,
-                         module: "LoggerHandlerKit.Act"
-                       },
-                       %{
-                         in_app: false,
-                         module: "Task.Supervised"
-                       }
-                     ]
+    if pre_19?() do
+      assert %{
+               event: "$exception",
+               properties: %{
+                 "$exception_list": [
+                   %{
+                     stacktrace: %{
+                       type: "raw",
+                       frames: [
+                         %{
+                           in_app: true,
+                           module: "LoggerHandlerKit.Act"
+                         },
+                         %{
+                           in_app: false,
+                           module: "Task.Supervised"
+                         }
+                       ]
+                     }
                    }
-                 }
-               ]
-             }
-           } = event
+                 ]
+               }
+             } = event
+    else
+      assert %{
+               event: "$exception",
+               properties: %{
+                 "$exception_list": [
+                   %{
+                     stacktrace: %{
+                       type: "raw",
+                       frames: [
+                         %{
+                           in_app: true,
+                           module: "LoggerHandlerKit.Act"
+                         },
+                         %{
+                           in_app: false,
+                           module: "Task.Supervised"
+                         }
+                       ]
+                     }
+                   },
+                   _
+                 ]
+               }
+             } = event
+    end
   end
 end

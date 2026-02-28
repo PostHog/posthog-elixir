@@ -53,4 +53,11 @@ defmodule PostHog.Case do
     on_exit(on_exit)
     context
   end
+
+  # While PostHog Error Tracking is compatible with pre-1.19 Elixir, some
+  # advanced features only work with 1.19+
+  def pre_19? do
+    System.version()
+    |> Version.match?("< 1.19.0")
+  end
 end

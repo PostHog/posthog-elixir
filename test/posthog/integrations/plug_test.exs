@@ -53,22 +53,46 @@ defmodule PostHog.Integrations.PlugTest do
                properties: properties
              } = event
 
-      assert %{
-               "$current_url": "http://localhost/exception",
-               "$host": "localhost",
-               "$ip": "127.0.0.1",
-               "$pathname": "/exception",
-               "$lib": "posthog-elixir",
-               "$lib_version": _,
-               "$exception_list": [
-                 %{
-                   type: "RuntimeError",
-                   value: "** (RuntimeError) oops",
-                   mechanism: %{handled: false, type: "generic"},
-                   stacktrace: %{type: "raw", frames: _frames}
-                 }
-               ]
-             } = properties
+      if pre_19?() do
+        assert %{
+                 "$current_url": "http://localhost/exception",
+                 "$host": "localhost",
+                 "$ip": "127.0.0.1",
+                 "$pathname": "/exception",
+                 "$lib": "posthog-elixir",
+                 "$lib_version": _,
+                 "$exception_list": [
+                   %{
+                     type: "RuntimeError",
+                     value: "** (RuntimeError) oops",
+                     mechanism: %{handled: false, type: "generic"},
+                     stacktrace: %{type: "raw", frames: _frames}
+                   }
+                 ]
+               } = properties
+      else
+        assert %{
+                 "$current_url": "http://localhost/exception",
+                 "$host": "localhost",
+                 "$ip": "127.0.0.1",
+                 "$pathname": "/exception",
+                 "$lib": "posthog-elixir",
+                 "$lib_version": _,
+                 "$exception_list": [
+                   %{
+                     mechanism: %{handled: true, type: "generic"},
+                     type: "** (RuntimeError) oops",
+                     value: "** (RuntimeError) oops\n" <> _
+                   },
+                   %{
+                     type: "RuntimeError",
+                     value: "** (RuntimeError) oops",
+                     mechanism: %{handled: false, type: "generic"},
+                     stacktrace: %{type: "raw", frames: _frames}
+                   }
+                 ]
+               } = properties
+      end
     end
 
     test "context is attached to throws", %{handler_ref: ref} do
@@ -84,22 +108,46 @@ defmodule PostHog.Integrations.PlugTest do
                properties: properties
              } = event
 
-      assert %{
-               "$current_url": "http://localhost/throw",
-               "$host": "localhost",
-               "$ip": "127.0.0.1",
-               "$pathname": "/throw",
-               "$lib": "posthog-elixir",
-               "$lib_version": _,
-               "$exception_list": [
-                 %{
-                   type: "** (throw) \"catch!\"",
-                   value: "** (throw) \"catch!\"",
-                   mechanism: %{handled: false, type: "generic"},
-                   stacktrace: %{type: "raw", frames: _frames}
-                 }
-               ]
-             } = properties
+      if pre_19?() do
+        assert %{
+                 "$current_url": "http://localhost/throw",
+                 "$host": "localhost",
+                 "$ip": "127.0.0.1",
+                 "$pathname": "/throw",
+                 "$lib": "posthog-elixir",
+                 "$lib_version": _,
+                 "$exception_list": [
+                   %{
+                     type: "** (throw) \"catch!\"",
+                     value: "** (throw) \"catch!\"",
+                     mechanism: %{handled: false, type: "generic"},
+                     stacktrace: %{type: "raw", frames: _frames}
+                   }
+                 ]
+               } = properties
+      else
+        assert %{
+                 "$current_url": "http://localhost/throw",
+                 "$host": "localhost",
+                 "$ip": "127.0.0.1",
+                 "$pathname": "/throw",
+                 "$lib": "posthog-elixir",
+                 "$lib_version": _,
+                 "$exception_list": [
+                   %{
+                     mechanism: %{handled: true, type: "generic"},
+                     type: "** (throw) \"catch!\"",
+                     value: "** (throw) \"catch!\"\n" <> _
+                   },
+                   %{
+                     type: "** (throw) \"catch!\"",
+                     value: "** (throw) \"catch!\"",
+                     mechanism: %{handled: false, type: "generic"},
+                     stacktrace: %{type: "raw", frames: _frames}
+                   }
+                 ]
+               } = properties
+      end
     end
 
     test "context is attached to exit", %{handler_ref: ref} do
@@ -115,21 +163,44 @@ defmodule PostHog.Integrations.PlugTest do
                properties: properties
              } = event
 
-      assert %{
-               "$current_url": "http://localhost/exit",
-               "$host": "localhost",
-               "$ip": "127.0.0.1",
-               "$pathname": "/exit",
-               "$lib": "posthog-elixir",
-               "$lib_version": _,
-               "$exception_list": [
-                 %{
-                   type: "** (exit) \"i quit\"",
-                   value: "** (exit) \"i quit\"",
-                   mechanism: %{handled: false, type: "generic"}
-                 }
-               ]
-             } = properties
+      if pre_19?() do
+        assert %{
+                 "$current_url": "http://localhost/exit",
+                 "$host": "localhost",
+                 "$ip": "127.0.0.1",
+                 "$pathname": "/exit",
+                 "$lib": "posthog-elixir",
+                 "$lib_version": _,
+                 "$exception_list": [
+                   %{
+                     type: "** (exit) \"i quit\"",
+                     value: "** (exit) \"i quit\"",
+                     mechanism: %{handled: false, type: "generic"}
+                   }
+                 ]
+               } = properties
+      else
+        assert %{
+                 "$current_url": "http://localhost/exit",
+                 "$host": "localhost",
+                 "$ip": "127.0.0.1",
+                 "$pathname": "/exit",
+                 "$lib": "posthog-elixir",
+                 "$lib_version": _,
+                 "$exception_list": [
+                   %{
+                     mechanism: %{handled: true, type: "generic"},
+                     type: "** (exit) \"i quit\"",
+                     value: "** (exit) \"i quit\"\n" <> _
+                   },
+                   %{
+                     type: "** (exit) \"i quit\"",
+                     value: "** (exit) \"i quit\"",
+                     mechanism: %{handled: false, type: "generic"}
+                   }
+                 ]
+               } = properties
+      end
     end
   end
 
@@ -146,22 +217,46 @@ defmodule PostHog.Integrations.PlugTest do
                properties: properties
              } = event
 
-      assert %{
-               "$current_url": "http://localhost/exception",
-               "$host": "localhost",
-               "$ip": "127.0.0.1",
-               "$pathname": "/exception",
-               "$lib": "posthog-elixir",
-               "$lib_version": _,
-               "$exception_list": [
-                 %{
-                   type: "RuntimeError",
-                   value: "** (RuntimeError) oops",
-                   mechanism: %{handled: false, type: "generic"},
-                   stacktrace: %{type: "raw", frames: _frames}
-                 }
-               ]
-             } = properties
+      if pre_19?() do
+        assert %{
+                 "$current_url": "http://localhost/exception",
+                 "$host": "localhost",
+                 "$ip": "127.0.0.1",
+                 "$pathname": "/exception",
+                 "$lib": "posthog-elixir",
+                 "$lib_version": _,
+                 "$exception_list": [
+                   %{
+                     type: "RuntimeError",
+                     value: "** (RuntimeError) oops",
+                     mechanism: %{handled: false, type: "generic"},
+                     stacktrace: %{type: "raw", frames: _frames}
+                   }
+                 ]
+               } = properties
+      else
+        assert %{
+                 "$current_url": "http://localhost/exception",
+                 "$host": "localhost",
+                 "$ip": "127.0.0.1",
+                 "$pathname": "/exception",
+                 "$lib": "posthog-elixir",
+                 "$lib_version": _,
+                 "$exception_list": [
+                   %{
+                     type: "RuntimeError",
+                     value: "** (RuntimeError) oops",
+                     mechanism: %{handled: false, type: "generic"},
+                     stacktrace: %{type: "raw", frames: _frames}
+                   },
+                   %{
+                     type: "#PID<" <> _,
+                     value: "#PID<" <> _,
+                     mechanism: %{handled: true, type: "generic"}
+                   }
+                 ]
+               } = properties
+      end
     end
 
     test "context is attached to throws", %{handler_ref: ref} do
@@ -176,22 +271,46 @@ defmodule PostHog.Integrations.PlugTest do
                properties: properties
              } = event
 
-      assert %{
-               "$current_url": "http://localhost/throw",
-               "$host": "localhost",
-               "$ip": "127.0.0.1",
-               "$pathname": "/throw",
-               "$lib": "posthog-elixir",
-               "$lib_version": _,
-               "$exception_list": [
-                 %{
-                   type: "** (throw) \"catch!\"",
-                   value: "** (throw) \"catch!\"",
-                   mechanism: %{handled: false, type: "generic"},
-                   stacktrace: %{type: "raw", frames: _frames}
-                 }
-               ]
-             } = properties
+      if pre_19?() do
+        assert %{
+                 "$current_url": "http://localhost/throw",
+                 "$host": "localhost",
+                 "$ip": "127.0.0.1",
+                 "$pathname": "/throw",
+                 "$lib": "posthog-elixir",
+                 "$lib_version": _,
+                 "$exception_list": [
+                   %{
+                     type: "** (throw) \"catch!\"",
+                     value: "** (throw) \"catch!\"",
+                     mechanism: %{handled: false, type: "generic"},
+                     stacktrace: %{type: "raw", frames: _frames}
+                   }
+                 ]
+               } = properties
+      else
+        assert %{
+                 "$current_url": "http://localhost/throw",
+                 "$host": "localhost",
+                 "$ip": "127.0.0.1",
+                 "$pathname": "/throw",
+                 "$lib": "posthog-elixir",
+                 "$lib_version": _,
+                 "$exception_list": [
+                   %{
+                     type: "** (throw) \"catch!\"",
+                     value: "** (throw) \"catch!\"",
+                     mechanism: %{handled: false, type: "generic"},
+                     stacktrace: %{type: "raw", frames: _frames}
+                   },
+                   %{
+                     type: "#PID<" <> _,
+                     value: "#PID<" <> _,
+                     mechanism: %{handled: true, type: "generic"}
+                   }
+                 ]
+               } = properties
+      end
     end
 
     test "context is attached to exit", %{handler_ref: ref} do
@@ -206,21 +325,44 @@ defmodule PostHog.Integrations.PlugTest do
                properties: properties
              } = event
 
-      assert %{
-               "$current_url": "http://localhost/exit",
-               "$host": "localhost",
-               "$ip": "127.0.0.1",
-               "$pathname": "/exit",
-               "$lib": "posthog-elixir",
-               "$lib_version": _,
-               "$exception_list": [
-                 %{
-                   type: "** (exit) \"i quit\"",
-                   value: "** (exit) \"i quit\"",
-                   mechanism: %{handled: false, type: "generic"}
-                 }
-               ]
-             } = properties
+      if pre_19?() do
+        assert %{
+                 "$current_url": "http://localhost/exit",
+                 "$host": "localhost",
+                 "$ip": "127.0.0.1",
+                 "$pathname": "/exit",
+                 "$lib": "posthog-elixir",
+                 "$lib_version": _,
+                 "$exception_list": [
+                   %{
+                     type: "** (exit) \"i quit\"",
+                     value: "** (exit) \"i quit\"",
+                     mechanism: %{handled: false, type: "generic"}
+                   }
+                 ]
+               } = properties
+      else
+        assert %{
+                 "$current_url": "http://localhost/exit",
+                 "$host": "localhost",
+                 "$ip": "127.0.0.1",
+                 "$pathname": "/exit",
+                 "$lib": "posthog-elixir",
+                 "$lib_version": _,
+                 "$exception_list": [
+                   %{
+                     type: "** (exit) \"i quit\"",
+                     value: "** (exit) \"i quit\"",
+                     mechanism: %{handled: false, type: "generic"}
+                   },
+                   %{
+                     type: "#PID<" <> _,
+                     value: "#PID<" <> _,
+                     mechanism: %{handled: true, type: "generic"}
+                   }
+                 ]
+               } = properties
+      end
     end
   end
 end
