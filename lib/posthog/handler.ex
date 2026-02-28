@@ -68,35 +68,37 @@ defmodule PostHog.Handler do
     |> Map.merge(metadata)
   end
 
-  # Reports, such as GenServer crash, should be seen as downstream effects of
-  # initial exceptions
-  defp exceptions(%{meta: %{crash_reason: _}, msg: {:report, _}} = log_event, config) do
-    initial_exception = exception(log_event, config)
+  if Version.match?(System.version(), ">= 1.19.0") do
+    # Reports, such as GenServer crash, should be seen as downstream effects of
+    # initial exceptions
+    defp exceptions(%{meta: %{crash_reason: _}, msg: {:report, _}} = log_event, config) do
+      initial_exception = exception(log_event, config)
 
-    reporter_exception =
-      log_event |> Map.update!(:meta, &Map.delete(&1, :crash_reason)) |> exception(config)
+      reporter_exception =
+        log_event |> Map.update!(:meta, &Map.delete(&1, :crash_reason)) |> exception(config)
 
-    [initial_exception, reporter_exception]
-  end
+      [initial_exception, reporter_exception]
+    end
 
-  # Bare process crash shaped like complex error but it really isnt
-  defp exceptions(
-         %{meta: %{crash_reason: _, error_logger: %{emulator: true}}, msg: {:string, _}} =
-           log_event,
-         config
-       ) do
-    [exception(log_event, config)]
-  end
+    # Bare process crash shaped like complex error but it really isnt
+    defp exceptions(
+           %{meta: %{crash_reason: _, error_logger: %{emulator: true}}, msg: {:string, _}} =
+             log_event,
+           config
+         ) do
+      [exception(log_event, config)]
+    end
 
-  # Non-reports, such as log messages with attached crash_reason, should be seen
-  # as primary errors and define grouping.
-  defp exceptions(%{meta: %{crash_reason: _}} = log_event, config) do
-    initial_exception = exception(log_event, config)
+    # Non-reports, such as log messages with attached crash_reason, should be seen
+    # as primary errors and define grouping.
+    defp exceptions(%{meta: %{crash_reason: _}} = log_event, config) do
+      initial_exception = exception(log_event, config)
 
-    reporter_exception =
-      log_event |> Map.update!(:meta, &Map.delete(&1, :crash_reason)) |> exception(config)
+      reporter_exception =
+        log_event |> Map.update!(:meta, &Map.delete(&1, :crash_reason)) |> exception(config)
 
-    [reporter_exception, initial_exception]
+      [reporter_exception, initial_exception]
+    end
   end
 
   defp exceptions(log_event, config) do
