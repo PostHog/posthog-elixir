@@ -68,7 +68,8 @@ defmodule PostHog.Handler do
     |> Map.merge(metadata)
   end
 
-  if Version.match?(System.version(), ">= 1.19.0") do
+  if Version.match?(System.version(), ">= 1.19.0") and
+       System.otp_release() |> String.to_integer() >= 27 do
     # Reports, such as GenServer crash, should be seen as downstream effects of
     # initial exceptions
     defp exceptions(%{meta: %{crash_reason: _}, msg: {:report, _}} = log_event, config) do
