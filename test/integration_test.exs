@@ -42,6 +42,17 @@ defmodule PostHog.IntegrationTest do
       wait.()
     end
 
+    test "log message with crash_reason", %{wait_fun: wait} do
+      try do
+        raise "Crashing for no reason"
+      rescue
+        e ->
+          Logger.warning("No crash, just crash shaped", crash_reason: {e, __STACKTRACE__})
+      end
+
+      wait.()
+    end
+
     test "genserver crash exception", %{wait_fun: wait} do
       LoggerHandlerKit.Act.genserver_crash(:exception)
       wait.()
