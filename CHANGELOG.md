@@ -1,5 +1,11 @@
 # posthog
 
+## 2.5.0 — 2026-03-02
+
+### Minor changes
+
+- [12bcef3](https://github.com/posthog/posthog-elixir/commit/12bcef3e60b85bcbbc8f829879e4c7717b878a74) Improve Error Tracking for complex errors. If an error has a `crash_reason`, which is common for OTP reports, the SDK will report it as a chain of two exceptions. Additionally, some valuable information, such as process label, genserver state or last message, will be extracted from the report and put into event properties. — Thanks @martosaur!
+
 ## 2.4.0 — 2026-02-16
 
 ### Minor changes
