@@ -59,7 +59,7 @@ defmodule PostHog.Sources do
 
       cond do
         is_nil(source) -> {pre, ctx, post}
-        ctx_line_number < line_number -> {pre ++ [source], ctx, post}
+        ctx_line_number < line_number -> {[source | pre], ctx, post}
         ctx_line_number == line_number -> {pre, source, post}
         ctx_line_number > line_number -> {pre, ctx, post ++ [source]}
       end
