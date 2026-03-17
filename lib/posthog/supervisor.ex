@@ -30,11 +30,33 @@ defmodule PostHog.Supervisor do
          keys: :unique,
          name: PostHog.Registry.registry_name(config.supervisor_name),
          meta: [config: config]}
-      ] ++ senders(config)
+      ] ++ senders(config) ++ sources(config)
 
     Process.put(:"$callers", callers)
 
     Supervisor.init(children, strategy: :one_for_one)
+  end
+
+  defp sources(config) do
+    if config.enable_source_code_context do
+      opts =
+        [
+          root_source_code_paths: config.root_source_code_paths,
+          source_code_path_pattern: config.source_code_path_pattern,
+          source_code_exclude_patterns: config.source_code_exclude_patterns,
+          context_lines: config.context_lines
+        ]
+
+      opts =
+        case Map.get(config, :source_code_map_path) do
+          nil -> opts
+          path -> Keyword.put(opts, :source_code_map_path, path)
+        end
+
+      [{PostHog.Sources, opts}]
+    else
+      []
+    end
   end
 
   defp senders(config) do

@@ -12,29 +12,7 @@ defmodule PostHog.Application do
           :logger.add_handler(:posthog, PostHog.Handler, %{config: supervisor_config})
         end
 
-        source_children =
-          if supervisor_config && supervisor_config.enable_source_code_context do
-            source_opts =
-              [
-                root_source_code_paths: supervisor_config.root_source_code_paths,
-                source_code_path_pattern: supervisor_config.source_code_path_pattern,
-                source_code_exclude_patterns: supervisor_config.source_code_exclude_patterns,
-                context_lines: supervisor_config.context_lines
-              ]
-              |> then(fn opts ->
-                if supervisor_config[:source_code_map_path] do
-                  Keyword.put(opts, :source_code_map_path, supervisor_config.source_code_map_path)
-                else
-                  opts
-                end
-              end)
-
-            [{PostHog.Sources, source_opts}]
-          else
-            []
-          end
-
-        [{PostHog.Supervisor, supervisor_config}] ++ source_children
+        [{PostHog.Supervisor, supervisor_config}]
       else
         []
       end
