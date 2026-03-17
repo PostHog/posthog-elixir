@@ -64,7 +64,7 @@ defmodule PostHog.Integrations.PlugTest do
                  "$exception_list": [
                    %{
                      type: "RuntimeError",
-                     value: "** (RuntimeError) oops",
+                     value: "oops",
                      mechanism: %{handled: false, type: "generic"},
                      stacktrace: %{type: "raw", frames: _frames}
                    }
@@ -86,7 +86,7 @@ defmodule PostHog.Integrations.PlugTest do
                    },
                    %{
                      type: "RuntimeError",
-                     value: "** (RuntimeError) oops",
+                     value: "oops",
                      mechanism: %{handled: false, type: "generic"},
                      stacktrace: %{type: "raw", frames: _frames}
                    }
@@ -119,7 +119,7 @@ defmodule PostHog.Integrations.PlugTest do
                  "$exception_list": [
                    %{
                      type: "** (throw) \"catch!\"",
-                     value: "** (throw) \"catch!\"",
+                     value: "\"catch!\"",
                      mechanism: %{handled: false, type: "generic"},
                      stacktrace: %{type: "raw", frames: _frames}
                    }
@@ -141,7 +141,7 @@ defmodule PostHog.Integrations.PlugTest do
                    },
                    %{
                      type: "** (throw) \"catch!\"",
-                     value: "** (throw) \"catch!\"",
+                     value: "\"catch!\"",
                      mechanism: %{handled: false, type: "generic"},
                      stacktrace: %{type: "raw", frames: _frames}
                    }
@@ -174,7 +174,7 @@ defmodule PostHog.Integrations.PlugTest do
                  "$exception_list": [
                    %{
                      type: "** (exit) \"i quit\"",
-                     value: "** (exit) \"i quit\"",
+                     value: "\"i quit\"",
                      mechanism: %{handled: false, type: "generic"}
                    }
                  ]
@@ -195,7 +195,7 @@ defmodule PostHog.Integrations.PlugTest do
                    },
                    %{
                      type: "** (exit) \"i quit\"",
-                     value: "** (exit) \"i quit\"",
+                     value: "\"i quit\"",
                      mechanism: %{handled: false, type: "generic"}
                    }
                  ]
@@ -228,7 +228,7 @@ defmodule PostHog.Integrations.PlugTest do
                  "$exception_list": [
                    %{
                      type: "RuntimeError",
-                     value: "** (RuntimeError) oops",
+                     value: "oops",
                      mechanism: %{handled: false, type: "generic"},
                      stacktrace: %{type: "raw", frames: _frames}
                    }
@@ -245,7 +245,7 @@ defmodule PostHog.Integrations.PlugTest do
                  "$exception_list": [
                    %{
                      type: "RuntimeError",
-                     value: "** (RuntimeError) oops",
+                     value: "oops",
                      mechanism: %{handled: false, type: "generic"},
                      stacktrace: %{type: "raw", frames: _frames}
                    },
@@ -282,7 +282,7 @@ defmodule PostHog.Integrations.PlugTest do
                  "$exception_list": [
                    %{
                      type: "** (throw) \"catch!\"",
-                     value: "** (throw) \"catch!\"",
+                     value: "\"catch!\"",
                      mechanism: %{handled: false, type: "generic"},
                      stacktrace: %{type: "raw", frames: _frames}
                    }
@@ -299,7 +299,7 @@ defmodule PostHog.Integrations.PlugTest do
                  "$exception_list": [
                    %{
                      type: "** (throw) \"catch!\"",
-                     value: "** (throw) \"catch!\"",
+                     value: "\"catch!\"",
                      mechanism: %{handled: false, type: "generic"},
                      stacktrace: %{type: "raw", frames: _frames}
                    },
@@ -336,7 +336,7 @@ defmodule PostHog.Integrations.PlugTest do
                  "$exception_list": [
                    %{
                      type: "** (exit) \"i quit\"",
-                     value: "** (exit) \"i quit\"",
+                     value: "\"i quit\"",
                      mechanism: %{handled: false, type: "generic"}
                    }
                  ]
@@ -352,7 +352,7 @@ defmodule PostHog.Integrations.PlugTest do
                  "$exception_list": [
                    %{
                      type: "** (exit) \"i quit\"",
-                     value: "** (exit) \"i quit\"",
+                     value: "\"i quit\"",
                      mechanism: %{handled: false, type: "generic"}
                    },
                    %{

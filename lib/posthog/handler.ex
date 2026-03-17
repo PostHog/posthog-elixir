@@ -189,8 +189,12 @@ defmodule PostHog.Handler do
   defp value(%{msg: {io_format, data}}),
     do: io_format |> :io_lib.format(data) |> IO.chardata_to_string() |> then(&%{value: &1})
 
-  defp stacktrace(%{meta: %{crash_reason: {_reason, [_ | _] = stacktrace}}}, in_app_modules, config),
-    do: %{stacktrace: do_stacktrace(stacktrace, in_app_modules, config)}
+  defp stacktrace(
+         %{meta: %{crash_reason: {_reason, [_ | _] = stacktrace}}},
+         in_app_modules,
+         config
+       ),
+       do: %{stacktrace: do_stacktrace(stacktrace, in_app_modules, config)}
 
   defp stacktrace(
          %{msg: {:report, %{client_info: {_, {_, [_ | _] = stacktrace}}}}},
@@ -391,5 +395,4 @@ defmodule PostHog.Handler do
        do: %{gen_statem_state_enter: state_enter}
 
   defp extract_extra_meta(_, _), do: %{}
-
 end

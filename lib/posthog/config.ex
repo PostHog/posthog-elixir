@@ -69,8 +69,7 @@ defmodule PostHog.Config do
                           source_code_path_pattern: [
                             type: :string,
                             default: "**/*.ex",
-                            doc:
-                              "Glob pattern for source files to include in source context."
+                            doc: "Glob pattern for source files to include in source context."
                           ],
                           source_code_exclude_patterns: [
                             type: {:list, {:struct, Regex}},
