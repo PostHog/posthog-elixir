@@ -22,6 +22,13 @@ defmodule PostHog.Sources do
   In development, source files are read directly from disk if available.
   """
 
+  # Part of this approach is inspired by getsentry/sentry-elixir by Software, Inc. dba Sentry
+  # Licensed under the MIT License
+  # - sentry-elixir/lib/sentry/sources.ex
+  # - sentry-elixir/lib/mix/tasks/sentry.package_source_code.ex
+
+  # 💖 open source (under MIT License)
+
   use GenServer
 
   @table __MODULE__
