@@ -1,4 +1,7 @@
-defmodule PostHog.Sources do
+# Portions of this file are inspired from getsentry/sentry-elixir
+# (lib/sentry/sources.ex) by Software, Inc. dba Sentry, used under the MIT License.
+
+defmodule PostHog.ErrorTracking.Sources do
   @moduledoc """
   Loads and serves source code context for error tracking stack frames.
 
@@ -21,13 +24,6 @@ defmodule PostHog.Sources do
 
   In development, source files are read directly from disk if available.
   """
-
-  # Part of this approach is inspired by getsentry/sentry-elixir by Software, Inc. dba Sentry
-  # Licensed under the MIT License
-  # - sentry-elixir/lib/sentry/sources.ex
-  # - sentry-elixir/lib/mix/tasks/sentry.package_source_code.ex
-
-  # 💖 open source (under MIT License)
 
   use GenServer
 

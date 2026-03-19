@@ -53,7 +53,7 @@ defmodule PostHog.Supervisor do
           path -> Keyword.put(opts, :source_code_map_path, path)
         end
 
-      [{PostHog.Sources, opts}]
+      [{PostHog.ErrorTracking.Sources, opts}]
     else
       []
     end

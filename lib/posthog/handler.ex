@@ -7,6 +7,7 @@ defmodule PostHog.Handler do
   end
 
   alias PostHog.Context
+  alias PostHog.ErrorTracking.Sources
 
   # credo:disable-for-next-line Credo.Check.Design.TagTODO
   # TODO: add @impl :logger_handler once we drop support for OTP < 27
@@ -232,26 +233,17 @@ defmodule PostHog.Handler do
   end
 
   defp maybe_add_source_context(frame, filename, lineno, config) do
-    if config.enable_source_code_context do
-      case PostHog.Sources.get_source_map_for_file(filename) do
-        nil ->
-          frame
+    with true <- config.enable_source_code_context,
+         %{} = source_map <- Sources.get_source_map_for_file(filename) do
+      {pre_context, context_line, post_context} =
+        Sources.get_source_context(source_map, lineno, config.context_lines)
 
-        source_map_for_file ->
-          {pre_context, context_line, post_context} =
-            PostHog.Sources.get_source_context(
-              source_map_for_file,
-              lineno,
-              config.context_lines
-            )
-
-          frame
-          |> Map.put(:context_line, context_line)
-          |> Map.put(:pre_context, pre_context)
-          |> Map.put(:post_context, post_context)
-      end
-    else
       frame
+      |> Map.put(:context_line, context_line)
+      |> Map.put(:pre_context, pre_context)
+      |> Map.put(:post_context, post_context)
+    else
+      _ -> frame
     end
   end
 

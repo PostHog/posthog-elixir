@@ -1,3 +1,6 @@
+# Portions of this file are inspired from getsentry/sentry-elixir
+# (lib/mix/tasks/sentry.package_source_code.ex) by Software, Inc. dba Sentry, used under the MIT License.
+
 defmodule Mix.Tasks.Posthog.PackageSourceCode do
   @moduledoc """
   Packages source code into a binary file for source context in error tracking.
@@ -30,6 +33,8 @@ defmodule Mix.Tasks.Posthog.PackageSourceCode do
   """
 
   use Mix.Task
+
+  alias PostHog.ErrorTracking.Sources
 
   @shortdoc "Packages source code for PostHog error tracking source context"
 
@@ -68,10 +73,10 @@ defmodule Mix.Tasks.Posthog.PackageSourceCode do
 
     Mix.shell().info("Reading source files from: #{inspect(root_paths)}")
 
-    source_map = PostHog.Sources.load_files(source_opts)
+    source_map = Sources.load_files(source_opts)
     file_count = map_size(source_map)
 
-    binary = PostHog.Sources.encode_source_map(source_map)
+    binary = Sources.encode_source_map(source_map)
 
     output |> Path.dirname() |> File.mkdir_p!()
     File.write!(output, binary)

@@ -1,7 +1,7 @@
-defmodule PostHog.SourcesTest do
+defmodule PostHog.ErrorTracking.SourcesTest do
   use ExUnit.Case, async: true
 
-  alias PostHog.Sources
+  alias PostHog.ErrorTracking.Sources
 
   describe "get_source_context/3" do
     setup do
@@ -90,9 +90,9 @@ defmodule PostHog.SourcesTest do
       assert Enum.all?(result, fn {path, _} -> String.ends_with?(path, ".ex") end)
 
       # Spot-check a known file: sources.ex itself
-      source_lines = result["lib/posthog/sources.ex"]
+      source_lines = result["lib/posthog/error_tracking/sources.ex"]
       assert is_map(source_lines)
-      assert source_lines[1] == "defmodule PostHog.Sources do"
+      assert source_lines[4] == "defmodule PostHog.ErrorTracking.Sources do"
     end
 
     test "excludes directories matching the default patterns" do
