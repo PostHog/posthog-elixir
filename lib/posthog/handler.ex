@@ -82,11 +82,10 @@ defmodule PostHog.Handler do
       [initial_exception, reporter_exception]
     end
 
-    # String messages with crash_reason (e.g. Bandit/Cowboy errors) — the string
-    # is just a formatted version of the crash_reason, so only emit one exception
-    # from the structured crash_reason data.
+    # Bare process crash shaped like complex error but it really isnt
     defp exceptions(
-           %{meta: %{crash_reason: _}, msg: {:string, _}} = log_event,
+           %{meta: %{crash_reason: _, error_logger: %{emulator: true}}, msg: {:string, _}} =
+             log_event,
            config
          ) do
       [exception(log_event, config)]
