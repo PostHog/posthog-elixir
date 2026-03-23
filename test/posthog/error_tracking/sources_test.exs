@@ -3,6 +3,30 @@ defmodule PostHog.ErrorTracking.SourcesTest do
 
   alias PostHog.ErrorTracking.Sources
 
+  # Starts a Sources GenServer (with its required Registry) under the test supervisor.
+  # Returns the supervisor_name atom used to identify this instance.
+  defp start_sources!(extra_opts \\ []) do
+    supervisor_name = :"test_sources_#{System.unique_integer([:positive])}"
+    registry_name = PostHog.Registry.registry_name(supervisor_name)
+    start_supervised!({Registry, keys: :unique, name: registry_name})
+
+    opts =
+      Keyword.merge(
+        [
+          supervisor_name: supervisor_name,
+          root_source_code_paths: [],
+          source_code_path_pattern: "**/*.ex",
+          source_code_exclude_patterns: []
+        ],
+        extra_opts
+      )
+
+    start_supervised!({Sources, opts}, id: supervisor_name)
+    # Block until handle_continue(:load_source_map) has finished so ETS is populated
+    :sys.get_state(PostHog.Registry.via(supervisor_name, Sources))
+    supervisor_name
+  end
+
   describe "get_source_context/3" do
     setup do
       source_map = %{
@@ -76,6 +100,50 @@ defmodule PostHog.ErrorTracking.SourcesTest do
         |> :erlang.term_to_binary()
 
       assert {:error, :invalid_format} = Sources.decode_source_map(wrong_version)
+    end
+  end
+
+  describe "get_source_map_for_file/2" do
+    test "returns nil when Sources is not running for that supervisor" do
+      assert is_nil(Sources.get_source_map_for_file(:no_such_supervisor, "anything.ex"))
+    end
+
+    test "returns nil for unknown file when running" do
+      supervisor_name = start_sources!()
+      assert is_nil(Sources.get_source_map_for_file(supervisor_name, "nonexistent.ex"))
+    end
+
+    test "returns source map for a loaded file" do
+      supervisor_name = start_sources!(root_source_code_paths: [File.cwd!()])
+
+      result =
+        Sources.get_source_map_for_file(supervisor_name, "lib/posthog/error_tracking/sources.ex")
+
+      assert is_map(result)
+      assert result[4] == "defmodule PostHog.ErrorTracking.Sources do"
+    end
+  end
+
+  describe "multiple supervisor instances" do
+    test "two instances can run concurrently without conflict" do
+      sup1 = start_sources!()
+      sup2 = start_sources!()
+
+      assert is_nil(Sources.get_source_map_for_file(sup1, "nonexistent.ex"))
+      assert is_nil(Sources.get_source_map_for_file(sup2, "nonexistent.ex"))
+    end
+
+    test "each instance has isolated source maps" do
+      sup1 = start_sources!(root_source_code_paths: [File.cwd!()])
+      sup2 = start_sources!()
+
+      assert is_map(
+               Sources.get_source_map_for_file(sup1, "lib/posthog/error_tracking/sources.ex")
+             )
+
+      assert is_nil(
+               Sources.get_source_map_for_file(sup2, "lib/posthog/error_tracking/sources.ex")
+             )
     end
   end
 

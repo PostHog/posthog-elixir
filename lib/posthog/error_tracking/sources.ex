@@ -2,46 +2,35 @@
 # (lib/sentry/sources.ex) by Software, Inc. dba Sentry, used under the MIT License.
 
 defmodule PostHog.ErrorTracking.Sources do
-  @moduledoc """
-  Loads and serves source code context for error tracking stack frames.
-
-  Source code is packaged at build time using `mix posthog.package_source_code`
-  and loaded into an ETS table at application startup for fast concurrent lookups.
-
-  ## Configuration
-
-      config :posthog,
-        enable_source_code_context: true,
-        root_source_code_paths: [File.cwd!()],
-        context_lines: 5
-
-  ## Packaging source code
-
-  Before building a release, run:
-
-      mix posthog.package_source_code
-      mix release
-
-  In development, source files are read directly from disk if available.
-  """
+  @moduledoc false
 
   use GenServer
 
-  @table __MODULE__
   @version 1
+
+  defstruct [
+    :supervisor_name,
+    :root_source_code_paths,
+    :source_code_path_pattern,
+    :source_code_exclude_patterns,
+    :source_code_map_path
+  ]
 
   # Public API
 
   @doc """
   Returns the source line map for the given file path, or `nil` if not found.
   """
-  @spec get_source_map_for_file(String.t()) :: %{pos_integer() => String.t()} | nil
-  def get_source_map_for_file(file) do
-    case :ets.lookup(@table, file) do
+  @spec get_source_map_for_file(atom(), String.t()) :: %{pos_integer() => String.t()} | nil
+  def get_source_map_for_file(supervisor_name, file) do
+    table = table_name(supervisor_name)
+
+    case :ets.lookup(table, file) do
       [{^file, lines}] -> lines
       [] -> nil
     end
   rescue
+    # ArgumentError is raised when the ETS table does not exist yet (Sources not started)
     ArgumentError -> nil
   end
 
@@ -129,37 +118,56 @@ defmodule PostHog.ErrorTracking.Sources do
   # GenServer callbacks
 
   def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    supervisor_name = Keyword.fetch!(opts, :supervisor_name)
+    name = PostHog.Registry.via(supervisor_name, __MODULE__)
+    GenServer.start_link(__MODULE__, opts, name: name)
   end
 
   @impl true
   def init(opts) do
-    _ = :ets.new(@table, [:public, :named_table, read_concurrency: true])
-    {:ok, opts, {:continue, :load_source_map}}
+    state = %__MODULE__{
+      supervisor_name: Keyword.fetch!(opts, :supervisor_name),
+      root_source_code_paths: Keyword.fetch!(opts, :root_source_code_paths),
+      source_code_path_pattern: Keyword.fetch!(opts, :source_code_path_pattern),
+      source_code_exclude_patterns: Keyword.fetch!(opts, :source_code_exclude_patterns),
+      source_code_map_path: Keyword.get(opts, :source_code_map_path)
+    }
+
+    _ =
+      :ets.new(
+        table_name(state.supervisor_name),
+        [:public, :named_table, read_concurrency: true]
+      )
+
+    {:ok, state, {:continue, :load_source_map}}
   end
 
   @impl true
-  def handle_continue(:load_source_map, opts) do
-    load_into_ets(opts)
-    {:noreply, :no_state}
+  def handle_continue(:load_source_map, state) do
+    load_into_ets(state)
+    {:noreply, state}
   end
 
   # Private
 
-  defp load_into_ets(opts) do
-    source_map = load_packaged_source_map(opts) || load_from_disk(opts)
+  defp table_name(supervisor_name), do: Module.concat(supervisor_name, "ErrorTracking.Sources")
+
+  defp load_into_ets(state) do
+    source_map = load_packaged_source_map(state) || load_from_disk(state)
 
     if source_map do
+      table = table_name(state.supervisor_name)
+
       Enum.each(source_map, fn {path, lines_map} ->
-        :ets.insert(@table, {path, lines_map})
+        :ets.insert(table, {path, lines_map})
       end)
     end
   end
 
-  defp load_packaged_source_map(opts) do
+  defp load_packaged_source_map(state) do
     path =
-      Keyword.get(opts, :source_code_map_path) ||
-        Application.app_dir(:posthog, "priv/posthog_source.map")
+      state.source_code_map_path ||
+        Path.join(:code.priv_dir(:posthog), "posthog_source.map")
 
     case File.read(path) do
       {:ok, binary} ->
@@ -175,10 +183,17 @@ defmodule PostHog.ErrorTracking.Sources do
     _ -> nil
   end
 
-  defp load_from_disk(opts) do
-    case Keyword.get(opts, :root_source_code_paths) do
-      [_ | _] = _paths -> load_files(opts)
-      _ -> nil
+  defp load_from_disk(state) do
+    case state.root_source_code_paths do
+      [_ | _] ->
+        load_files(
+          root_source_code_paths: state.root_source_code_paths,
+          source_code_path_pattern: state.source_code_path_pattern,
+          source_code_exclude_patterns: state.source_code_exclude_patterns
+        )
+
+      _ ->
+        nil
     end
   rescue
     _ -> nil

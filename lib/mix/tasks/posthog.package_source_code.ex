@@ -6,8 +6,9 @@ defmodule Mix.Tasks.Posthog.PackageSourceCode do
   Packages source code into a binary file for source context in error tracking.
 
   This task reads all `.ex` source files from the configured root paths and
-  writes a compressed binary to `priv/posthog_source.map`. This file is then
-  loaded at runtime to provide source context in stack traces.
+  writes a compressed binary into PostHog's own `priv/` directory. This file
+  is then bundled into the release and loaded at runtime to provide source
+  context in stack traces.
 
   Run this task before building a release:
 
@@ -16,7 +17,7 @@ defmodule Mix.Tasks.Posthog.PackageSourceCode do
 
   ## Options
 
-    * `--output` - Custom output path (default: `priv/posthog_source.map`)
+    * `--output` - Custom output path (default: PostHog's priv dir)
     * `--root-path` - Root source code path(s). Can be specified multiple times.
       Defaults to the current working directory.
 
@@ -46,7 +47,8 @@ defmodule Mix.Tasks.Posthog.PackageSourceCode do
         aliases: [o: :output]
       )
 
-    output = Keyword.get(opts, :output, "priv/posthog_source.map")
+    output =
+      Keyword.get(opts, :output, Application.app_dir(:posthog, "priv/posthog_source.map"))
 
     root_paths =
       case Keyword.get_values(opts, :root_path) do

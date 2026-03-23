@@ -233,7 +233,7 @@ defmodule PostHog.Handler do
 
   defp maybe_add_source_context(frame, filename, lineno, config) do
     with true <- config.enable_source_code_context,
-         %{} = source_map <- Sources.get_source_map_for_file(filename) do
+         %{} = source_map <- Sources.get_source_map_for_file(config.supervisor_name, filename) do
       {pre_context, context_line, post_context} =
         Sources.get_source_context(source_map, lineno, config.context_lines)
 

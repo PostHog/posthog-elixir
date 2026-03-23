@@ -39,19 +39,13 @@ defmodule PostHog.Supervisor do
 
   defp sources(config) do
     if config.enable_source_code_context do
-      opts =
-        [
-          root_source_code_paths: config.root_source_code_paths,
-          source_code_path_pattern: config.source_code_path_pattern,
-          source_code_exclude_patterns: config.source_code_exclude_patterns,
-          context_lines: config.context_lines
-        ]
-
-      opts =
-        case Map.get(config, :source_code_map_path) do
-          nil -> opts
-          path -> Keyword.put(opts, :source_code_map_path, path)
-        end
+      opts = [
+        supervisor_name: config.supervisor_name,
+        root_source_code_paths: config.root_source_code_paths,
+        source_code_path_pattern: config.source_code_path_pattern,
+        source_code_exclude_patterns: config.source_code_exclude_patterns,
+        source_code_map_path: Map.get(config, :source_code_map_path)
+      ]
 
       [{PostHog.ErrorTracking.Sources, opts}]
     else
