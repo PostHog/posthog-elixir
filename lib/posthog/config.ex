@@ -75,7 +75,7 @@ defmodule PostHog.Config do
                             type: {:list, {:struct, Regex}},
                             default: [],
                             doc:
-                              ~s(List of regex patterns to exclude from source context. Defaults to excluding `_build/`, `deps/`, `priv/`, and `test/` directories.)
+                              ~s(List of regex patterns to exclude from source context. Defaults to excluding `_build/`, `priv/`, and `test/` directories.)
                           ],
                           context_lines: [
                             type: :non_neg_integer,

@@ -71,10 +71,9 @@ defmodule PostHog.ErrorTracking.Sources do
 
     exclude_patterns =
       Keyword.get(opts, :source_code_exclude_patterns, [
-        ~r"/_build/",
-        ~r"/deps/",
-        ~r"/priv/",
-        ~r"/test/"
+        ~r"^_build/",
+        ~r"^priv/",
+        ~r"^test/"
       ])
 
     root_paths

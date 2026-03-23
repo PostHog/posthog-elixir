@@ -28,7 +28,7 @@ defmodule Mix.Tasks.Posthog.PackageSourceCode do
       config :posthog,
         root_source_code_paths: [File.cwd!()],
         source_code_path_pattern: "**/*.ex",
-        source_code_exclude_patterns: [~r"/_build/", ~r"/deps/", ~r"/priv/", ~r"/test/"]
+        source_code_exclude_patterns: [~r"^_build/", ~r"^priv/", ~r"^test/"]
 
   CLI options override config values.
   """
@@ -66,10 +66,9 @@ defmodule Mix.Tasks.Posthog.PackageSourceCode do
           Application.get_env(:posthog, :source_code_path_pattern, "**/*.ex"),
         source_code_exclude_patterns:
           Application.get_env(:posthog, :source_code_exclude_patterns, [
-            ~r"/_build/",
-            ~r"/deps/",
-            ~r"/priv/",
-            ~r"/test/"
+            ~r"^_build/",
+            ~r"^priv/",
+            ~r"^test/"
           ])
       ]
 
