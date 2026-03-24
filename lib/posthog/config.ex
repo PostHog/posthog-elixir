@@ -73,7 +73,7 @@ defmodule PostHog.Config do
                           ],
                           source_code_exclude_patterns: [
                             type: {:list, {:struct, Regex}},
-                            default: [],
+                            default: [~r"^_build/", ~r"^priv/", ~r"^test/"],
                             doc:
                               ~s(List of regex patterns to exclude from source context. Defaults to excluding `_build/`, `priv/`, and `test/` directories.)
                           ],

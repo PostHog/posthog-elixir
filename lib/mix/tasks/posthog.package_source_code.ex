@@ -48,7 +48,7 @@ defmodule Mix.Tasks.Posthog.PackageSourceCode do
       )
 
     output =
-      Keyword.get(opts, :output, Application.app_dir(:posthog, "priv/posthog_source.map"))
+      Keyword.get(opts, :output, Path.join(:code.priv_dir(:posthog), "posthog_source.map"))
 
     root_paths =
       case Keyword.get_values(opts, :root_path) do
