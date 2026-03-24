@@ -8,7 +8,7 @@ defmodule PostHog.SenderTest do
 
   @supervisor_name __MODULE__
 
-  setup_all do
+  setup do
     registry = PostHog.Registry.registry_name(@supervisor_name)
 
     start_link_supervised!(
