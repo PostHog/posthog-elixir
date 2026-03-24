@@ -142,13 +142,14 @@ jobs:
         id: commit-release
         env:
           GITHUB_TOKEN: ${{ steps.releaser.outputs.token }}
+          NEW_VERSION: ${{ steps.sampo-release.outputs.new_version }}
         run: |
           git add -A
           if git diff --staged --quiet; then
             echo "No changes to commit"
             echo "committed=false" >> "$GITHUB_OUTPUT"
           else
-            git commit -m "chore: Release v${{ steps.sampo-release.outputs.new_version }}"
+            git commit -m "chore: Release v${NEW_VERSION}"
             git push origin master
             echo "committed=true" >> "$GITHUB_OUTPUT"
           fi
@@ -168,7 +169,8 @@ jobs:
         if: steps.commit-release.outputs.committed == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "v${{ steps.sampo-release.outputs.new_version }}" --generate-notes
+          NEW_VERSION: ${{ steps.sampo-release.outputs.new_version }}
+        run: gh release create "v${NEW_VERSION}" --generate-notes
 
       # Notify in case of a failure
       - name: Send failure event to PostHog
