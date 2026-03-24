@@ -96,7 +96,7 @@ jobs:
           token: ${{ steps.releaser.outputs.token }}
 
       - name: Set up Elixir
-        uses: erlef/setup-beam@v1
+        uses: erlef/setup-beam@ee09b1e59bb240681c382eb1f0abc6a04af72764 # v1
         with:
           elixir-version: 1.18.3
           otp-version: 27.3
