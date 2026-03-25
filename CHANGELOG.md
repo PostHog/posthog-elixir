@@ -1,5 +1,11 @@
 # posthog
 
+## 2.6.0 — 2026-03-25
+
+### Minor changes
+
+- [8d21cc8](https://github.com/posthog/posthog-elixir/commit/8d21cc87141d60a3cae0c5e4d18e59d1e34dc759) Add source code context to error tracking stack frames, and fix exception value formatting. — Thanks @cat-ph!
+
 ## 2.5.0 — 2026-03-02
 
 ### Minor changes
