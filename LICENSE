@@ -2,6 +2,15 @@ Copyright © 2025 PostHog (part of Hiberly Inc)
 
 Copyright © 2020 White Paper Clip, Inc.
 
+---
+
+Portions of this software are inspired by getsentry/sentry-elixir by Software, Inc. dba Sentry under the MIT license. In such cases it is explicitly stated in the file header.
+
+Copyright (c) 2014 Stanislav Vishnevskiy
+Copyright (c) 2023 Functional Software, Inc. dba Sentry
+
+---
+
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the “Software”), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.

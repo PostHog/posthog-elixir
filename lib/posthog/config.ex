@@ -53,6 +53,40 @@ defmodule PostHog.Config do
                             default: [],
                             doc:
                               "List of OTP app names of your applications. Stacktrace entries that belong to these apps will be marked as \"in_app\"."
+                          ],
+                          enable_source_code_context: [
+                            type: :boolean,
+                            default: false,
+                            doc:
+                              "Enable source code context in error tracking stack frames. Requires source code to be available at runtime or packaged via `mix posthog.package_source_code`."
+                          ],
+                          root_source_code_paths: [
+                            type: {:list, :string},
+                            default: [],
+                            doc:
+                              "List of root paths to scan for source files. Used by the source context feature and `mix posthog.package_source_code`."
+                          ],
+                          source_code_path_pattern: [
+                            type: :string,
+                            default: "**/*.ex",
+                            doc: "Glob pattern for source files to include in source context."
+                          ],
+                          source_code_exclude_patterns: [
+                            type: {:list, {:struct, Regex}},
+                            default: [~r"^_build/", ~r"^priv/", ~r"^test/"],
+                            doc:
+                              ~s(List of regex patterns to exclude from source context. Defaults to excluding `_build/`, `priv/`, and `test/` directories.)
+                          ],
+                          context_lines: [
+                            type: :non_neg_integer,
+                            default: 5,
+                            doc:
+                              "Number of source lines to include before and after the error line in stack frames."
+                          ],
+                          source_code_map_path: [
+                            type: :string,
+                            doc:
+                              "Custom path to a packaged source map file. Defaults to `priv/posthog_source.map` in the `:posthog` application directory."
                           ]
                         ] ++ @shared_schema
 

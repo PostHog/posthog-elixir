@@ -7,6 +7,7 @@ defmodule PostHog.Handler do
   end
 
   alias PostHog.Context
+  alias PostHog.ErrorTracking.Sources
 
   # credo:disable-for-next-line Credo.Check.Design.TagTODO
   # TODO: add @impl :logger_handler once we drop support for OTP < 27
@@ -107,7 +108,7 @@ defmodule PostHog.Handler do
   end
 
   defp exception(log_event, config) do
-    [&type/1, &value/1, &stacktrace(&1, config.in_app_modules)]
+    [&type/1, &value/1, &stacktrace(&1, config.in_app_modules, config)]
     |> Enum.reduce(
       %{
         mechanism: %{handled: not Map.has_key?(log_event.meta, :crash_reason), type: "generic"}
@@ -166,14 +167,14 @@ defmodule PostHog.Handler do
   defp do_type(%{msg: {io_format, data}}),
     do: io_format |> :io_lib.format(data) |> IO.chardata_to_string()
 
-  defp value(%{meta: %{crash_reason: {reason, stacktrace}}}) when is_exception(reason),
-    do: %{value: Exception.format_banner(:error, reason, stacktrace)}
+  defp value(%{meta: %{crash_reason: {reason, _stacktrace}}}) when is_exception(reason),
+    do: %{value: Exception.message(reason)}
 
-  defp value(%{meta: %{crash_reason: {{:nocatch, throw}, stacktrace}}}),
-    do: %{value: Exception.format_banner(:throw, throw, stacktrace)}
+  defp value(%{meta: %{crash_reason: {{:nocatch, throw}, _stacktrace}}}),
+    do: %{value: inspect(throw)}
 
-  defp value(%{meta: %{crash_reason: {reason, stacktrace}}}),
-    do: %{value: Exception.format_banner(:exit, reason, stacktrace)}
+  defp value(%{meta: %{crash_reason: {reason, _stacktrace}}}),
+    do: %{value: Exception.format_exit(reason)}
 
   defp value(%{msg: {:string, chardata}}), do: %{value: IO.chardata_to_string(chardata)}
 
@@ -188,38 +189,61 @@ defmodule PostHog.Handler do
   defp value(%{msg: {io_format, data}}),
     do: io_format |> :io_lib.format(data) |> IO.chardata_to_string() |> then(&%{value: &1})
 
-  defp stacktrace(%{meta: %{crash_reason: {_reason, [_ | _] = stacktrace}}}, in_app_modules),
-    do: %{stacktrace: do_stacktrace(stacktrace, in_app_modules)}
+  defp stacktrace(
+         %{meta: %{crash_reason: {_reason, [_ | _] = stacktrace}}},
+         in_app_modules,
+         config
+       ),
+       do: %{stacktrace: do_stacktrace(stacktrace, in_app_modules, config)}
 
   defp stacktrace(
          %{msg: {:report, %{client_info: {_, {_, [_ | _] = stacktrace}}}}},
-         in_app_modules
+         in_app_modules,
+         config
        ),
-       do: %{stacktrace: do_stacktrace(stacktrace, in_app_modules)}
+       do: %{stacktrace: do_stacktrace(stacktrace, in_app_modules, config)}
 
-  defp stacktrace(_event, _), do: %{}
+  defp stacktrace(_event, _, _), do: %{}
 
-  defp do_stacktrace([_ | _] = stacktrace, in_app_modules) do
+  defp do_stacktrace([_ | _] = stacktrace, in_app_modules, config) do
     frames =
       for {module, function, arity_or_args, location} <- stacktrace do
         in_app = module in in_app_modules
+        filename = Keyword.get(location, :file, []) |> IO.chardata_to_string()
+        lineno = Keyword.get(location, :line)
 
         %{
           platform: "custom",
           lang: "elixir",
           function: Exception.format_mfa(module, function, arity_or_args),
-          filename: Keyword.get(location, :file, []) |> IO.chardata_to_string(),
-          lineno: Keyword.get(location, :line),
+          filename: filename,
+          lineno: lineno,
           module: inspect(module),
           in_app: in_app,
           resolved: true
         }
+        |> maybe_add_source_context(filename, lineno, config)
       end
 
     %{
       type: "raw",
       frames: frames
     }
+  end
+
+  defp maybe_add_source_context(frame, filename, lineno, config) do
+    with true <- config.enable_source_code_context,
+         %{} = source_map <- Sources.get_source_map_for_file(config.supervisor_name, filename) do
+      {pre_context, context_line, post_context} =
+        Sources.get_source_context(source_map, lineno, config.context_lines)
+
+      frame
+      |> Map.put(:context_line, context_line)
+      |> Map.put(:pre_context, pre_context)
+      |> Map.put(:post_context, post_context)
+    else
+      _ -> frame
+    end
   end
 
   defp enrich_context(context, %{meta: %{conn: conn}}) when is_struct(conn, Plug.Conn) do

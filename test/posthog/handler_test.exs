@@ -91,7 +91,7 @@ defmodule PostHog.HandlerTest do
                  "$exception_list": [
                    %{
                      type: "** (exit) \"exit reason\"",
-                     value: "** (exit) \"exit reason\"",
+                     value: "\"exit reason\"",
                      mechanism: %{handled: false, type: "generic"}
                    }
                  ]
@@ -110,7 +110,7 @@ defmodule PostHog.HandlerTest do
                    },
                    %{
                      type: "** (exit) \"exit reason\"",
-                     value: "** (exit) \"exit reason\"",
+                     value: "\"exit reason\"",
                      mechanism: %{handled: false, type: "generic"}
                    }
                  ]
@@ -325,7 +325,7 @@ defmodule PostHog.HandlerTest do
                  "$exception_list": [
                    %{
                      type: "RuntimeError",
-                     value: "** (RuntimeError) oops",
+                     value: "oops",
                      mechanism: %{handled: false, type: "generic"},
                      stacktrace: %{
                        type: "raw",
@@ -364,7 +364,7 @@ defmodule PostHog.HandlerTest do
                  "$exception_list": [
                    %{
                      type: "RuntimeError",
-                     value: "** (RuntimeError) oops",
+                     value: "oops",
                      mechanism: %{handled: false, type: "generic"},
                      stacktrace: %{
                        type: "raw",
@@ -414,7 +414,7 @@ defmodule PostHog.HandlerTest do
                  "$exception_list": [
                    %{
                      type: "** (throw) \"catch!\"",
-                     value: "** (throw) \"catch!\"",
+                     value: "\"catch!\"",
                      mechanism: %{handled: false, type: "generic"},
                      stacktrace: %{
                        type: "raw",
@@ -453,7 +453,7 @@ defmodule PostHog.HandlerTest do
                  "$exception_list": [
                    %{
                      type: "** (throw) \"catch!\"",
-                     value: "** (throw) \"catch!\"",
+                     value: "\"catch!\"",
                      mechanism: %{handled: false, type: "generic"},
                      stacktrace: %{
                        type: "raw",
@@ -503,7 +503,7 @@ defmodule PostHog.HandlerTest do
                  "$exception_list": [
                    %{
                      type: "** (exit) \"i quit\"",
-                     value: "** (exit) \"i quit\"",
+                     value: "\"i quit\"",
                      mechanism: %{handled: false, type: "generic"},
                      stacktrace: %{
                        type: "raw",
@@ -542,7 +542,7 @@ defmodule PostHog.HandlerTest do
                  "$exception_list": [
                    %{
                      type: "** (exit) \"i quit\"",
-                     value: "** (exit) \"i quit\"",
+                     value: "\"i quit\"",
                      mechanism: %{handled: false, type: "generic"},
                      stacktrace: %{
                        type: "raw",
@@ -595,7 +595,7 @@ defmodule PostHog.HandlerTest do
                  "$exception_list": [
                    %{
                      type: "RuntimeError",
-                     value: "** (RuntimeError) oops",
+                     value: "oops",
                      mechanism: %{handled: false, type: "generic"},
                      stacktrace: %{
                        type: "raw",
@@ -654,7 +654,7 @@ defmodule PostHog.HandlerTest do
                  "$exception_list": [
                    %{
                      type: "RuntimeError",
-                     value: "** (RuntimeError) oops",
+                     value: "oops",
                      mechanism: %{handled: false, type: "generic"},
                      stacktrace: %{
                        type: "raw",
@@ -722,7 +722,7 @@ defmodule PostHog.HandlerTest do
                  "$exception_list": [
                    %{
                      type: "** (exit) \"i quit\"",
-                     value: "** (exit) \"i quit\"",
+                     value: "\"i quit\"",
                      mechanism: %{handled: false, type: "generic"},
                      stacktrace: %{
                        type: "raw",
@@ -781,7 +781,7 @@ defmodule PostHog.HandlerTest do
                  "$exception_list": [
                    %{
                      type: "** (exit) \"i quit\"",
-                     value: "** (exit) \"i quit\"",
+                     value: "\"i quit\"",
                      mechanism: %{handled: false, type: "generic"},
                      stacktrace: %{
                        type: "raw",
@@ -852,7 +852,7 @@ defmodule PostHog.HandlerTest do
                  "$exception_list": [
                    %{
                      type: "** (exit) %LoggerHandlerKit.FakeStruct{hello: \"world\"}",
-                     value: "** (exit) %LoggerHandlerKit.FakeStruct{hello: \"world\"}",
+                     value: "%LoggerHandlerKit.FakeStruct{hello: \"world\"}",
                      mechanism: %{handled: false, type: "generic"}
                    }
                  ]
@@ -870,7 +870,7 @@ defmodule PostHog.HandlerTest do
                  "$exception_list": [
                    %{
                      type: "** (exit) %LoggerHandlerKit.FakeStruct{hello: \"world\"}",
-                     value: "** (exit) %LoggerHandlerKit.FakeStruct{hello: \"world\"}",
+                     value: "%LoggerHandlerKit.FakeStruct{hello: \"world\"}",
                      mechanism: %{handled: false, type: "generic"}
                    },
                    %{
@@ -897,7 +897,7 @@ defmodule PostHog.HandlerTest do
                  "$exception_list": [
                    %{
                      type: "** (exit) bad return value: \"catch!\"",
-                     value: "** (exit) bad return value: \"catch!\"",
+                     value: "bad return value: \"catch!\"",
                      mechanism: %{handled: false, type: "generic"}
                    }
                  ]
@@ -915,7 +915,7 @@ defmodule PostHog.HandlerTest do
                  "$exception_list": [
                    %{
                      type: "** (exit) bad return value: \"catch!\"",
-                     value: "** (exit) bad return value: \"catch!\"",
+                     value: "bad return value: \"catch!\"",
                      mechanism: %{handled: false, type: "generic"}
                    },
                    %{
@@ -945,7 +945,7 @@ defmodule PostHog.HandlerTest do
                  "$exception_list": [
                    %{
                      type: "RuntimeError",
-                     value: "** (RuntimeError) oops",
+                     value: "oops",
                      mechanism: %{handled: false, type: "generic"},
                      stacktrace: %{
                        frames: [
@@ -1003,7 +1003,7 @@ defmodule PostHog.HandlerTest do
                  "$exception_list": [
                    %{
                      type: "RuntimeError",
-                     value: "** (RuntimeError) oops",
+                     value: "oops",
                      mechanism: %{handled: false, type: "generic"},
                      stacktrace: %{
                        frames: [
@@ -1103,7 +1103,7 @@ defmodule PostHog.HandlerTest do
                "$exception_list": [
                  %{
                    type: "RuntimeError",
-                   value: "** (RuntimeError) oops",
+                   value: "oops",
                    mechanism: %{handled: false, type: "generic"},
                    stacktrace: %{
                      frames: [
@@ -1144,7 +1144,7 @@ defmodule PostHog.HandlerTest do
                "$exception_list": [
                  %{
                    type: "ErlangError",
-                   value: "** (ErlangError) Erlang error: {:nocatch, \"catch!\"}",
+                   value: "Erlang error: {:nocatch, \"catch!\"}",
                    mechanism: %{handled: false, type: "generic"},
                    stacktrace: %{
                      frames: [
@@ -1180,7 +1180,7 @@ defmodule PostHog.HandlerTest do
                  "$exception_list": [
                    %{
                      type: "RuntimeError",
-                     value: "** (RuntimeError) oops",
+                     value: "oops",
                      mechanism: %{handled: false, type: "generic"},
                      stacktrace: %{
                        frames: [
@@ -1235,7 +1235,7 @@ defmodule PostHog.HandlerTest do
                  "$exception_list": [
                    %{
                      type: "RuntimeError",
-                     value: "** (RuntimeError) oops",
+                     value: "oops",
                      mechanism: %{handled: false, type: "generic"},
                      stacktrace: %{
                        frames: [
@@ -1308,7 +1308,7 @@ defmodule PostHog.HandlerTest do
                  "$exception_list": [
                    %{
                      type: "RuntimeError",
-                     value: "** (RuntimeError) oops",
+                     value: "oops",
                      mechanism: %{handled: false, type: "generic"},
                      stacktrace: %{
                        frames: [
@@ -1344,7 +1344,7 @@ defmodule PostHog.HandlerTest do
                  "$exception_list": [
                    %{
                      type: "RuntimeError",
-                     value: "** (RuntimeError) oops",
+                     value: "oops",
                      mechanism: %{handled: false, type: "generic"},
                      stacktrace: %{
                        frames: [
@@ -1633,7 +1633,7 @@ defmodule PostHog.HandlerTest do
                    %{
                      type: "ArgumentError",
                      value:
-                       "** (ArgumentError) errors were found at the given arguments:\n\n  * 1st argument: invalid time unit\n",
+                       "errors were found at the given arguments:\n\n  * 1st argument: invalid time unit\n",
                      stacktrace: %{
                        type: "raw",
                        frames: [
@@ -1662,7 +1662,7 @@ defmodule PostHog.HandlerTest do
                    %{
                      type: "ArgumentError",
                      value:
-                       "** (ArgumentError) errors were found at the given arguments:\n\n  * 1st argument: invalid time unit\n",
+                       "errors were found at the given arguments:\n\n  * 1st argument: invalid time unit\n",
                      stacktrace: %{
                        type: "raw",
                        frames: [
