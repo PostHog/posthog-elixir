@@ -3,7 +3,7 @@ name: "Release"
 on:
   pull_request:
     types: [closed]
-    branches: [master]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -19,7 +19,7 @@ jobs:
   check-release-label:
     name: Check for release label
     runs-on: ubuntu-latest
-    # Run when PR with 'release' label is merged to master
+    # Run when PR with 'release' label is merged to main
     if: |
       github.event_name == 'workflow_dispatch' ||
        (github.event_name == 'pull_request' &&
@@ -31,7 +31,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: master
+          ref: main
           fetch-depth: 0
 
       - name: Check release conditions
@@ -91,7 +91,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: master
+          ref: main
           fetch-depth: 0
           token: ${{ steps.releaser.outputs.token }}
 
@@ -150,7 +150,7 @@ jobs:
             echo "committed=false" >> "$GITHUB_OUTPUT"
           else
             git commit -m "chore: Release v${NEW_VERSION}"
-            git push origin master
+            git push origin main
             echo "committed=true" >> "$GITHUB_OUTPUT"
           fi
 

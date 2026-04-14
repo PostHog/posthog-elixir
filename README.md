@@ -329,7 +329,7 @@ the [PostHog SDK releases process](https://posthog.com/handbook/engineering/sdks
 
 1. **Add a changeset** to your PR describing the changes (see above)
 2. **Add the `release` label** to the PR when it's ready for release
-3. **Merge the PR** into `master`
+3. **Merge the PR** into `main`
 
 Once merged, the release workflow will automatically:
 
