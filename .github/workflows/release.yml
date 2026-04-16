@@ -83,9 +83,9 @@ jobs:
 
       - name: Get GitHub App token
         id: releaser
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ secrets.GH_APP_POSTHOG_ELIXIR_RELEASER_APP_ID }}
+          client-id: ${{ secrets.GH_APP_POSTHOG_ELIXIR_RELEASER_APP_ID }}
           private-key: ${{ secrets.GH_APP_POSTHOG_ELIXIR_RELEASER_PRIVATE_KEY }}
 
       - name: Checkout repository
