@@ -29,7 +29,7 @@ jobs:
       should-release: ${{ steps.check.outputs.should-release }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: main
           fetch-depth: 0
@@ -89,14 +89,14 @@ jobs:
           private-key: ${{ secrets.GH_APP_POSTHOG_ELIXIR_RELEASER_PRIVATE_KEY }}
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: main
           fetch-depth: 0
           token: ${{ steps.releaser.outputs.token }}
 
       - name: Set up Elixir
-        uses: erlef/setup-beam@ee09b1e59bb240681c382eb1f0abc6a04af72764 # v1
+        uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
         with:
           elixir-version: 1.18.3
           otp-version: 27.3
@@ -109,7 +109,7 @@ jobs:
 
       - name: Cache Sampo CLI
         id: cache-sampo
-        uses: actions/cache@v3
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/bin/sampo
           key: sampo-${{ runner.os }}-${{ runner.arch }}
@@ -204,7 +204,7 @@ jobs:
     if: always() && needs.release.result == 'success' && needs.notify-approval-needed.outputs.slack_ts != ''
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Notify Slack - Released
         uses: posthog/.github/.github/actions/slack-thread-reply@main
