@@ -19,4 +19,4 @@
 - [ ] Ran `sampo add` to generate a changeset file
 - [ ] Added the `release` label to the PR
 
-<!-- For more details check README.md#releasing -->
+<!-- For more details check RELEASING.md -->
