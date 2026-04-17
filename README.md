@@ -253,52 +253,6 @@ and using a different HTTP library entirely.
 If your app works with multiple PostHog projects, PostHog can accommodate you. For
 setup instructions, consult the [advanced configuration guide](guides/advanced-configuration.md).
 
-## Developing locally
-
-You should be able to fetch dependencies and run tests right away:
-
-```
-mix deps.get
-mix test
-```
-
-To run integration test suite that sends real events to the API:
-
-1. Create a test PostHog project and obtain an API key.
-2. Create `config/integration.exs` config that will be used for integration tests:
-
-```
-cp config/integration.example.exs config/integration.exs
-```
-
-3. Put API key into `config/integration.exs`
-4. Run integration tests
-
-```
-mix test --only integration
-```
-
-If you want to play with PostHog events in IEx, just create
-`config/dev.override.exs` and tweak it to point to the instance of your liking.
-This config will be gitignored. Here's a minimal example:
-
-```elixir
-# config/dev.override.exs
-import Config
-
-config :posthog,
-  enable: true
-  api_host: "https://us.i.posthog.com",
-  api_key: "phc_XXXX"
-```
-
 ## Contributing
 
-We welcome contributions! Here's how to get started:
-
-1. Fork the repository and create your feature branch
-2. Make your changes and ensure tests pass with `mix test`
-3. Run `mix format` and `mix credo --strict` to ensure code quality
-4. Open a Pull Request
-
-For changeset and release instructions, see [RELEASING.md](RELEASING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, integration test, and pull request guidelines.
