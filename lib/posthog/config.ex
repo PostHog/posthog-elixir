@@ -1,4 +1,6 @@
 defmodule PostHog.Config do
+  require Logger
+
   @shared_schema [
     test_mode: [
       type: :boolean,
@@ -106,6 +108,8 @@ defmodule PostHog.Config do
   @compiled_configuration_schema NimbleOptions.new!(@configuration_schema)
   @compiled_convenience_schema NimbleOptions.new!(@convenience_schema)
 
+  @default_api_host "https://us.i.posthog.com"
+
   @system_global_properties %{
     "$lib": "posthog-elixir",
     "$lib_version": Mix.Project.config()[:version]
@@ -176,7 +180,12 @@ defmodule PostHog.Config do
   @spec validate(options()) ::
           {:ok, config()} | {:error, NimbleOptions.ValidationError.t()}
   def validate(options) do
-    with {:ok, validated} <- NimbleOptions.validate(options, @compiled_configuration_schema) do
+    normalized_options = normalize_options(options)
+
+    with {:ok, validated} <-
+           NimbleOptions.validate(normalized_options, @compiled_configuration_schema) do
+      log_blank_api_key(validated)
+
       config = Map.new(validated)
       client = config.api_client_module.client(config.api_key, config.api_host)
       global_properties = Map.merge(config.global_properties, @system_global_properties)
@@ -191,6 +200,46 @@ defmodule PostHog.Config do
         |> Map.put(:global_properties, global_properties)
 
       {:ok, final_config}
+    end
+  end
+
+  defp normalize_options(options) do
+    options
+    |> then(fn normalized_options ->
+      if Keyword.has_key?(normalized_options, :api_key) do
+        Keyword.update!(normalized_options, :api_key, &normalize_api_key/1)
+      else
+        normalized_options
+      end
+    end)
+    |> then(fn normalized_options ->
+      if Keyword.has_key?(normalized_options, :api_host) do
+        Keyword.update!(normalized_options, :api_host, &normalize_api_host/1)
+      else
+        normalized_options
+      end
+    end)
+  end
+
+  defp normalize_api_key(api_key) when is_binary(api_key), do: String.trim(api_key)
+  defp normalize_api_key(api_key), do: api_key
+
+  defp normalize_api_host(api_host) when is_binary(api_host) do
+    api_host
+    |> String.trim()
+    |> case do
+      "" -> @default_api_host
+      normalized_api_host -> normalized_api_host
+    end
+  end
+
+  defp normalize_api_host(api_host), do: api_host
+
+  defp log_blank_api_key(validated) do
+    if validated[:api_key] == "" do
+      Logger.error(
+        "posthog api_key is empty after trimming whitespace; check your project API key"
+      )
     end
   end
 end
