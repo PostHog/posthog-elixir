@@ -1,5 +1,11 @@
 # posthog
 
+## 2.6.1 — 2026-04-21
+
+### Patch changes
+
+- [f3fbed3](https://github.com/posthog/posthog-elixir/commit/f3fbed3af55e29e08df0f16e8f10236b8f8654dc) Trim surrounding whitespace from api_key and api_host config before validation and use — Thanks @marandaneto!
+
 ## 2.6.0 — 2026-03-25
 
 ### Minor changes
