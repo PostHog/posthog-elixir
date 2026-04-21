@@ -1,6 +1,7 @@
 defmodule PostHog.ConfigTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
   import Mox
 
   setup :verify_on_exit!
@@ -42,15 +43,26 @@ defmodule PostHog.ConfigTest do
     assert config.api_host == "https://us.i.posthog.com"
   end
 
-  test "validate rejects an api_key that is blank after trimming whitespace" do
-    assert {:error, error} =
-             PostHog.Config.validate(
-               api_key: " \n\t ",
-               api_host: "https://us.i.posthog.com",
-               api_client_module: PostHog.API.Mock
-             )
+  test "validate logs when api_key is blank after trimming whitespace" do
+    expect(PostHog.API.Mock, :client, fn api_key, api_host ->
+      assert api_key == ""
+      assert api_host == "https://us.i.posthog.com"
 
-    assert Exception.message(error) =~ "api_key"
-    assert Exception.message(error) =~ "cannot be blank after trimming whitespace"
+      %PostHog.API.Client{client: :stub_client, module: PostHog.API.Mock}
+    end)
+
+    log =
+      capture_log(fn ->
+        assert {:ok, config} =
+                 PostHog.Config.validate(
+                   api_key: " \n\t ",
+                   api_host: "https://us.i.posthog.com",
+                   api_client_module: PostHog.API.Mock
+                 )
+
+        assert config.api_key == ""
+      end)
+
+    assert log =~ "posthog api_key is empty after trimming whitespace; check your project API key"
   end
 end
