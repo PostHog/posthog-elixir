@@ -182,7 +182,8 @@ defmodule PostHog.Config do
   def validate(options) do
     normalized_options = normalize_options(options)
 
-    with {:ok, validated} <- NimbleOptions.validate(normalized_options, @compiled_configuration_schema) do
+    with {:ok, validated} <-
+           NimbleOptions.validate(normalized_options, @compiled_configuration_schema) do
       log_blank_api_key(validated)
 
       config = Map.new(validated)
@@ -236,7 +237,9 @@ defmodule PostHog.Config do
 
   defp log_blank_api_key(validated) do
     if validated[:api_key] == "" do
-      Logger.error("posthog api_key is empty after trimming whitespace; check your project API key")
+      Logger.error(
+        "posthog api_key is empty after trimming whitespace; check your project API key"
+      )
     end
   end
 end
