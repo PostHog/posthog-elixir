@@ -307,6 +307,45 @@ defmodule PostHog.FeatureFlagsTest do
              ] = all_captured()
     end
 
+    test "attaches rich metadata to $feature_flag_called when the response provides it" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{
+               "myflag" => %{
+                 "enabled" => true,
+                 "variant" => "variant1",
+                 "metadata" => %{"id" => 42, "version" => 7, "payload" => nil},
+                 "reason" => %{"code" => "condition_match"}
+               }
+             },
+             "requestId" => "req-xyz",
+             "evaluatedAt" => 1_700_000_000
+           }
+         }}
+      end)
+
+      assert {:ok, "variant1"} = FeatureFlags.check("myflag", "foo")
+
+      assert [
+               %{
+                 event: "$feature_flag_called",
+                 distinct_id: "foo",
+                 properties: %{
+                   "$feature_flag": "myflag",
+                   "$feature_flag_response": "variant1",
+                   "$feature_flag_id": 42,
+                   "$feature_flag_version": 7,
+                   "$feature_flag_reason": %{"code" => "condition_match"},
+                   "$feature_flag_request_id": "req-xyz",
+                   "$feature_flag_evaluated_at": 1_700_000_000
+                 }
+               }
+             ] = all_captured()
+    end
+
     @tag config: [supervisor_name: MyPostHog]
     test "custom PostHog instance" do
       expect(API.Mock, :request, fn client, method, url, opts ->
