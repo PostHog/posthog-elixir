@@ -23,12 +23,19 @@ The adapter is a standalone Elixir application that:
 
 ### Endpoints
 
-- `GET /health` - Health check, returns SDK name/version
+- `GET /health` - Health check, returns SDK name/version and supported capabilities
 - `POST /init` - Initialize SDK with configuration
 - `POST /capture` - Capture a single event
 - `POST /flush` - Flush pending events
+- `POST /get_feature_flag` - Evaluate a feature flag against the `/flags` API
 - `GET /state` - Get internal state for test assertions
 - `POST /reset` - Reset SDK state
+
+### Capabilities
+
+The adapter declares `capture_v0` and `encoding_gzip` capabilities, which gates
+the test suites the harness will run. The `feature_flags` suite has no
+capability requirement and runs unconditionally.
 
 ## Documentation
 
