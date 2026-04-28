@@ -119,6 +119,58 @@ defmodule SdkComplianceAdapter.Router do
     json_response(conn, 200, response)
   end
 
+  # POST /get_feature_flag - Evaluate a feature flag
+  post "/get_feature_flag" do
+    params = conn.body_params
+
+    key = params["key"]
+    distinct_id = params["distinct_id"]
+
+    cond do
+      is_nil(key) ->
+        json_response(conn, 400, %{success: false, error: "Missing key"})
+
+      is_nil(distinct_id) ->
+        json_response(conn, 400, %{success: false, error: "Missing distinct_id"})
+
+      true ->
+        # Build the /flags request body. The PostHog Elixir SDK forwards the
+        # body to the /flags endpoint as-is (api_key is auto-injected by the
+        # API client). The harness asserts on the actual /flags HTTP request,
+        # so we mirror person_properties.distinct_id here per the contract:
+        # "auto-added distinct_id in person_properties".
+        person_properties =
+          (params["person_properties"] || %{})
+          |> Map.put("distinct_id", distinct_id)
+
+        body =
+          %{
+            distinct_id: distinct_id,
+            person_properties: person_properties,
+            groups: params["groups"] || %{},
+            group_properties: params["group_properties"] || %{},
+            flag_keys_to_evaluate: [key]
+          }
+          |> maybe_put(:geoip_disable, params["disable_geoip"])
+
+        case PostHog.FeatureFlags.flags(SdkComplianceAdapter.PostHog, body) do
+          {:ok, %{status: 200, body: %{"flags" => flags}}} ->
+            value = extract_flag_value(flags, key)
+            json_response(conn, 200, %{success: true, value: value})
+
+          {:ok, %{status: status, body: resp_body}} ->
+            json_response(conn, 200, %{
+              success: false,
+              error: "Unexpected response status: #{status}",
+              response: inspect(resp_body)
+            })
+
+          {:error, reason} ->
+            json_response(conn, 200, %{success: false, error: inspect(reason)})
+        end
+    end
+  end
+
   # POST /reset - Reset SDK state
   post "/reset" do
     stop_posthog()
@@ -182,6 +234,27 @@ defmodule SdkComplianceAdapter.Router do
         {:error, reason}
     end
   end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp extract_flag_value(flags, key) when is_map(flags) do
+    case Map.get(flags, key) do
+      nil ->
+        nil
+
+      flag_data when is_map(flag_data) ->
+        cond do
+          is_binary(flag_data["variant"]) -> flag_data["variant"]
+          true -> Map.get(flag_data, "enabled", false) == true
+        end
+
+      other ->
+        other
+    end
+  end
+
+  defp extract_flag_value(_flags, _key), do: nil
 
   defp stop_posthog do
     case Process.whereis(SdkComplianceAdapter.PostHog) do
