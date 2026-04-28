@@ -33,8 +33,7 @@ defmodule PostHog.Integrations.Plug do
 
   @tracing_headers [
     {"x-posthog-distinct-id", :distinct_id},
-    {"x-posthog-session-id", :"$session_id"},
-    {"x-posthog-window-id", :"$window_id"}
+    {"x-posthog-session-id", :"$session_id"}
   ]
   @max_header_value_length 1000
   @control_chars_regex ~r/[\x{00}-\x{1F}\x{7F}-\x{9F}]/u

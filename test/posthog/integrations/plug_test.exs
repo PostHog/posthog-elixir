@@ -12,8 +12,7 @@ defmodule PostHog.Integrations.PlugTest do
 
   @tracing_header_cases [
     {"x-posthog-distinct-id", :distinct_id},
-    {"x-posthog-session-id", :"$session_id"},
-    {"x-posthog-window-id", :"$window_id"}
+    {"x-posthog-session-id", :"$session_id"}
   ]
 
   @sanitization_cases [
@@ -40,7 +39,6 @@ defmodule PostHog.Integrations.PlugTest do
       |> Plug.Test.conn("https://posthog.com/foo?bar=10")
       |> Plug.Conn.put_req_header("x-posthog-distinct-id", "user-123")
       |> Plug.Conn.put_req_header("x-posthog-session-id", "session-123")
-      |> Plug.Conn.put_req_header("x-posthog-window-id", "window-123")
       |> Plug.Conn.put_req_header("user-agent", "Mozilla/5.0")
 
     assert PostHog.Integrations.Plug.call(conn, nil)
@@ -53,8 +51,7 @@ defmodule PostHog.Integrations.PlugTest do
              "$request_method": "GET",
              "$user_agent": "Mozilla/5.0",
              distinct_id: "user-123",
-             "$session_id": "session-123",
-             "$window_id": "window-123"
+             "$session_id": "session-123"
            }
   end
 
@@ -79,7 +76,6 @@ defmodule PostHog.Integrations.PlugTest do
           [
             {"X-PostHog-Distinct-ID", "user-123"},
             {"X-PostHog-Session-ID", "session-123"},
-            {"X-PostHog-Window-ID", "window-123"},
             {"User-Agent", "Mozilla/5.0"}
             | headers
           ]
@@ -93,8 +89,7 @@ defmodule PostHog.Integrations.PlugTest do
                "$request_method": "POST",
                "$user_agent": "Mozilla/5.0",
                distinct_id: "user-123",
-               "$session_id": "session-123",
-               "$window_id": "window-123"
+               "$session_id": "session-123"
              }
     end
 
@@ -149,11 +144,11 @@ defmodule PostHog.Integrations.PlugTest do
         :get
         |> Plug.Test.conn("https://posthog.com/foo")
         |> Map.put(:req_headers, [
-          {"x-posthog-window-id", "window-123"},
-          {"x-posthog-window-id", "ignored"}
+          {"x-posthog-session-id", "session-123"},
+          {"x-posthog-session-id", "ignored"}
         ])
 
-      assert PostHog.Integrations.Plug.conn_to_context(conn)[:"$window_id"] == "window-123"
+      assert PostHog.Integrations.Plug.conn_to_context(conn)[:"$session_id"] == "session-123"
     end
   end
 
@@ -163,7 +158,6 @@ defmodule PostHog.Integrations.PlugTest do
       |> Plug.Test.conn("https://posthog.com/foo")
       |> Plug.Conn.put_req_header("x-posthog-distinct-id", "header-user")
       |> Plug.Conn.put_req_header("x-posthog-session-id", "header-session")
-      |> Plug.Conn.put_req_header("x-posthog-window-id", "header-window")
       |> Plug.Conn.put_req_header("user-agent", "Header Agent")
 
     PostHog.Integrations.Plug.call(conn, nil)
@@ -171,7 +165,6 @@ defmodule PostHog.Integrations.PlugTest do
     PostHog.capture(@supervisor_name, "case tested", %{
       distinct_id: "explicit-user",
       "$session_id": "explicit-session",
-      "$window_id": "explicit-window",
       "$request_method": "EXPLICIT",
       "$user_agent": "Explicit Agent"
     })
@@ -182,7 +175,6 @@ defmodule PostHog.Integrations.PlugTest do
              distinct_id: "explicit-user",
              properties: %{
                "$session_id": "explicit-session",
-               "$window_id": "explicit-window",
                "$request_method": "EXPLICIT",
                "$user_agent": "Explicit Agent"
              }
@@ -200,7 +192,6 @@ defmodule PostHog.Integrations.PlugTest do
       plug_error_with_headers(:exception, Bandit, MyRouter, [
         {"x-posthog-distinct-id", "exception-user"},
         {"x-posthog-session-id", "exception-session"},
-        {"x-posthog-window-id", "exception-window"},
         {"user-agent", "Exception Agent"}
       ])
 
@@ -215,7 +206,6 @@ defmodule PostHog.Integrations.PlugTest do
                properties: %{
                  distinct_id: "exception-user",
                  "$session_id": "exception-session",
-                 "$window_id": "exception-window",
                  "$request_method": "GET",
                  "$user_agent": "Exception Agent"
                }
