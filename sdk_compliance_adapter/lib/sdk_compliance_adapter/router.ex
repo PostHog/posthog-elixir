@@ -36,7 +36,8 @@ defmodule SdkComplianceAdapter.Router do
     response = %{
       sdk_name: "posthog-elixir",
       sdk_version: @sdk_version,
-      adapter_version: @adapter_version
+      adapter_version: @adapter_version,
+      capabilities: ["capture_v0", "encoding_gzip"]
     }
 
     json_response(conn, 200, response)
