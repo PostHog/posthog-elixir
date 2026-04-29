@@ -1,5 +1,11 @@
 # posthog
 
+## 2.7.0 — 2026-04-29
+
+### Minor changes
+
+- [43cbfcc](https://github.com/posthog/posthog-elixir/commit/43cbfcc7abf83b616d9e8d961946500c355fd160) Populate Plug request context from PostHog tracing headers. — Thanks @dustinbyrne!
+
 ## 2.6.1 — 2026-04-21
 
 ### Patch changes
