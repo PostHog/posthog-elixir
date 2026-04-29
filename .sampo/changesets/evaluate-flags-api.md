@@ -19,4 +19,4 @@ The snapshot exposes `enabled?/2`, `get_flag/2`, `get_flag_payload/2`, `only/2`,
 
 `$feature_flag_called` events fired from `check/3`, `check!/3`, `get_feature_flag_result/4`, and the new snapshot path now attach `$feature_flag_id`, `$feature_flag_version`, `$feature_flag_reason`, `$feature_flag_request_id`, and `$feature_flag_error` (combining `errors_while_computing_flags` and, on the snapshot path, `flag_missing`) when the response provides them. `%PostHog.FeatureFlags.Result{}` gains matching `:id`, `:version`, `:reason`, `:request_id`, `:evaluated_at`, and `:errors_while_computing` fields.
 
-Existing `check/3`, `check!/3`, and `get_feature_flag_result/4` continue to work unchanged.
+`check/3`, `check!/3`, `get_feature_flag_result/4`, and `get_feature_flag_result!/4` are now marked `@deprecated` and emit compile-time warnings pointing at `evaluate_flags/2`. They continue to return the same values; removal is planned for the next major.

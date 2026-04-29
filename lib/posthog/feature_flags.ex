@@ -188,12 +188,21 @@ defmodule PostHog.FeatureFlags do
 
   defp translate_flag_keys(body), do: body
 
+  @deprecated "Use PostHog.FeatureFlags.evaluate_flags/2 with PostHog.FeatureFlags.Evaluations.enabled?/2 or get_flag/2"
   @doc false
   def check(flag_name, distinct_id_or_body) when not is_atom(flag_name),
     do: check(PostHog, flag_name, distinct_id_or_body)
 
+  @deprecated "Use PostHog.FeatureFlags.evaluate_flags/2 with PostHog.FeatureFlags.Evaluations.enabled?/2 or get_flag/2"
   @doc """
   Checks feature flag
+
+  > #### Deprecated {: .warning}
+  >
+  > Use `PostHog.FeatureFlags.evaluate_flags/2` plus
+  > `PostHog.FeatureFlags.Evaluations.enabled?/2` or
+  > `PostHog.FeatureFlags.Evaluations.get_flag/2` instead. The snapshot lets
+  > one `/flags` call serve multiple flag checks plus event enrichment.
 
   If there is a variant assigned, returns `{:ok, variant}`. Otherwise, `{:ok,
   true}` or `{:ok, false}`.
@@ -243,18 +252,28 @@ defmodule PostHog.FeatureFlags do
     end
   end
 
+  @deprecated "Use PostHog.FeatureFlags.evaluate_flags/2 with PostHog.FeatureFlags.Evaluations"
   @doc false
   def get_feature_flag_result(flag_name, distinct_id_or_body)
       when not is_atom(flag_name) and not is_list(distinct_id_or_body),
       do: get_feature_flag_result(PostHog, flag_name, distinct_id_or_body, [])
 
+  @deprecated "Use PostHog.FeatureFlags.evaluate_flags/2 with PostHog.FeatureFlags.Evaluations"
   @doc false
   def get_feature_flag_result(flag_name, distinct_id_or_body, opts)
       when not is_atom(flag_name) and is_list(opts),
       do: get_feature_flag_result(PostHog, flag_name, distinct_id_or_body, opts)
 
+  @deprecated "Use PostHog.FeatureFlags.evaluate_flags/2 with PostHog.FeatureFlags.Evaluations"
   @doc """
   Gets the full feature flag result including value and payload.
+
+  > #### Deprecated {: .warning}
+  >
+  > Use `PostHog.FeatureFlags.evaluate_flags/2` and access flags from the
+  > returned `PostHog.FeatureFlags.Evaluations` snapshot. The snapshot
+  > exposes the same metadata (id, version, reason, payload) plus filter
+  > helpers and capture enrichment via `set_in_context/2`.
 
   Returns `{:ok, %PostHog.FeatureFlags.Result{}}` on success, `{:ok, nil}` if the flag
   is not found, or `{:error, reason}` on failure.
@@ -322,18 +341,26 @@ defmodule PostHog.FeatureFlags do
     end
   end
 
+  @deprecated "Use PostHog.FeatureFlags.evaluate_flags/2 with PostHog.FeatureFlags.Evaluations"
   @doc false
   def get_feature_flag_result!(flag_name, distinct_id_or_body)
       when not is_atom(flag_name) and not is_list(distinct_id_or_body),
       do: get_feature_flag_result!(PostHog, flag_name, distinct_id_or_body, [])
 
+  @deprecated "Use PostHog.FeatureFlags.evaluate_flags/2 with PostHog.FeatureFlags.Evaluations"
   @doc false
   def get_feature_flag_result!(flag_name, distinct_id_or_body, opts)
       when not is_atom(flag_name) and is_list(opts),
       do: get_feature_flag_result!(PostHog, flag_name, distinct_id_or_body, opts)
 
+  @deprecated "Use PostHog.FeatureFlags.evaluate_flags/2 with PostHog.FeatureFlags.Evaluations"
   @doc """
   Gets the full feature flag result or raises on error.
+
+  > #### Deprecated {: .warning}
+  >
+  > Use `PostHog.FeatureFlags.evaluate_flags/2` and access flags from the
+  > returned `PostHog.FeatureFlags.Evaluations` snapshot.
 
   This is a wrapper around `get_feature_flag_result/4` that returns the result
   directly or raises an exception on error. This follows the Elixir convention
@@ -431,12 +458,20 @@ defmodule PostHog.FeatureFlags do
     {enabled, variant}
   end
 
+  @deprecated "Use PostHog.FeatureFlags.evaluate_flags/2 with PostHog.FeatureFlags.Evaluations.enabled?/2 or get_flag/2"
   @doc false
   def check!(flag_name, distinct_id_or_body) when not is_atom(flag_name),
     do: check!(PostHog, flag_name, distinct_id_or_body)
 
+  @deprecated "Use PostHog.FeatureFlags.evaluate_flags/2 with PostHog.FeatureFlags.Evaluations.enabled?/2 or get_flag/2"
   @doc """
   Checks feature flag and returns the variant or raises on error.
+
+  > #### Deprecated {: .warning}
+  >
+  > Use `PostHog.FeatureFlags.evaluate_flags/2` and
+  > `PostHog.FeatureFlags.Evaluations.enabled?/2` /
+  > `PostHog.FeatureFlags.Evaluations.get_flag/2` instead.
 
   This is a wrapper around `check/3` that returns the variant directly
   or raises an exception on error. This follows the Elixir convention where
