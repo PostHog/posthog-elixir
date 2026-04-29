@@ -13,8 +13,12 @@ defmodule PostHog.FeatureFlags.Result do
   - `reason` - Reason map describing why this evaluation produced its value
   - `request_id` - Request ID returned by the `/flags` endpoint (useful for experiment exposure tracking)
   - `evaluated_at` - Server-side evaluation timestamp from the response
+  - `errors_while_computing` - Whether the response signaled
+    `errorsWhileComputingFlags`; values for some flags may be incomplete or
+    stale. Forwarded as `$feature_flag_error: "errors_while_computing_flags"`
+    on `$feature_flag_called` events.
 
-  The latter five fields are populated when the `/flags` response includes them
+  The metadata fields are populated when the `/flags` response includes them
   and are forwarded as `$feature_flag_id`, `$feature_flag_version`, `$feature_flag_reason`,
   `$feature_flag_request_id`, and `$feature_flag_evaluated_at` properties on
   `$feature_flag_called` events.
@@ -54,7 +58,8 @@ defmodule PostHog.FeatureFlags.Result do
           version: integer() | nil,
           reason: map() | nil,
           request_id: String.t() | nil,
-          evaluated_at: integer() | nil
+          evaluated_at: integer() | nil,
+          errors_while_computing: boolean()
         }
 
   @enforce_keys [:key, :enabled]
@@ -67,7 +72,8 @@ defmodule PostHog.FeatureFlags.Result do
     :version,
     :reason,
     :request_id,
-    :evaluated_at
+    :evaluated_at,
+    errors_while_computing: false
   ]
 
   @doc """

@@ -57,17 +57,29 @@ defmodule PostHog.FeatureFlags.Evaluations do
   - `:flags` - map of flag key to `t:PostHog.FeatureFlags.Result.t/0`.
   - `:request_id` - request ID returned by `/flags`.
   - `:evaluated_at` - server-side evaluation timestamp.
+  - `:errors_while_computing` - whether the response signaled
+    `errorsWhileComputingFlags`. When `true`, every event fired from this
+    snapshot includes `errors_while_computing_flags` in its
+    `$feature_flag_error` property.
   """
   @type t :: %__MODULE__{
           supervisor_name: PostHog.supervisor_name(),
           distinct_id: PostHog.distinct_id(),
           flags: %{String.t() => Result.t()},
           request_id: String.t() | nil,
-          evaluated_at: integer() | nil
+          evaluated_at: integer() | nil,
+          errors_while_computing: boolean()
         }
 
   @enforce_keys [:supervisor_name, :distinct_id, :flags]
-  defstruct [:supervisor_name, :distinct_id, :flags, :request_id, :evaluated_at]
+  defstruct [
+    :supervisor_name,
+    :distinct_id,
+    :flags,
+    :request_id,
+    :evaluated_at,
+    errors_while_computing: false
+  ]
 
   @doc false
   @spec new(PostHog.supervisor_name(), PostHog.distinct_id(), map()) :: t()
@@ -83,7 +95,8 @@ defmodule PostHog.FeatureFlags.Evaluations do
       distinct_id: distinct_id,
       flags: flags,
       request_id: Map.get(body, "requestId"),
-      evaluated_at: Map.get(body, "evaluatedAt")
+      evaluated_at: Map.get(body, "evaluatedAt"),
+      errors_while_computing: Map.get(body, "errorsWhileComputingFlags") == true
     }
   end
 
@@ -91,7 +104,8 @@ defmodule PostHog.FeatureFlags.Evaluations do
   Returns whether the named flag is enabled in this snapshot.
 
   Returns `false` for unknown flags. Fires a `$feature_flag_called` event with
-  full metadata when the flag is present in the snapshot.
+  full metadata when the flag is present, or with
+  `$feature_flag_error: "flag_missing"` when it is not.
   """
   @spec enabled?(t(), String.t()) :: boolean()
   def enabled?(%__MODULE__{} = snapshot, key) when is_binary(key) do
@@ -105,7 +119,7 @@ defmodule PostHog.FeatureFlags.Evaluations do
   Returns the variant string, the enabled boolean, or `nil` for unknown flags.
 
   Fires a `$feature_flag_called` event with full metadata when the flag is
-  present in the snapshot.
+  present, or with `$feature_flag_error: "flag_missing"` when it is not.
   """
   @spec get_flag(t(), String.t()) :: String.t() | boolean() | nil
   def get_flag(%__MODULE__{} = snapshot, key) when is_binary(key) do
@@ -175,15 +189,28 @@ defmodule PostHog.FeatureFlags.Evaluations do
   end
 
   defp fetch_and_log(%__MODULE__{flags: flags} = snapshot, key) do
-    with {:ok, %Result{} = result} <- Map.fetch(flags, key) do
-      log(snapshot, result)
-      {:ok, result}
+    case Map.fetch(flags, key) do
+      {:ok, %Result{} = result} ->
+        log(snapshot, result, [])
+        {:ok, result}
+
+      :error ->
+        log(snapshot, missing_result(snapshot, key), ["flag_missing"])
+        :error
     end
   end
 
-  defp log(%__MODULE__{distinct_id: ""}, _result), do: :ok
+  defp missing_result(%__MODULE__{errors_while_computing: ewc}, key) do
+    %Result{key: key, enabled: false, errors_while_computing: ewc}
+  end
 
-  defp log(%__MODULE__{supervisor_name: name, distinct_id: distinct_id}, %Result{} = result) do
-    PostHog.FeatureFlags.log_feature_flag_usage(name, distinct_id, result)
+  defp log(%__MODULE__{distinct_id: ""}, _result, _extra_errors), do: :ok
+
+  defp log(
+         %__MODULE__{supervisor_name: name, distinct_id: distinct_id},
+         %Result{} = result,
+         extra_errors
+       ) do
+    PostHog.FeatureFlags.log_feature_flag_usage(name, distinct_id, result, extra_errors)
   end
 end

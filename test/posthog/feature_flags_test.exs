@@ -307,6 +307,31 @@ defmodule PostHog.FeatureFlagsTest do
              ] = all_captured()
     end
 
+    test "attaches $feature_flag_error: errors_while_computing_flags when response signals errors" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{"myflag" => %{"enabled" => true, "variant" => "variant1"}},
+             "errorsWhileComputingFlags" => true
+           }
+         }}
+      end)
+
+      assert {:ok, "variant1"} = FeatureFlags.check("myflag", "foo")
+
+      assert [
+               %{
+                 event: "$feature_flag_called",
+                 properties: %{
+                   "$feature_flag": "myflag",
+                   "$feature_flag_error": "errors_while_computing_flags"
+                 }
+               }
+             ] = all_captured()
+    end
+
     test "attaches rich metadata to $feature_flag_called when the response provides it" do
       expect(API.Mock, :request, fn _client, _method, _url, _opts ->
         {:ok,

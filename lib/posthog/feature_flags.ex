@@ -420,7 +420,8 @@ defmodule PostHog.FeatureFlags do
       version: get_in(flag_data, ["metadata", "version"]),
       reason: Map.get(flag_data, "reason"),
       request_id: Map.get(body, "requestId"),
-      evaluated_at: Map.get(body, "evaluatedAt")
+      evaluated_at: Map.get(body, "evaluatedAt"),
+      errors_while_computing: Map.get(body, "errorsWhileComputingFlags") == true
     }
   end
 
@@ -485,7 +486,21 @@ defmodule PostHog.FeatureFlags do
         ) ::
           :ok | {:error, :missing_distinct_id}
   def log_feature_flag_usage(name, distinct_id, %__MODULE__.Result{} = result) do
+    log_feature_flag_usage(name, distinct_id, result, [])
+  end
+
+  @doc false
+  @spec log_feature_flag_usage(
+          PostHog.supervisor_name(),
+          PostHog.distinct_id(),
+          __MODULE__.Result.t(),
+          [String.t()]
+        ) ::
+          :ok | {:error, :missing_distinct_id}
+  def log_feature_flag_usage(name, distinct_id, %__MODULE__.Result{} = result, extra_errors)
+      when is_list(extra_errors) do
     value = __MODULE__.Result.value(result)
+    errors = build_error_codes(result, extra_errors)
 
     properties =
       %{
@@ -498,11 +513,22 @@ defmodule PostHog.FeatureFlags do
       |> maybe_put(:"$feature_flag_reason", result.reason)
       |> maybe_put(:"$feature_flag_request_id", result.request_id)
       |> maybe_put(:"$feature_flag_evaluated_at", result.evaluated_at)
+      |> maybe_put(:"$feature_flag_error", errors)
 
     PostHog.capture(name, "$feature_flag_called", properties)
 
-    PostHog.set_context(name, %{"$feature/#{result.key}" => value})
+    if extra_errors == [] do
+      PostHog.set_context(name, %{"$feature/#{result.key}" => value})
+    else
+      :ok
+    end
   end
+
+  defp build_error_codes(%__MODULE__.Result{errors_while_computing: true}, extra),
+    do: ["errors_while_computing_flags" | extra] |> Enum.join(",")
+
+  defp build_error_codes(%__MODULE__.Result{}, []), do: nil
+  defp build_error_codes(%__MODULE__.Result{}, extra), do: Enum.join(extra, ",")
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

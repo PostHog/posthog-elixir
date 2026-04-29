@@ -152,10 +152,21 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
       assert Evaluations.enabled?(snapshot, "disabled-flag") == false
     end
 
-    test "enabled?/2 returns false for unknown flags without firing an event",
+    test "enabled?/2 returns false for unknown flags and fires a flag_missing event",
          %{snapshot: snapshot} do
       assert Evaluations.enabled?(snapshot, "unknown-flag") == false
-      assert all_captured() == []
+
+      assert [
+               %{
+                 event: "$feature_flag_called",
+                 distinct_id: "foo",
+                 properties: %{
+                   "$feature_flag": "unknown-flag",
+                   "$feature_flag_response": false,
+                   "$feature_flag_error": "flag_missing"
+                 }
+               }
+             ] = all_captured()
     end
 
     test "get_flag/2 returns the variant when present", %{snapshot: snapshot} do
@@ -167,10 +178,21 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
       assert Evaluations.get_flag(snapshot, "disabled-flag") == false
     end
 
-    test "get_flag/2 returns nil for unknown flags without firing an event",
+    test "get_flag/2 returns nil for unknown flags and fires a flag_missing event",
          %{snapshot: snapshot} do
       assert Evaluations.get_flag(snapshot, "unknown-flag") == nil
-      assert all_captured() == []
+
+      assert [
+               %{
+                 event: "$feature_flag_called",
+                 distinct_id: "foo",
+                 properties: %{
+                   "$feature_flag": "unknown-flag",
+                   "$feature_flag_response": false,
+                   "$feature_flag_error": "flag_missing"
+                 }
+               }
+             ] = all_captured()
     end
 
     test "fires $feature_flag_called with full metadata", %{snapshot: snapshot} do
@@ -349,6 +371,65 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
       {:ok, snapshot} = FeatureFlags.evaluate_flags("foo")
       :ok = FeatureFlags.set_in_context(snapshot)
       :ok = PostHog.capture("page_viewed", %{distinct_id: "foo"})
+    end
+  end
+
+  describe "errors_while_computing propagation" do
+    defp errored_flags_response do
+      response = stub_flags_response()
+      put_in(response, [:body, "errorsWhileComputingFlags"], true)
+    end
+
+    test "attaches errors_while_computing_flags to events for known flags" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok, errored_flags_response()}
+      end)
+
+      {:ok, snapshot} = FeatureFlags.evaluate_flags("foo")
+      assert snapshot.errors_while_computing == true
+      Evaluations.enabled?(snapshot, "boolean-flag")
+
+      assert [
+               %{
+                 event: "$feature_flag_called",
+                 properties: %{
+                   "$feature_flag": "boolean-flag",
+                   "$feature_flag_error": "errors_while_computing_flags"
+                 }
+               }
+             ] = all_captured()
+    end
+
+    test "combines errors_while_computing_flags with flag_missing for missing flags" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok, errored_flags_response()}
+      end)
+
+      {:ok, snapshot} = FeatureFlags.evaluate_flags("foo")
+      Evaluations.enabled?(snapshot, "missing-flag")
+
+      assert [
+               %{
+                 event: "$feature_flag_called",
+                 properties: %{
+                   "$feature_flag": "missing-flag",
+                   "$feature_flag_error": "errors_while_computing_flags,flag_missing"
+                 }
+               }
+             ] = all_captured()
+    end
+
+    test "omits $feature_flag_error when there are no errors", %{} do
+      # uses the default stub_flags_response with errorsWhileComputingFlags absent
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok, stub_flags_response()}
+      end)
+
+      {:ok, snapshot} = FeatureFlags.evaluate_flags("foo")
+      Evaluations.enabled?(snapshot, "boolean-flag")
+
+      assert [%{properties: properties}] = all_captured()
+      refute Map.has_key?(properties, :"$feature_flag_error")
     end
   end
 
