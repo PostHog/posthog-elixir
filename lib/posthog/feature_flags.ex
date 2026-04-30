@@ -143,10 +143,24 @@ defmodule PostHog.FeatureFlags do
   @spec evaluate_flags(PostHog.supervisor_name(), PostHog.distinct_id() | map() | nil) ::
           {:ok, __MODULE__.Evaluations.t()} | {:error, Exception.t()}
   def evaluate_flags(name \\ PostHog, distinct_id_or_body \\ nil) do
-    with {:ok, %{distinct_id: distinct_id} = body} <- body_for_flags(distinct_id_or_body),
-         body = translate_flag_keys(body),
-         {:ok, %{body: response_body}} <- flags(name, body) do
-      {:ok, __MODULE__.Evaluations.new(name, distinct_id, response_body)}
+    case body_for_flags(distinct_id_or_body) do
+      {:ok, %{distinct_id: distinct_id} = body} ->
+        body = translate_flag_keys(body)
+
+        case flags(name, body) do
+          {:ok, %{body: response_body}} ->
+            {:ok, __MODULE__.Evaluations.new(name, distinct_id, response_body)}
+
+          {:error, _} = error ->
+            error
+        end
+
+      {:error, _} ->
+        # Standardize on returning an empty snapshot when distinct_id can't be
+        # resolved — matches the cross-SDK behavior. The empty distinct_id
+        # short-circuits event firing in `enabled?/2` and `get_flag/2`, so no
+        # events leak with an empty distinct_id.
+        {:ok, __MODULE__.Evaluations.empty(name)}
     end
   end
 
@@ -442,7 +456,7 @@ defmodule PostHog.FeatureFlags do
       key: flag_name,
       enabled: enabled,
       variant: variant,
-      payload: get_in(flag_data, ["metadata", "payload"]),
+      payload: normalize_payload(get_in(flag_data, ["metadata", "payload"])),
       id: get_in(flag_data, ["metadata", "id"]),
       version: get_in(flag_data, ["metadata", "version"]),
       reason: Map.get(flag_data, "reason"),
@@ -451,6 +465,20 @@ defmodule PostHog.FeatureFlags do
       errors_while_computing: Map.get(body, "errorsWhileComputingFlags") == true
     }
   end
+
+  # PostHog's `/flags` returns payloads as JSON-encoded strings (the user
+  # configures them as JSON in the UI). Decode them so callers receive the
+  # parsed value. Non-string or already-decoded payloads pass through as-is.
+  defp normalize_payload(nil), do: nil
+
+  defp normalize_payload(payload) when is_binary(payload) do
+    case Jason.decode(payload) do
+      {:ok, decoded} -> decoded
+      {:error, _} -> payload
+    end
+  end
+
+  defp normalize_payload(payload), do: payload
 
   defp extract_flag_enabled_and_variant(flag_data) do
     enabled = Map.get(flag_data, "enabled", false) == true
@@ -534,28 +562,31 @@ defmodule PostHog.FeatureFlags do
           :ok | {:error, :missing_distinct_id}
   def log_feature_flag_usage(name, distinct_id, %__MODULE__.Result{} = result, extra_errors)
       when is_list(extra_errors) do
-    value = __MODULE__.Result.value(result)
+    flag_missing? = "flag_missing" in extra_errors
+    value = if flag_missing?, do: nil, else: __MODULE__.Result.value(result)
     errors = build_error_codes(result, extra_errors)
 
     properties =
       %{
-        distinct_id: distinct_id,
-        "$feature_flag": result.key,
-        "$feature_flag_response": value
+        "$feature/#{result.key}" => value,
+        :distinct_id => distinct_id,
+        :"$feature_flag" => result.key,
+        :"$feature_flag_response" => value
       }
       |> maybe_put(:"$feature_flag_id", result.id)
       |> maybe_put(:"$feature_flag_version", result.version)
       |> maybe_put(:"$feature_flag_reason", result.reason)
       |> maybe_put(:"$feature_flag_request_id", result.request_id)
       |> maybe_put(:"$feature_flag_evaluated_at", result.evaluated_at)
+      |> maybe_put(:"$feature_flag_payload", result.payload)
       |> maybe_put(:"$feature_flag_error", errors)
 
     PostHog.capture(name, "$feature_flag_called", properties)
 
-    if extra_errors == [] do
-      PostHog.set_context(name, %{"$feature/#{result.key}" => value})
-    else
+    if flag_missing? do
       :ok
+    else
+      PostHog.set_context(name, %{"$feature/#{result.key}" => value})
     end
   end
 

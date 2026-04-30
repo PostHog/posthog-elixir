@@ -120,8 +120,10 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
       assert {:ok, %Evaluations{distinct_id: "from-context"}} = FeatureFlags.evaluate_flags()
     end
 
-    test "returns an error when distinct_id cannot be resolved" do
-      assert {:error, %PostHog.Error{}} = FeatureFlags.evaluate_flags(nil)
+    test "returns an empty snapshot when distinct_id cannot be resolved" do
+      assert {:ok, %Evaluations{distinct_id: "", flags: %{}}} =
+               FeatureFlags.evaluate_flags(nil)
+
       assert all_captured() == []
     end
 
@@ -162,7 +164,7 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
                  distinct_id: "foo",
                  properties: %{
                    "$feature_flag": "unknown-flag",
-                   "$feature_flag_response": false,
+                   "$feature_flag_response": nil,
                    "$feature_flag_error": "flag_missing"
                  }
                }
@@ -188,7 +190,7 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
                  distinct_id: "foo",
                  properties: %{
                    "$feature_flag": "unknown-flag",
-                   "$feature_flag_response": false,
+                   "$feature_flag_response": nil,
                    "$feature_flag_error": "flag_missing"
                  }
                }
@@ -202,17 +204,19 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
                %{
                  event: "$feature_flag_called",
                  distinct_id: "foo",
-                 properties: %{
-                   "$feature_flag": "variant-flag",
-                   "$feature_flag_response": "control",
-                   "$feature_flag_id": 2,
-                   "$feature_flag_version": 5,
-                   "$feature_flag_reason": %{"code" => "condition_match"},
-                   "$feature_flag_request_id": "req-abc",
-                   "$feature_flag_evaluated_at": 1_700_000_000
-                 }
+                 properties: properties
                }
              ] = all_captured()
+
+      assert properties[:"$feature_flag"] == "variant-flag"
+      assert properties[:"$feature_flag_response"] == "control"
+      assert properties[:"$feature_flag_id"] == 2
+      assert properties[:"$feature_flag_version"] == 5
+      assert %{"code" => "condition_match"} = properties[:"$feature_flag_reason"]
+      assert properties[:"$feature_flag_request_id"] == "req-abc"
+      assert properties[:"$feature_flag_evaluated_at"] == 1_700_000_000
+      assert properties[:"$feature_flag_payload"] == %{"copy" => "hi"}
+      assert properties["$feature/variant-flag"] == "control"
     end
 
     test "fires on every access (no dedup in this PR)", %{snapshot: snapshot} do
@@ -251,6 +255,60 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
       Evaluations.get_flag_payload(snapshot, "unknown-flag")
 
       assert all_captured() == []
+    end
+  end
+
+  describe "only_accessed/1" do
+    setup do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok, stub_flags_response()}
+      end)
+
+      {:ok, snapshot} = FeatureFlags.evaluate_flags("foo")
+      %{snapshot: snapshot}
+    end
+
+    test "narrows the snapshot to flags accessed via enabled?/2", %{snapshot: snapshot} do
+      Evaluations.enabled?(snapshot, "boolean-flag")
+      narrowed = Evaluations.only_accessed(snapshot)
+      assert Evaluations.keys(narrowed) == ["boolean-flag"]
+    end
+
+    test "narrows the snapshot to flags accessed via get_flag/2", %{snapshot: snapshot} do
+      Evaluations.get_flag(snapshot, "variant-flag")
+      narrowed = Evaluations.only_accessed(snapshot)
+      assert Evaluations.keys(narrowed) == ["variant-flag"]
+    end
+
+    test "narrows the snapshot to flags accessed via get_flag_payload/2", %{snapshot: snapshot} do
+      Evaluations.get_flag_payload(snapshot, "variant-flag")
+      narrowed = Evaluations.only_accessed(snapshot)
+      assert Evaluations.keys(narrowed) == ["variant-flag"]
+    end
+
+    test "returns an empty snapshot when nothing has been accessed", %{snapshot: snapshot} do
+      narrowed = Evaluations.only_accessed(snapshot)
+      assert Evaluations.keys(narrowed) == []
+    end
+
+    test "filtered snapshot does not back-propagate access to the parent",
+         %{snapshot: snapshot} do
+      Evaluations.enabled?(snapshot, "boolean-flag")
+      narrowed = Evaluations.only_accessed(snapshot)
+
+      Evaluations.enabled?(narrowed, "boolean-flag")
+      Evaluations.get_flag(narrowed, "variant-flag")
+
+      assert Evaluations.accessed(snapshot) == ["boolean-flag"]
+    end
+
+    test "drops keys that were accessed but absent from the snapshot",
+         %{snapshot: snapshot} do
+      Evaluations.enabled?(snapshot, "boolean-flag")
+      Evaluations.enabled?(snapshot, "missing-flag")
+
+      narrowed = Evaluations.only_accessed(snapshot)
+      assert Evaluations.keys(narrowed) == ["boolean-flag"]
     end
   end
 
@@ -309,14 +367,19 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
     end
 
     test "omits $active_feature_flags when no flag is enabled" do
-      snapshot = %Evaluations{
-        supervisor_name: PostHog,
-        distinct_id: "foo",
-        flags: %{
-          "off" => %Result{key: "off", enabled: false}
-        }
-      }
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{
+               "off" => %{"enabled" => false, "key" => "off"}
+             }
+           }
+         }}
+      end)
 
+      {:ok, snapshot} = FeatureFlags.evaluate_flags("foo")
       properties = Evaluations.event_properties(snapshot)
 
       refute Map.has_key?(properties, :"$active_feature_flags")
@@ -371,6 +434,62 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
       {:ok, snapshot} = FeatureFlags.evaluate_flags("foo")
       :ok = FeatureFlags.set_in_context(snapshot)
       :ok = PostHog.capture("page_viewed", %{distinct_id: "foo"})
+    end
+  end
+
+  describe "payload normalization" do
+    test "JSON-decodes string payloads from the response" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{
+               "json-flag" => %{
+                 "enabled" => true,
+                 "key" => "json-flag",
+                 "metadata" => %{"payload" => ~s({"copy":"hi","count":3})}
+               }
+             }
+           }
+         }}
+      end)
+
+      {:ok, snapshot} = FeatureFlags.evaluate_flags("foo")
+
+      assert Evaluations.get_flag_payload(snapshot, "json-flag") ==
+               %{"copy" => "hi", "count" => 3}
+    end
+
+    test "leaves non-JSON string payloads as-is" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{
+               "string-flag" => %{
+                 "enabled" => true,
+                 "key" => "string-flag",
+                 "metadata" => %{"payload" => "not json"}
+               }
+             }
+           }
+         }}
+      end)
+
+      {:ok, snapshot} = FeatureFlags.evaluate_flags("foo")
+
+      assert Evaluations.get_flag_payload(snapshot, "string-flag") == "not json"
+    end
+
+    test "leaves nil payloads as nil" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok, stub_flags_response()}
+      end)
+
+      {:ok, snapshot} = FeatureFlags.evaluate_flags("foo")
+      assert Evaluations.get_flag_payload(snapshot, "boolean-flag") == nil
     end
   end
 
@@ -433,18 +552,18 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
     end
   end
 
-  describe "empty distinct_id" do
-    test "manually-constructed snapshot with empty distinct_id does not fire events" do
-      snapshot = %Evaluations{
-        supervisor_name: PostHog,
-        distinct_id: "",
-        flags: %{
-          "flag" => %Result{key: "flag", enabled: true}
-        }
-      }
+  describe "empty snapshot fallback" do
+    test "evaluate_flags(nil) returns an empty snapshot, not an error" do
+      assert {:ok, %Evaluations{distinct_id: "", flags: %{}}} =
+               FeatureFlags.evaluate_flags(nil)
+    end
 
-      Evaluations.enabled?(snapshot, "flag")
-      Evaluations.get_flag(snapshot, "flag")
+    test "empty snapshot does not fire events when accessed" do
+      {:ok, snapshot} = FeatureFlags.evaluate_flags(nil)
+
+      Evaluations.enabled?(snapshot, "any-flag")
+      Evaluations.get_flag(snapshot, "any-flag")
+      Evaluations.get_flag_payload(snapshot, "any-flag")
 
       assert all_captured() == []
     end

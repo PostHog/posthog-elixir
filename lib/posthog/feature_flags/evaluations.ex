@@ -7,16 +7,17 @@ defmodule PostHog.FeatureFlags.Evaluations do
   multiple flags and enrich captured events from the same fetch — without
   paying the cost of one round-trip per flag.
 
-  The struct itself is a plain immutable map of flag key to
-  `PostHog.FeatureFlags.Result`. Functions in this module are pure: they query
-  or filter a snapshot but never mutate it.
+  Each snapshot owns a small `Agent` linked to the calling process that tracks
+  which flags were accessed via `enabled?/2`, `get_flag/2`, and
+  `get_flag_payload/2`. The Agent exits with the calling process — no manual
+  cleanup is required.
 
   ## Querying
 
   Use `enabled?/2`, `get_flag/2`, and `get_flag_payload/2` to read individual
   flags. `enabled?/2` and `get_flag/2` fire a `$feature_flag_called` event
   with full metadata (id, version, reason, request_id) on each call;
-  `get_flag_payload/2` does not fire an event.
+  `get_flag_payload/2` records the access without firing an event.
 
       {:ok, snapshot} = PostHog.FeatureFlags.evaluate_flags("user-123")
 
@@ -39,10 +40,12 @@ defmodule PostHog.FeatureFlags.Evaluations do
 
   ## Filtering
 
-  Use `only/2` to narrow a snapshot to a specific list of flag keys before
-  calling `set_in_context/2` or `event_properties/1`. Unknown keys are dropped.
+  Use `only_accessed/1` to narrow a snapshot to flags accessed so far via
+  `enabled?/2`, `get_flag/2`, or `get_flag_payload/2`. Use `only/2` to narrow
+  by an explicit key list. Both return a fresh snapshot with its own access
+  tracker — calls on the filtered view do not back-propagate to the parent.
 
-      narrowed = PostHog.FeatureFlags.Evaluations.only(snapshot, ["new-dashboard"])
+      narrowed = PostHog.FeatureFlags.Evaluations.only_accessed(snapshot)
       PostHog.FeatureFlags.set_in_context(narrowed)
   """
 
@@ -54,6 +57,8 @@ defmodule PostHog.FeatureFlags.Evaluations do
   - `:supervisor_name` - PostHog instance the snapshot was produced from; used
     when `enabled?/2` and `get_flag/2` fire `$feature_flag_called` events.
   - `:distinct_id` - resolved distinct ID the `/flags` request was made for.
+    `""` for the empty fallback returned when no `distinct_id` could be
+    resolved; events are short-circuited in that case.
   - `:flags` - map of flag key to `t:PostHog.FeatureFlags.Result.t/0`.
   - `:request_id` - request ID returned by `/flags`.
   - `:evaluated_at` - server-side evaluation timestamp.
@@ -61,6 +66,7 @@ defmodule PostHog.FeatureFlags.Evaluations do
     `errorsWhileComputingFlags`. When `true`, every event fired from this
     snapshot includes `errors_while_computing_flags` in its
     `$feature_flag_error` property.
+  - `:accessed_pid` - pid of the Agent tracking accessed keys.
   """
   @type t :: %__MODULE__{
           supervisor_name: PostHog.supervisor_name(),
@@ -68,14 +74,16 @@ defmodule PostHog.FeatureFlags.Evaluations do
           flags: %{String.t() => Result.t()},
           request_id: String.t() | nil,
           evaluated_at: integer() | nil,
-          errors_while_computing: boolean()
+          errors_while_computing: boolean(),
+          accessed_pid: pid()
         }
 
-  @enforce_keys [:supervisor_name, :distinct_id, :flags]
+  @enforce_keys [:supervisor_name, :distinct_id, :flags, :accessed_pid]
   defstruct [
     :supervisor_name,
     :distinct_id,
     :flags,
+    :accessed_pid,
     :request_id,
     :evaluated_at,
     errors_while_computing: false
@@ -96,19 +104,34 @@ defmodule PostHog.FeatureFlags.Evaluations do
       flags: flags,
       request_id: Map.get(body, "requestId"),
       evaluated_at: Map.get(body, "evaluatedAt"),
-      errors_while_computing: Map.get(body, "errorsWhileComputingFlags") == true
+      errors_while_computing: Map.get(body, "errorsWhileComputingFlags") == true,
+      accessed_pid: start_accessed_agent()
+    }
+  end
+
+  @doc false
+  @spec empty(PostHog.supervisor_name()) :: t()
+  def empty(supervisor_name) do
+    %__MODULE__{
+      supervisor_name: supervisor_name,
+      distinct_id: "",
+      flags: %{},
+      accessed_pid: start_accessed_agent()
     }
   end
 
   @doc """
   Returns whether the named flag is enabled in this snapshot.
 
-  Returns `false` for unknown flags. Fires a `$feature_flag_called` event with
-  full metadata when the flag is present, or with
-  `$feature_flag_error: "flag_missing"` when it is not.
+  Returns `false` for unknown flags. Records the access. Fires a
+  `$feature_flag_called` event with full metadata when the flag is present,
+  or with `$feature_flag_error: "flag_missing"` and
+  `$feature_flag_response: nil` when it is not.
   """
   @spec enabled?(t(), String.t()) :: boolean()
   def enabled?(%__MODULE__{} = snapshot, key) when is_binary(key) do
+    record_access(snapshot, key)
+
     case fetch_and_log(snapshot, key) do
       {:ok, %Result{enabled: enabled}} -> enabled
       :error -> false
@@ -118,11 +141,14 @@ defmodule PostHog.FeatureFlags.Evaluations do
   @doc """
   Returns the variant string, the enabled boolean, or `nil` for unknown flags.
 
-  Fires a `$feature_flag_called` event with full metadata when the flag is
-  present, or with `$feature_flag_error: "flag_missing"` when it is not.
+  Records the access. Fires a `$feature_flag_called` event with full metadata
+  when the flag is present, or with `$feature_flag_error: "flag_missing"` and
+  `$feature_flag_response: nil` when it is not.
   """
   @spec get_flag(t(), String.t()) :: String.t() | boolean() | nil
   def get_flag(%__MODULE__{} = snapshot, key) when is_binary(key) do
+    record_access(snapshot, key)
+
     case fetch_and_log(snapshot, key) do
       {:ok, %Result{} = result} -> Result.value(result)
       :error -> nil
@@ -131,12 +157,14 @@ defmodule PostHog.FeatureFlags.Evaluations do
 
   @doc """
   Returns the configured payload for the flag, or `nil` for unknown flags or
-  flags without a payload.
+  flags without a payload. Records the access.
 
   Does **not** fire a `$feature_flag_called` event.
   """
   @spec get_flag_payload(t(), String.t()) :: any() | nil
-  def get_flag_payload(%__MODULE__{flags: flags}, key) when is_binary(key) do
+  def get_flag_payload(%__MODULE__{flags: flags} = snapshot, key) when is_binary(key) do
+    record_access(snapshot, key)
+
     case Map.fetch(flags, key) do
       {:ok, %Result{payload: payload}} -> payload
       :error -> nil
@@ -150,13 +178,44 @@ defmodule PostHog.FeatureFlags.Evaluations do
   def keys(%__MODULE__{flags: flags}), do: flags |> Map.keys() |> Enum.sort()
 
   @doc """
+  Returns the sorted list of keys accessed via `enabled?/2`, `get_flag/2`, or
+  `get_flag_payload/2` on this snapshot.
+
+  Includes keys that were accessed but absent from the snapshot.
+  """
+  @spec accessed(t()) :: [String.t()]
+  def accessed(%__MODULE__{accessed_pid: pid}) do
+    pid |> Agent.get(& &1) |> MapSet.to_list() |> Enum.sort()
+  end
+
+  @doc """
+  Returns a copy of the snapshot scoped to the flags accessed so far via
+  `enabled?/2`, `get_flag/2`, or `get_flag_payload/2`.
+
+  Returns an empty snapshot when nothing has been accessed yet — including
+  no flags would be more surprising than helpful, since the caller asked for
+  "only what I touched."
+
+  The returned snapshot has its own access tracker. Calls on it do not
+  back-propagate to the parent.
+  """
+  @spec only_accessed(t()) :: t()
+  def only_accessed(%__MODULE__{flags: flags} = snapshot) do
+    accessed_set = MapSet.new(accessed(snapshot))
+    keep = flags |> Map.keys() |> Enum.filter(&MapSet.member?(accessed_set, &1))
+    clone_with(snapshot, Map.take(flags, keep))
+  end
+
+  @doc """
   Returns a copy of the snapshot scoped to the given keys. Unknown keys are
-  silently dropped — the resulting snapshot contains only the intersection of
-  the requested keys with the snapshot's keys.
+  silently dropped.
+
+  The returned snapshot has its own access tracker. Calls on it do not
+  back-propagate to the parent.
   """
   @spec only(t(), [String.t()]) :: t()
   def only(%__MODULE__{flags: flags} = snapshot, keys) when is_list(keys) do
-    %{snapshot | flags: Map.take(flags, keys)}
+    clone_with(snapshot, Map.take(flags, keys))
   end
 
   @doc """
@@ -186,6 +245,19 @@ defmodule PostHog.FeatureFlags.Evaluations do
       [] -> properties
       keys -> Map.put(properties, :"$active_feature_flags", Enum.sort(keys))
     end
+  end
+
+  defp start_accessed_agent do
+    {:ok, pid} = Agent.start_link(fn -> MapSet.new() end)
+    pid
+  end
+
+  defp record_access(%__MODULE__{accessed_pid: pid}, key) do
+    Agent.update(pid, &MapSet.put(&1, key))
+  end
+
+  defp clone_with(%__MODULE__{} = snapshot, flags) do
+    %{snapshot | flags: flags, accessed_pid: start_accessed_agent()}
   end
 
   defp fetch_and_log(%__MODULE__{flags: flags} = snapshot, key) do
