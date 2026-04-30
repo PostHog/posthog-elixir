@@ -43,14 +43,42 @@ defmodule PostHog.ConfigTest do
     assert config.api_host == "https://us.i.posthog.com"
   end
 
-  test "validate logs when api_key is blank after trimming whitespace" do
-    expect(PostHog.API.Mock, :client, fn api_key, api_host ->
-      assert api_key == ""
-      assert api_host == "https://us.i.posthog.com"
+  test "validate disables PostHog when api_key is missing" do
+    log =
+      capture_log(fn ->
+        assert {:ok, config} =
+                 PostHog.Config.validate(api_client_module: PostHog.API.Mock)
 
-      %PostHog.API.Client{client: :stub_client, module: PostHog.API.Mock}
-    end)
+        assert config.api_key == ""
+        assert config.api_host == "https://us.i.posthog.com"
+        assert config.enabled == false
+        assert config.api_client == nil
+      end)
 
+    assert log =~
+             "posthog api_key is empty after trimming whitespace; PostHog will start in disabled/no-op mode"
+  end
+
+  test "validate disables PostHog when api_key is empty" do
+    log =
+      capture_log(fn ->
+        assert {:ok, config} =
+                 PostHog.Config.validate(
+                   api_key: "",
+                   api_host: "https://us.i.posthog.com",
+                   api_client_module: PostHog.API.Mock
+                 )
+
+        assert config.api_key == ""
+        assert config.enabled == false
+        assert config.api_client == nil
+      end)
+
+    assert log =~
+             "posthog api_key is empty after trimming whitespace; PostHog will start in disabled/no-op mode"
+  end
+
+  test "validate disables PostHog when api_key is blank after trimming whitespace" do
     log =
       capture_log(fn ->
         assert {:ok, config} =
@@ -61,8 +89,11 @@ defmodule PostHog.ConfigTest do
                  )
 
         assert config.api_key == ""
+        assert config.enabled == false
+        assert config.api_client == nil
       end)
 
-    assert log =~ "posthog api_key is empty after trimming whitespace; check your project API key"
+    assert log =~
+             "posthog api_key is empty after trimming whitespace; PostHog will start in disabled/no-op mode"
   end
 end

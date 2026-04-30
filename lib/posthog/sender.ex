@@ -30,15 +30,28 @@ defmodule PostHog.Sender do
     supervisor_name
     |> PostHog.Registry.config()
     |> case do
+      %{enabled: false} ->
+        :ok
+
       %{test_mode: true} ->
         PostHog.Test.remember_event(supervisor_name, event)
 
       _ ->
-        senders =
-          supervisor_name
-          |> PostHog.Registry.registry_name()
-          |> Registry.select([{{{__MODULE__, :_}, :"$1", :"$2"}, [], [{{:"$2", :"$1"}}]}])
+        send_to_sender(event, supervisor_name)
+    end
+  end
 
+  defp send_to_sender(event, supervisor_name) do
+    senders =
+      supervisor_name
+      |> PostHog.Registry.registry_name()
+      |> Registry.select([{{{__MODULE__, :_}, :"$1", :"$2"}, [], [{{:"$2", :"$1"}}]}])
+
+    case senders do
+      [] ->
+        :ok
+
+      senders ->
         # Pick the first available sender, otherwise random busy one.
         senders
         |> Keyword.get_lazy(:available, fn ->
