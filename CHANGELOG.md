@@ -1,5 +1,11 @@
 # posthog
 
+## 2.7.1 — 2026-04-30
+
+### Patch changes
+
+- [48baad3](https://github.com/posthog/posthog-elixir/commit/48baad39944c6553e4c94a7f45b8eff432dc9ae4) Default api_host when omitted — Thanks @marandaneto!
+
 ## 2.7.0 — 2026-04-29
 
 ### Minor changes
