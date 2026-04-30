@@ -25,6 +25,23 @@ defmodule PostHog.ConfigTest do
     assert config.api_host == "https://eu.i.posthog.com"
   end
 
+  test "validate defaults a missing api_host" do
+    expect(PostHog.API.Mock, :client, fn api_key, api_host ->
+      assert api_key == "project_api_key"
+      assert api_host == "https://us.i.posthog.com"
+
+      %PostHog.API.Client{client: :stub_client, module: PostHog.API.Mock}
+    end)
+
+    assert {:ok, config} =
+             PostHog.Config.validate(
+               api_key: "project_api_key",
+               api_client_module: PostHog.API.Mock
+             )
+
+    assert config.api_host == "https://us.i.posthog.com"
+  end
+
   test "validate defaults a blank api_host after trimming whitespace" do
     expect(PostHog.API.Mock, :client, fn api_key, api_host ->
       assert api_key == "project_api_key"

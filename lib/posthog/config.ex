@@ -1,6 +1,8 @@
 defmodule PostHog.Config do
   require Logger
 
+  @default_api_host "https://us.i.posthog.com"
+
   @shared_schema [
     test_mode: [
       type: :boolean,
@@ -12,7 +14,7 @@ defmodule PostHog.Config do
   @configuration_schema [
                           api_host: [
                             type: :string,
-                            required: true,
+                            default: @default_api_host,
                             doc:
                               "`https://us.i.posthog.com` for US cloud or `https://eu.i.posthog.com` for EU cloud"
                           ],
@@ -107,8 +109,6 @@ defmodule PostHog.Config do
 
   @compiled_configuration_schema NimbleOptions.new!(@configuration_schema)
   @compiled_convenience_schema NimbleOptions.new!(@convenience_schema)
-
-  @default_api_host "https://us.i.posthog.com"
 
   @system_global_properties %{
     "$lib": "posthog-elixir",
