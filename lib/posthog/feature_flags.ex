@@ -87,11 +87,136 @@ defmodule PostHog.FeatureFlags do
   end
 
   @doc false
+  def evaluate_flags(distinct_id_or_body) when not is_atom(distinct_id_or_body),
+    do: evaluate_flags(PostHog, distinct_id_or_body)
+
+  @doc """
+  Evaluates feature flags for a `distinct_id` and returns a snapshot.
+
+  Returns `{:ok, %PostHog.FeatureFlags.Evaluations{}}` on success. The snapshot
+  represents a single `/flags` call and lets you branch on multiple flags and
+  enrich captured events from the same fetch — see
+  `PostHog.FeatureFlags.Evaluations` for the full snapshot API and
+  `set_in_context/2` for the recommended capture-enrichment flow.
+
+  Accepts an optional `distinct_id` or a request body map. If neither is
+  passed, attempts to read `distinct_id` from the context.
+
+  ## Body options
+
+  When passing a map, the following keys are forwarded to the `/flags` request
+  body unchanged:
+
+  - `:distinct_id` (required, unless found in context)
+  - `:groups`
+  - `:person_properties`
+  - `:group_properties`
+  - `:disable_geoip`
+
+  Plus one snapshot-specific option:
+
+  - `:flag_keys` - list of flag keys. Forwarded to the request as
+    `flag_keys_to_evaluate` so the server returns only those flags. This
+    scopes the network response, distinct from
+    `PostHog.FeatureFlags.Evaluations.only/2` which filters an already-fetched
+    snapshot in memory.
+
+  ## Examples
+
+  Evaluate flags for a `distinct_id`:
+
+      {:ok, snapshot} = PostHog.FeatureFlags.evaluate_flags("user123")
+      PostHog.FeatureFlags.Evaluations.enabled?(snapshot, "new-dashboard")
+
+  Evaluate a scoped set of flags with person properties:
+
+      PostHog.FeatureFlags.evaluate_flags(%{
+        distinct_id: "user123",
+        person_properties: %{plan: "enterprise"},
+        flag_keys: ["new-dashboard", "beta-checkout"]
+      })
+
+  Evaluate through a named PostHog instance:
+
+      PostHog.FeatureFlags.evaluate_flags(MyPostHog, "user123")
+  """
+  @spec evaluate_flags(PostHog.supervisor_name(), PostHog.distinct_id() | map() | nil) ::
+          {:ok, __MODULE__.Evaluations.t()} | {:error, Exception.t()}
+  def evaluate_flags(name \\ PostHog, distinct_id_or_body \\ nil) do
+    case body_for_flags(distinct_id_or_body) do
+      {:ok, %{distinct_id: distinct_id} = body} ->
+        body = translate_flag_keys(body)
+
+        case flags(name, body) do
+          {:ok, %{body: response_body}} ->
+            {:ok, __MODULE__.Evaluations.new(name, distinct_id, response_body)}
+
+          {:error, _} = error ->
+            error
+        end
+
+      {:error, _} ->
+        # Standardize on returning an empty snapshot when distinct_id can't be
+        # resolved — matches the cross-SDK behavior. The empty distinct_id
+        # short-circuits event firing in `enabled?/2` and `get_flag/2`, so no
+        # events leak with an empty distinct_id.
+        {:ok, __MODULE__.Evaluations.empty(name)}
+    end
+  end
+
+  @doc false
+  def set_in_context(%__MODULE__.Evaluations{} = snapshot),
+    do: set_in_context(PostHog, snapshot)
+
+  @doc """
+  Copies a snapshot's `$feature/<key>` and `$active_feature_flags` properties
+  into the per-process PostHog context.
+
+  Any subsequent `PostHog.capture/3` from this process automatically attaches
+  these properties to the captured event — no additional `/flags` request,
+  with the values guaranteed to match what the snapshot already evaluated.
+
+  This is the idiomatic Elixir way to enrich captured events from an
+  `evaluate_flags/2` snapshot. For one-off enrichment without touching context,
+  merge `PostHog.FeatureFlags.Evaluations.event_properties/1` into a capture's
+  properties directly.
+
+  ## Examples
+
+      {:ok, snapshot} = PostHog.FeatureFlags.evaluate_flags("user123")
+      PostHog.FeatureFlags.set_in_context(snapshot)
+
+      # All subsequent captures pick up $feature/* and $active_feature_flags
+      PostHog.capture("page_viewed", %{distinct_id: "user123"})
+  """
+  @spec set_in_context(PostHog.supervisor_name(), __MODULE__.Evaluations.t()) :: :ok
+  def set_in_context(name, %__MODULE__.Evaluations{} = snapshot) when is_atom(name) do
+    PostHog.set_context(name, __MODULE__.Evaluations.event_properties(snapshot))
+  end
+
+  defp translate_flag_keys(%{flag_keys: flag_keys} = body) when is_list(flag_keys) do
+    body
+    |> Map.delete(:flag_keys)
+    |> Map.put(:flag_keys_to_evaluate, flag_keys)
+  end
+
+  defp translate_flag_keys(body), do: body
+
+  @deprecated "Use PostHog.FeatureFlags.evaluate_flags/2 with PostHog.FeatureFlags.Evaluations.enabled?/2 or get_flag/2"
+  @doc false
   def check(flag_name, distinct_id_or_body) when not is_atom(flag_name),
     do: check(PostHog, flag_name, distinct_id_or_body)
 
+  @deprecated "Use PostHog.FeatureFlags.evaluate_flags/2 with PostHog.FeatureFlags.Evaluations.enabled?/2 or get_flag/2"
   @doc """
   Checks feature flag
+
+  > #### Deprecated {: .warning}
+  >
+  > Use `PostHog.FeatureFlags.evaluate_flags/2` plus
+  > `PostHog.FeatureFlags.Evaluations.enabled?/2` or
+  > `PostHog.FeatureFlags.Evaluations.get_flag/2` instead. The snapshot lets
+  > one `/flags` call serve multiple flag checks plus event enrichment.
 
   If there is a variant assigned, returns `{:ok, variant}`. Otherwise, `{:ok,
   true}` or `{:ok, false}`.
@@ -141,18 +266,28 @@ defmodule PostHog.FeatureFlags do
     end
   end
 
+  @deprecated "Use PostHog.FeatureFlags.evaluate_flags/2 with PostHog.FeatureFlags.Evaluations"
   @doc false
   def get_feature_flag_result(flag_name, distinct_id_or_body)
       when not is_atom(flag_name) and not is_list(distinct_id_or_body),
       do: get_feature_flag_result(PostHog, flag_name, distinct_id_or_body, [])
 
+  @deprecated "Use PostHog.FeatureFlags.evaluate_flags/2 with PostHog.FeatureFlags.Evaluations"
   @doc false
   def get_feature_flag_result(flag_name, distinct_id_or_body, opts)
       when not is_atom(flag_name) and is_list(opts),
       do: get_feature_flag_result(PostHog, flag_name, distinct_id_or_body, opts)
 
+  @deprecated "Use PostHog.FeatureFlags.evaluate_flags/2 with PostHog.FeatureFlags.Evaluations"
   @doc """
   Gets the full feature flag result including value and payload.
+
+  > #### Deprecated {: .warning}
+  >
+  > Use `PostHog.FeatureFlags.evaluate_flags/2` and access flags from the
+  > returned `PostHog.FeatureFlags.Evaluations` snapshot. The snapshot
+  > exposes the same metadata (id, version, reason, payload) plus filter
+  > helpers and capture enrichment via `set_in_context/2`.
 
   Returns `{:ok, %PostHog.FeatureFlags.Result{}}` on success, `{:ok, nil}` if the flag
   is not found, or `{:error, reason}` on failure.
@@ -220,18 +355,26 @@ defmodule PostHog.FeatureFlags do
     end
   end
 
+  @deprecated "Use PostHog.FeatureFlags.evaluate_flags/2 with PostHog.FeatureFlags.Evaluations"
   @doc false
   def get_feature_flag_result!(flag_name, distinct_id_or_body)
       when not is_atom(flag_name) and not is_list(distinct_id_or_body),
       do: get_feature_flag_result!(PostHog, flag_name, distinct_id_or_body, [])
 
+  @deprecated "Use PostHog.FeatureFlags.evaluate_flags/2 with PostHog.FeatureFlags.Evaluations"
   @doc false
   def get_feature_flag_result!(flag_name, distinct_id_or_body, opts)
       when not is_atom(flag_name) and is_list(opts),
       do: get_feature_flag_result!(PostHog, flag_name, distinct_id_or_body, opts)
 
+  @deprecated "Use PostHog.FeatureFlags.evaluate_flags/2 with PostHog.FeatureFlags.Evaluations"
   @doc """
   Gets the full feature flag result or raises on error.
+
+  > #### Deprecated {: .warning}
+  >
+  > Use `PostHog.FeatureFlags.evaluate_flags/2` and access flags from the
+  > returned `PostHog.FeatureFlags.Evaluations` snapshot.
 
   This is a wrapper around `get_feature_flag_result/4` that returns the result
   directly or raises an exception on error. This follows the Elixir convention
@@ -288,21 +431,10 @@ defmodule PostHog.FeatureFlags do
          {:ok, %{body: body}} <- flags(name, body) do
       case body do
         %{"flags" => %{^flag_name => flag_data}} ->
-          {enabled, variant} = extract_flag_enabled_and_variant(flag_data)
-          payload = get_in(flag_data, ["metadata", "payload"])
-
-          flag_result = %__MODULE__.Result{
-            key: flag_name,
-            enabled: enabled,
-            variant: variant,
-            payload: payload
-          }
-
-          evaluated_at = Map.get(body, "evaluatedAt")
+          flag_result = build_result(flag_name, flag_data, body)
 
           if send_event do
-            value = __MODULE__.Result.value(flag_result)
-            log_feature_flag_usage(name, distinct_id, flag_name, {:ok, value}, evaluated_at)
+            log_feature_flag_usage(name, distinct_id, flag_result)
           end
 
           {:ok, flag_result, body}
@@ -315,18 +447,59 @@ defmodule PostHog.FeatureFlags do
     end
   end
 
+  @doc false
+  @spec build_result(String.t(), map(), map()) :: __MODULE__.Result.t()
+  def build_result(flag_name, flag_data, body) do
+    {enabled, variant} = extract_flag_enabled_and_variant(flag_data)
+
+    %__MODULE__.Result{
+      key: flag_name,
+      enabled: enabled,
+      variant: variant,
+      payload: normalize_payload(get_in(flag_data, ["metadata", "payload"])),
+      id: get_in(flag_data, ["metadata", "id"]),
+      version: get_in(flag_data, ["metadata", "version"]),
+      reason: Map.get(flag_data, "reason"),
+      request_id: Map.get(body, "requestId"),
+      evaluated_at: Map.get(body, "evaluatedAt"),
+      errors_while_computing: Map.get(body, "errorsWhileComputingFlags") == true
+    }
+  end
+
+  # PostHog's `/flags` returns payloads as JSON-encoded strings (the user
+  # configures them as JSON in the UI). Decode them so callers receive the
+  # parsed value. Non-string or already-decoded payloads pass through as-is.
+  defp normalize_payload(nil), do: nil
+
+  defp normalize_payload(payload) when is_binary(payload) do
+    case Jason.decode(payload) do
+      {:ok, decoded} -> decoded
+      {:error, _} -> payload
+    end
+  end
+
+  defp normalize_payload(payload), do: payload
+
   defp extract_flag_enabled_and_variant(flag_data) do
     enabled = Map.get(flag_data, "enabled", false) == true
     variant = Map.get(flag_data, "variant")
     {enabled, variant}
   end
 
+  @deprecated "Use PostHog.FeatureFlags.evaluate_flags/2 with PostHog.FeatureFlags.Evaluations.enabled?/2 or get_flag/2"
   @doc false
   def check!(flag_name, distinct_id_or_body) when not is_atom(flag_name),
     do: check!(PostHog, flag_name, distinct_id_or_body)
 
+  @deprecated "Use PostHog.FeatureFlags.evaluate_flags/2 with PostHog.FeatureFlags.Evaluations.enabled?/2 or get_flag/2"
   @doc """
   Checks feature flag and returns the variant or raises on error.
+
+  > #### Deprecated {: .warning}
+  >
+  > Use `PostHog.FeatureFlags.evaluate_flags/2` and
+  > `PostHog.FeatureFlags.Evaluations.enabled?/2` /
+  > `PostHog.FeatureFlags.Evaluations.get_flag/2` instead.
 
   This is a wrapper around `check/3` that returns the variant directly
   or raises an exception on error. This follows the Elixir convention where
@@ -368,26 +541,63 @@ defmodule PostHog.FeatureFlags do
     end
   end
 
-  defp log_feature_flag_usage(name, distinct_id, flag_name, result, evaluated_at) do
-    with {:ok, variant} <- result do
-      properties = %{
-        distinct_id: distinct_id,
-        "$feature_flag": flag_name,
-        "$feature_flag_response": variant
+  @doc false
+  @spec log_feature_flag_usage(
+          PostHog.supervisor_name(),
+          PostHog.distinct_id(),
+          __MODULE__.Result.t()
+        ) ::
+          :ok | {:error, :missing_distinct_id}
+  def log_feature_flag_usage(name, distinct_id, %__MODULE__.Result{} = result) do
+    log_feature_flag_usage(name, distinct_id, result, [])
+  end
+
+  @doc false
+  @spec log_feature_flag_usage(
+          PostHog.supervisor_name(),
+          PostHog.distinct_id(),
+          __MODULE__.Result.t(),
+          [String.t()]
+        ) ::
+          :ok | {:error, :missing_distinct_id}
+  def log_feature_flag_usage(name, distinct_id, %__MODULE__.Result{} = result, extra_errors)
+      when is_list(extra_errors) do
+    flag_missing? = "flag_missing" in extra_errors
+    value = if flag_missing?, do: nil, else: __MODULE__.Result.value(result)
+    errors = build_error_codes(result, extra_errors)
+
+    properties =
+      %{
+        "$feature/#{result.key}" => value,
+        :distinct_id => distinct_id,
+        :"$feature_flag" => result.key,
+        :"$feature_flag_response" => value
       }
+      |> maybe_put(:"$feature_flag_id", result.id)
+      |> maybe_put(:"$feature_flag_version", result.version)
+      |> maybe_put(:"$feature_flag_reason", result.reason)
+      |> maybe_put(:"$feature_flag_request_id", result.request_id)
+      |> maybe_put(:"$feature_flag_evaluated_at", result.evaluated_at)
+      |> maybe_put(:"$feature_flag_payload", result.payload)
+      |> maybe_put(:"$feature_flag_error", errors)
 
-      properties =
-        if evaluated_at do
-          Map.put(properties, :"$feature_flag_evaluated_at", evaluated_at)
-        else
-          properties
-        end
+    PostHog.capture(name, "$feature_flag_called", properties)
 
-      PostHog.capture(name, "$feature_flag_called", properties)
-
-      PostHog.set_context(name, %{"$feature/#{flag_name}" => variant})
+    if flag_missing? do
+      :ok
+    else
+      PostHog.set_context(name, %{"$feature/#{result.key}" => value})
     end
   end
+
+  defp build_error_codes(%__MODULE__.Result{errors_while_computing: true}, extra),
+    do: ["errors_while_computing_flags" | extra] |> Enum.join(",")
+
+  defp build_error_codes(%__MODULE__.Result{}, []), do: nil
+  defp build_error_codes(%__MODULE__.Result{}, extra), do: Enum.join(extra, ",")
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp body_for_flags(distinct_id_or_body) do
     case distinct_id_or_body do
