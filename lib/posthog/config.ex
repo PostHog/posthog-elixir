@@ -20,9 +20,10 @@ defmodule PostHog.Config do
                           ],
                           api_key: [
                             type: :string,
-                            required: true,
+                            default: "",
                             doc: """
                             Your PostHog Project API key. Find it in your project's settings under the Project ID section.
+                            If omitted or empty after trimming whitespace, PostHog starts in disabled/no-op mode.
                             """
                           ],
                           api_client_module: [
@@ -184,15 +185,24 @@ defmodule PostHog.Config do
 
     with {:ok, validated} <-
            NimbleOptions.validate(normalized_options, @compiled_configuration_schema) do
+      api_key_blank? = blank_api_key?(validated)
       log_blank_api_key(validated)
 
       config = Map.new(validated)
-      client = config.api_client_module.client(config.api_key, config.api_host)
+
+      client =
+        if api_key_blank? do
+          nil
+        else
+          config.api_client_module.client(config.api_key, config.api_host)
+        end
+
       global_properties = Map.merge(config.global_properties, @system_global_properties)
 
       final_config =
         config
         |> Map.put(:api_client, client)
+        |> Map.put(:enabled, not api_key_blank?)
         |> Map.put(
           :in_app_modules,
           config.in_app_otp_apps |> Enum.flat_map(&Application.spec(&1, :modules)) |> MapSet.new()
@@ -219,10 +229,20 @@ defmodule PostHog.Config do
         normalized_options
       end
     end)
+    |> then(fn normalized_options ->
+      if disabled_options?(normalized_options) and
+           not Keyword.has_key?(normalized_options, :api_host) do
+        Keyword.put(normalized_options, :api_host, @default_api_host)
+      else
+        normalized_options
+      end
+    end)
   end
 
   defp normalize_api_key(api_key) when is_binary(api_key), do: String.trim(api_key)
   defp normalize_api_key(api_key), do: api_key
+
+  defp disabled_options?(options), do: Keyword.get(options, :api_key, "") == ""
 
   defp normalize_api_host(api_host) when is_binary(api_host) do
     api_host
@@ -235,10 +255,12 @@ defmodule PostHog.Config do
 
   defp normalize_api_host(api_host), do: api_host
 
+  defp blank_api_key?(validated), do: validated[:api_key] == ""
+
   defp log_blank_api_key(validated) do
-    if validated[:api_key] == "" do
+    if blank_api_key?(validated) do
       Logger.error(
-        "posthog api_key is empty after trimming whitespace; check your project API key"
+        "posthog api_key is empty after trimming whitespace; PostHog will start in disabled/no-op mode"
       )
     end
   end

@@ -37,6 +37,8 @@ defmodule PostHog.Supervisor do
     Supervisor.init(children, strategy: :one_for_one)
   end
 
+  defp sources(%{enabled: false}), do: []
+
   defp sources(config) do
     if config.enable_source_code_context do
       opts = [
@@ -52,6 +54,8 @@ defmodule PostHog.Supervisor do
       []
     end
   end
+
+  defp senders(%{enabled: false}), do: []
 
   defp senders(config) do
     pool_size = Map.get(config, :sender_pool_size, max(System.schedulers_online(), 2))
