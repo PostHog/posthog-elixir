@@ -12,7 +12,7 @@ This repository uses [Sampo](https://github.com/bruits/sampo) for versioning and
 
 2. Commit the generated `.sampo/changesets/*.md` file with your pull request.
 3. After review, merge the PR to `main`. No GitHub release label is required.
-4. A push to `main` that includes `.sampo/changesets/**` changes automatically starts the release workflow.
+4. A push to `main` that includes `.sampo/changesets/*.md` changes automatically starts the release workflow.
 5. Approve the release when prompted in Slack / the GitHub `Release` environment.
 
 After approval, The workflow runs Sampo, publishes the Hex package, tags the release, and creates a GitHub Release.
