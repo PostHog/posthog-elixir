@@ -1,32 +1,27 @@
 name: "Release"
 
 on:
-  pull_request:
-    types: [closed]
+  push:
     branches: [main]
+    paths:
+      - '.sampo/changesets/*.md'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 # Concurrency control: only one release process can run at a time
-# This prevents race conditions if multiple PRs with 'release' label merge simultaneously
+# This prevents race conditions if multiple releasable changesets merge simultaneously
 concurrency:
   group: release
   cancel-in-progress: false
 
 jobs:
-  check-release-label:
-    name: Check for release label
+  check-changesets:
+    name: Check for changesets
     runs-on: ubuntu-latest
-    # Run when PR with 'release' label is merged to main
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'pull_request' &&
-        github.event.pull_request.merged == true &&
-        contains(github.event.pull_request.labels.*.name, 'release'))
     outputs:
-      should-release: ${{ steps.check.outputs.should-release }}
+      has-changesets: ${{ steps.check.outputs.has-changesets }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -34,22 +29,22 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Check release conditions
+      - name: Check for changesets
         id: check
         run: |
           changeset_count=$(find .sampo/changesets -name '*.md' 2>/dev/null | wc -l)
           if [ "$changeset_count" -gt 0 ]; then
-            echo "should-release=true" >> "$GITHUB_OUTPUT"
+            echo "has-changesets=true" >> "$GITHUB_OUTPUT"
             echo "Found $changeset_count changeset(s), ready to release"
           else
-            echo "should-release=false" >> "$GITHUB_OUTPUT"
+            echo "has-changesets=false" >> "$GITHUB_OUTPUT"
             echo "No changesets to release"
           fi
 
   notify-approval-needed:
     name: Notify Slack - Approval Needed
-    needs: check-release-label
-    if: needs.check-release-label.outputs.should-release == 'true'
+    needs: check-changesets
+    if: needs.check-changesets.outputs.has-changesets == 'true'
     uses: posthog/.github/.github/workflows/notify-approval-needed.yml@main
     with:
       slack_channel_id: ${{ vars.SLACK_APPROVALS_CLIENT_LIBRARIES_CHANNEL_ID }}
@@ -60,11 +55,11 @@ jobs:
 
   release:
     name: Release and publish
-    needs: [check-release-label, notify-approval-needed]
+    needs: [check-changesets, notify-approval-needed]
     runs-on: ubuntu-latest
-    # Use `always()` to ensure the job runs even if the check-release-label job fails
+    # Use `always()` to ensure the job runs even if the Slack notification fails
     # but still depend on it to be able to use `needs.notify-approval-needed.outputs.slack_ts`
-    if: always() && needs.check-release-label.outputs.should-release == 'true'
+    if: always() && needs.check-changesets.outputs.has-changesets == 'true'
     environment: "Release" # This will require an approval from a maintainer, they are notified in Slack above
     permissions:
       contents: write
@@ -149,7 +144,7 @@ jobs:
             echo "No changes to commit"
             echo "committed=false" >> "$GITHUB_OUTPUT"
           else
-            git commit -m "chore: Release v${NEW_VERSION}"
+            git commit -m "chore: Release v${NEW_VERSION} [skip ci]"
             git push origin main
             echo "committed=true" >> "$GITHUB_OUTPUT"
           fi
@@ -199,7 +194,7 @@ jobs:
 
   notify-released:
     name: Notify Slack - Released
-    needs: [check-release-label, notify-approval-needed, release]
+    needs: [check-changesets, notify-approval-needed, release]
     runs-on: ubuntu-latest
     if: always() && needs.release.result == 'success' && needs.notify-approval-needed.outputs.slack_ts != ''
     steps:

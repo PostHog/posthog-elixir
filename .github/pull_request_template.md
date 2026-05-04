@@ -17,6 +17,5 @@
 ### If releasing new changes
 
 - [ ] Ran `sampo add` to generate a changeset file
-- [ ] Added the `release` label to the PR
 
 <!-- For more details check RELEASING.md -->

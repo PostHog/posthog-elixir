@@ -24,8 +24,7 @@ Changesets are stored in `.sampo/changesets/` and will be consumed during the re
 ## How to trigger a release
 
 1. **Add a changeset** to your PR describing the changes (see above)
-2. **Add the `release` label** to the PR when it's ready for release
-3. **Merge the PR** into `main`
+2. **Merge the PR** into `main`. No release label is required.
 
 Once merged, the release workflow will automatically:
 
