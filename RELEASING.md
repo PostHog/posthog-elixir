@@ -1,41 +1,26 @@
 # Releasing
 
-Releases are semi-automated using [Sampo](https://github.com/PostHog/sampo) and follow the [PostHog SDK releases process](https://posthog.com/handbook/engineering/sdks/releases).
+This repository uses [Sampo](https://github.com/bruits/sampo) for versioning and changelog generation, with GitHub Actions handling publishing.
 
-## Creating Changesets
+## How to Release
 
-When making changes that should be included in the changelog, create a changeset:
+1. When making a change that should be released, include a Sampo changeset:
 
-```bash
-# Install sampo CLI (requires Rust toolchain)
-cargo install sampo
+   ```bash
+   sampo add
+   ```
 
-# Create a changeset describing your change
-sampo add
-```
+2. Commit the generated `.sampo/changesets/*.md` file with your pull request.
+3. After review, merge the PR to `main`. No GitHub release label is required.
+4. A push to `main` that includes `.sampo/changesets/**` changes automatically starts the release workflow.
+5. Approve the release when prompted in Slack / the GitHub `Release` environment.
 
-Follow the prompts to specify:
+After approval, The workflow runs Sampo, publishes the Hex package, tags the release, and creates a GitHub Release.
 
-- The type of change (`patch`, `minor`, or `major`)
-- A description of the change for the changelog
+## Manual Trigger
 
-Changesets are stored in `.sampo/changesets/` and will be consumed during the release process.
+You can also manually trigger the release workflow from the Actions tab with `workflow_dispatch`. Manual runs still require pending Sampo changesets.
 
-## How to trigger a release
+## Troubleshooting
 
-1. **Add a changeset** to your PR describing the changes (see above)
-2. **Add the `release` label** to the PR when it's ready for release
-3. **Merge the PR** into `main`
-
-Once merged, the release workflow will automatically:
-
-- Consume all pending changesets
-- Update the version in `mix.exs`
-- Update `CHANGELOG.md` with the new entries
-- Create a Git tag (e.g., `v2.2.0`)
-- Create a GitHub Release with generated notes
-- Publish the package to [Hex.pm](https://hex.pm/packages/posthog)
-
-## Release approval
-
-All releases require approval from the Client Libraries team via the `Release` GitHub environment. Release requests are posted to `#approvals-client-libraries` on Slack.
+If the release workflow reports that no changesets were found, make sure your PR includes at least one releasable `.sampo/changesets/*.md` file.
