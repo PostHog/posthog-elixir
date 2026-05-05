@@ -162,18 +162,18 @@ jobs:
           git fetch origin main
           git reset --hard "$COMMIT_HASH"
       - name: Publish with Sampo
-        if: steps.check-changes.outputs.committed == 'true'
+        if: steps.commit-release.outputs.commit-hash != ''
         env:
           GITHUB_TOKEN: ${{ steps.releaser.outputs.token }}
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
         run: sampo publish -- --yes
 
       - name: Push tags
-        if: steps.check-changes.outputs.committed == 'true'
+        if: steps.commit-release.outputs.commit-hash != ''
         run: git push origin --tags
 
       - name: Create GitHub Release
-        if: steps.check-changes.outputs.committed == 'true'
+        if: steps.commit-release.outputs.commit-hash != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEW_VERSION: ${{ steps.sampo-release.outputs.new_version }}
