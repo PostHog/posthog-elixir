@@ -10,7 +10,6 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
   alias PostHog.API
   alias PostHog.FeatureFlags
   alias PostHog.FeatureFlags.Evaluations
-  alias PostHog.FeatureFlags.Result
 
   setup :setup_supervisor
   setup :verify_on_exit!
@@ -250,11 +249,12 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
       assert Evaluations.get_flag_payload(snapshot, "unknown-flag") == nil
     end
 
-    test "does not fire a $feature_flag_called event", %{snapshot: snapshot} do
+    test "does not fire a $feature_flag_called event or count as access", %{snapshot: snapshot} do
       Evaluations.get_flag_payload(snapshot, "variant-flag")
       Evaluations.get_flag_payload(snapshot, "unknown-flag")
 
       assert all_captured() == []
+      assert Evaluations.accessed(snapshot) == []
     end
   end
 
@@ -280,10 +280,10 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
       assert Evaluations.keys(narrowed) == ["variant-flag"]
     end
 
-    test "narrows the snapshot to flags accessed via get_flag_payload/2", %{snapshot: snapshot} do
+    test "does not include flags read only via get_flag_payload/2", %{snapshot: snapshot} do
       Evaluations.get_flag_payload(snapshot, "variant-flag")
       narrowed = Evaluations.only_accessed(snapshot)
-      assert Evaluations.keys(narrowed) == ["variant-flag"]
+      assert Evaluations.keys(narrowed) == []
     end
 
     test "returns an empty snapshot when nothing has been accessed", %{snapshot: snapshot} do

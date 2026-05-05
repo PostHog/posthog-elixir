@@ -8,16 +8,15 @@ defmodule PostHog.FeatureFlags.Evaluations do
   paying the cost of one round-trip per flag.
 
   Each snapshot owns a small `Agent` linked to the calling process that tracks
-  which flags were accessed via `enabled?/2`, `get_flag/2`, and
-  `get_flag_payload/2`. The Agent exits with the calling process — no manual
-  cleanup is required.
+  which flags were accessed via `enabled?/2` and `get_flag/2`. The Agent exits
+  with the calling process — no manual cleanup is required.
 
   ## Querying
 
   Use `enabled?/2`, `get_flag/2`, and `get_flag_payload/2` to read individual
-  flags. `enabled?/2` and `get_flag/2` fire a `$feature_flag_called` event
-  with full metadata (id, version, reason, request_id) on each call;
-  `get_flag_payload/2` records the access without firing an event.
+  flags. `enabled?/2` and `get_flag/2` record access and fire a
+  `$feature_flag_called` event with full metadata (id, version, reason,
+  request_id) on each call; `get_flag_payload/2` does neither.
 
       {:ok, snapshot} = PostHog.FeatureFlags.evaluate_flags("user-123")
 
@@ -41,9 +40,9 @@ defmodule PostHog.FeatureFlags.Evaluations do
   ## Filtering
 
   Use `only_accessed/1` to narrow a snapshot to flags accessed so far via
-  `enabled?/2`, `get_flag/2`, or `get_flag_payload/2`. Use `only/2` to narrow
-  by an explicit key list. Both return a fresh snapshot with its own access
-  tracker — calls on the filtered view do not back-propagate to the parent.
+  `enabled?/2` or `get_flag/2`. Use `only/2` to narrow by an explicit key list.
+  Both return a fresh snapshot with its own access tracker — calls on the
+  filtered view do not back-propagate to the parent.
 
       narrowed = PostHog.FeatureFlags.Evaluations.only_accessed(snapshot)
       PostHog.FeatureFlags.set_in_context(narrowed)
@@ -157,14 +156,13 @@ defmodule PostHog.FeatureFlags.Evaluations do
 
   @doc """
   Returns the configured payload for the flag, or `nil` for unknown flags or
-  flags without a payload. Records the access.
+  flags without a payload.
 
-  Does **not** fire a `$feature_flag_called` event.
+  Does **not** record access for `only_accessed/1` or fire a
+  `$feature_flag_called` event.
   """
   @spec get_flag_payload(t(), String.t()) :: any() | nil
-  def get_flag_payload(%__MODULE__{flags: flags} = snapshot, key) when is_binary(key) do
-    record_access(snapshot, key)
-
+  def get_flag_payload(%__MODULE__{flags: flags}, key) when is_binary(key) do
     case Map.fetch(flags, key) do
       {:ok, %Result{payload: payload}} -> payload
       :error -> nil
@@ -178,8 +176,8 @@ defmodule PostHog.FeatureFlags.Evaluations do
   def keys(%__MODULE__{flags: flags}), do: flags |> Map.keys() |> Enum.sort()
 
   @doc """
-  Returns the sorted list of keys accessed via `enabled?/2`, `get_flag/2`, or
-  `get_flag_payload/2` on this snapshot.
+  Returns the sorted list of keys accessed via `enabled?/2` or `get_flag/2` on
+  this snapshot.
 
   Includes keys that were accessed but absent from the snapshot.
   """
@@ -190,7 +188,7 @@ defmodule PostHog.FeatureFlags.Evaluations do
 
   @doc """
   Returns a copy of the snapshot scoped to the flags accessed so far via
-  `enabled?/2`, `get_flag/2`, or `get_flag_payload/2`.
+  `enabled?/2` or `get_flag/2`.
 
   Returns an empty snapshot when nothing has been accessed yet — including
   no flags would be more surprising than helpful, since the caller asked for
