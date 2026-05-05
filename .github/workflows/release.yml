@@ -133,35 +133,47 @@ jobs:
           new_version=$(grep '@version "' mix.exs | grep -o '"[0-9]\+\.[0-9]\+\.[0-9]\+"' | tr -d '"')
           echo "new_version=$new_version" >> "$GITHUB_OUTPUT"
 
-      - name: Commit release changes
-        id: commit-release
-        env:
-          GITHUB_TOKEN: ${{ steps.releaser.outputs.token }}
-          NEW_VERSION: ${{ steps.sampo-release.outputs.new_version }}
+      - name: Check for release changes
+        id: check-changes
         run: |
-          git add -A
-          if git diff --staged --quiet; then
+          if [ -z "$(git status --porcelain)" ]; then
             echo "No changes to commit"
             echo "committed=false" >> "$GITHUB_OUTPUT"
           else
-            git commit -m "chore: Release v${NEW_VERSION} [skip ci]"
-            git push origin main
             echo "committed=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Commit release changes
+        id: commit-release
+        if: steps.check-changes.outputs.committed == 'true'
+        uses: planetscale/ghcommit-action@25309d8005ac7c3bcd61d3fe19b69e0fe47dbdde # v0.2.20
+        with:
+          commit_message: "chore: Release v${{ steps.sampo-release.outputs.new_version }} [skip ci]"
+          repo: ${{ github.repository }}
+          branch: main
+        env:
+          GITHUB_TOKEN: ${{ steps.releaser.outputs.token }}
+
+      - name: Sync checkout to release commit
+        if: steps.commit-release.outputs.commit-hash != ''
+        env:
+          COMMIT_HASH: ${{ steps.commit-release.outputs.commit-hash }}
+        run: |
+          git fetch origin main
+          git reset --hard "$COMMIT_HASH"
       - name: Publish with Sampo
-        if: steps.commit-release.outputs.committed == 'true'
+        if: steps.commit-release.outputs.commit-hash != ''
         env:
           GITHUB_TOKEN: ${{ steps.releaser.outputs.token }}
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
         run: sampo publish -- --yes
 
       - name: Push tags
-        if: steps.commit-release.outputs.committed == 'true'
+        if: steps.commit-release.outputs.commit-hash != ''
         run: git push origin --tags
 
       - name: Create GitHub Release
-        if: steps.commit-release.outputs.committed == 'true'
+        if: steps.commit-release.outputs.commit-hash != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEW_VERSION: ${{ steps.sampo-release.outputs.new_version }}
