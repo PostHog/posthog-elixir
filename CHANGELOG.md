@@ -1,5 +1,11 @@
 # posthog
 
+## 2.8.1 — 2026-05-05
+
+### Patch changes
+
+- [68baae7](https://github.com/posthog/posthog-elixir/commit/68baae7e67bb5079342ad9d054f266d808a96533) Do not count `get_flag_payload/2` calls as accesses for `only_accessed/1`. — Thanks @dustinbyrne!
+
 ## 2.8.0 — 2026-05-01
 
 ### Minor changes
