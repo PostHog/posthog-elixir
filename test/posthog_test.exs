@@ -159,6 +159,20 @@ defmodule PostHogTest do
                event.uuid
              )
     end
+
+    @tag config: [supervisor_name: MyPostHog, mode: :drop_events]
+    test "drop_events mode drops events" do
+      PostHog.bare_capture(MyPostHog, "case tested", "distinct_id")
+
+      assert [] = all_captured(MyPostHog)
+    end
+
+    @tag config: [supervisor_name: MyPostHog, test_mode: true, mode: :drop_events]
+    test "deprecated test_mode: true still works" do
+      PostHog.bare_capture(MyPostHog, "case tested", "distinct_id")
+
+      assert [_] = all_captured(MyPostHog)
+    end
   end
 
   describe "capture/4" do

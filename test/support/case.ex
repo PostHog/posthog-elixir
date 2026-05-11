@@ -19,7 +19,7 @@ defmodule PostHog.Case do
         api_client_module: PostHog.API.Mock,
         supervisor_name: context[:test],
         capture_level: :info,
-        test_mode: true
+        mode: :test
       ]
       |> Keyword.merge(context[:config] || [])
       |> PostHog.Config.validate!()

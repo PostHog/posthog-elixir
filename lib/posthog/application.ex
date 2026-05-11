@@ -18,7 +18,7 @@ defmodule PostHog.Application do
       end
 
     ownership_children =
-      if conv_config.test_mode do
+      if conv_config.mode == :test || conv_config[:test_mode] do
         [{NimbleOwnership, name: PostHog.Ownership}]
       else
         []

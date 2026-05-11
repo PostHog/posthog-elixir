@@ -37,11 +37,20 @@ config :posthog,
   in_app_otp_apps: [:my_app]
 ```
 
-For test environment, you want to enable test_mode:
+For test environment, you want to enable test mode:
 
 ```elixir
+# config/test.exs
 config :posthog,
-  test_mode: true
+  mode: :test
+```
+
+If you don't want to send events in `dev`, you can enable drop_events mode:
+
+```elixir
+# config/dev.exs
+config :posthog,
+  mode: :drop_events
 ```
 
 Optionally, enable [Plug integration](lib/posthog/integrations/plug.ex).
