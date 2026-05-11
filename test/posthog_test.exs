@@ -16,8 +16,21 @@ defmodule PostHogTest do
     end
 
     @tag config: [supervisor_name: CustomPostHog]
+    test "meaningful error if application isn't started" do
+      assert_raise PostHog.Error, fn ->
+        PostHog.config()
+      end
+    end
+
+    @tag config: [supervisor_name: CustomPostHog]
     test "uses custom supervisor name" do
       assert %{supervisor_name: CustomPostHog} = PostHog.config(CustomPostHog)
+    end
+
+    test "pass real error as is for custom supervisors" do
+      assert_raise ArgumentError,
+                   "unknown registry: CustomPostHog.Registry. Either the registry name is invalid or the registry is not running, possibly because its application isn't started",
+                   fn -> PostHog.config(CustomPostHog) end
     end
   end
 
@@ -227,6 +240,13 @@ defmodule PostHogTest do
                },
                timestamp: _
              } = event
+    end
+
+    @tag config: [supervisor_name: CustomPostHog]
+    test "meaningful error if application isn't started" do
+      assert_raise PostHog.Error, fn ->
+        PostHog.capture("case tested", %{distinct_id: "distinct_id"})
+      end
     end
   end
 
