@@ -97,7 +97,7 @@ defmodule PostHog.SenderTest do
       assert %{events: ["my_event"]} = :sys.get_state(pid)
     end
 
-    test "immediately sends after reaching max_batch_events", %{
+    test "immediately sends after reaching max_batch_events and cancels timer", %{
       api_client: api_client,
       registry: registry
     } do
@@ -129,6 +129,10 @@ defmodule PostHog.SenderTest do
       end)
 
       Sender.send("foo", @supervisor_name)
+
+      %{timer_ref: ref} = :sys.get_state(pid)
+      assert is_reference(ref)
+
       Sender.send("bar", @supervisor_name)
 
       assert_receive :ready
@@ -136,7 +140,7 @@ defmodule PostHog.SenderTest do
       [{^pid, :busy}] = Registry.lookup(registry, {PostHog.Sender, 1})
       send(pid, :go)
 
-      assert %{events: []} = :sys.get_state(pid)
+      assert %{events: [], timer_ref: nil} = :sys.get_state(pid)
       [{^pid, :available}] = Registry.lookup(registry, {PostHog.Sender, 1})
     end
 
@@ -206,6 +210,50 @@ defmodule PostHog.SenderTest do
       Sender.send("foo", @supervisor_name)
 
       assert :ok = GenServer.stop(pid)
+    end
+
+    test "does not send empty batch", %{api_client: api_client, registry: registry} do
+      test_pid = self()
+
+      pid =
+        start_link_supervised!(
+          {Sender,
+           supervisor_name: @supervisor_name,
+           index: 1,
+           api_client: api_client,
+           max_batch_time_ms: 60_000,
+           max_batch_events: 2}
+        )
+
+      expect(API.Mock, :request, fn _client, method, url, opts ->
+        assert method == :post
+        assert url == "/batch"
+
+        assert opts[:json] == %{
+                 batch: ["bar", "foo"]
+               }
+
+        send(test_pid, :ready)
+
+        receive do
+          :go -> :ok
+        end
+
+        send(test_pid, :done)
+      end)
+
+      Sender.send("foo", @supervisor_name)
+      Sender.send("bar", @supervisor_name)
+
+      assert_receive :ready
+      [{^pid, :busy}] = Registry.lookup(registry, {PostHog.Sender, 1})
+      send(pid, :go)
+      assert_receive :done
+      %{timer_ref: ref} = :sys.get_state(pid)
+      [{^pid, :available}] = Registry.lookup(registry, {PostHog.Sender, 1})
+
+      send(pid, {:timeout, ref, :batch_time_reached})
+      refute_receive :ready
     end
   end
 end
