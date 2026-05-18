@@ -1,5 +1,11 @@
 # posthog
 
+## 2.8.2 — 2026-05-18
+
+### Patch changes
+
+- [b737a36](https://github.com/posthog/posthog-elixir/commit/b737a36b4135aa5863e2b783aad5d77514d89cf4) Improve events batching logic and prevent SDK from sending empty batches — Thanks @martosaur!
+
 ## 2.8.1 — 2026-05-05
 
 ### Patch changes
