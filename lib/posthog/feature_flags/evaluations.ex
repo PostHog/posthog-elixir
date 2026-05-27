@@ -229,7 +229,7 @@ defmodule PostHog.FeatureFlags.Evaluations do
       properties = PostHog.FeatureFlags.Evaluations.event_properties(snapshot)
       PostHog.capture("page_viewed", Map.merge(%{distinct_id: "u1"}, properties))
   """
-  @spec event_properties(t()) :: %{String.t() => any()}
+  @spec event_properties(t()) :: PostHog.properties()
   def event_properties(%__MODULE__{flags: flags}) do
     {properties, active} =
       Enum.reduce(flags, {%{}, []}, fn {key, %Result{} = result}, {props, active} ->

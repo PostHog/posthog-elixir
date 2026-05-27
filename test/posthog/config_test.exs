@@ -60,6 +60,28 @@ defmodule PostHog.ConfigTest do
     assert config.api_host == "https://us.i.posthog.com"
   end
 
+  test "validate accepts batching options" do
+    expect(PostHog.API.Mock, :client, fn api_key, api_host ->
+      assert api_key == "project_api_key"
+      assert api_host == "https://us.i.posthog.com"
+
+      %PostHog.API.Client{client: :stub_client, module: PostHog.API.Mock}
+    end)
+
+    assert {:ok, config} =
+             PostHog.Config.validate(
+               api_key: "project_api_key",
+               api_client_module: PostHog.API.Mock,
+               sender_pool_size: 3,
+               max_batch_time_ms: 250,
+               max_batch_events: 10
+             )
+
+    assert config.sender_pool_size == 3
+    assert config.max_batch_time_ms == 250
+    assert config.max_batch_events == 10
+  end
+
   test "validate logs when api_key is blank after trimming whitespace" do
     expect(PostHog.API.Mock, :client, fn api_key, api_host ->
       assert api_key == ""

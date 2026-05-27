@@ -47,7 +47,13 @@ defmodule PostHog.MixProject do
       assets: %{
         "assets" => "assets"
       },
-      extras: ["README.md", "CHANGELOG.md", "MIGRATION.md", "guides/advanced-configuration.md"],
+      extras: [
+        "README.md",
+        "CHANGELOG.md",
+        "MIGRATION.md",
+        "CONTRIBUTING.md",
+        "guides/advanced-configuration.md"
+      ],
       groups_for_modules: [
         Integrations: [PostHog.Integrations.Plug, PostHog.Integrations.LLMAnalytics.Req],
         Testing: [PostHog.Test]

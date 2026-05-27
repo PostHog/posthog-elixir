@@ -7,7 +7,8 @@ defmodule PostHog.Config do
     test_mode: [
       type: :boolean,
       default: false,
-      doc: "Test mode allows tests assert captured events."
+      doc:
+        "Test mode drops events in memory so tests can assert captured events without sending them to PostHog."
     ]
   ]
 
@@ -51,6 +52,21 @@ defmodule PostHog.Config do
                             type: :map,
                             default: %{},
                             doc: "Map of properties that should be added to all events"
+                          ],
+                          sender_pool_size: [
+                            type: :pos_integer,
+                            doc:
+                              "Number of background sender workers used to batch and send events. Defaults to `max(System.schedulers_online(), 2)`."
+                          ],
+                          max_batch_time_ms: [
+                            type: :non_neg_integer,
+                            doc:
+                              "Maximum time, in milliseconds, to wait before flushing a non-empty event batch. Defaults to `10_000`."
+                          ],
+                          max_batch_events: [
+                            type: :pos_integer,
+                            doc:
+                              "Maximum number of events to collect before flushing a batch immediately. Defaults to `100`."
                           ],
                           in_app_otp_apps: [
                             type: {:list, :atom},
@@ -134,12 +150,21 @@ defmodule PostHog.Config do
   """
 
   @typedoc """
-  Map containing valid configuration.
+  Map containing validated configuration for a PostHog supervision tree.
 
-  It mostly follows `t:options/0`, but the internal structure shouldn't be relied upon.
+  It mostly follows `t:options/0`, but also includes runtime values such as the
+  initialized API client, resolved in-app modules, and system global properties.
+  The internal structure should not be relied upon outside of starting
+  `PostHog.Supervisor` or reading values through `PostHog.config/1`.
   """
   @opaque config() :: map()
 
+  @typedoc """
+  Keyword options accepted by `validate/1` and `validate!/1`.
+
+  See the module documentation for the full schema, defaults, and remarks for
+  each configuration option.
+  """
   @type options() :: unquote(NimbleOptions.option_typespec(@compiled_configuration_schema))
 
   @doc false
@@ -166,7 +191,9 @@ defmodule PostHog.Config do
   end
 
   @doc """
-  See `validate/1`.
+  Validates configuration and returns a `t:config/0`, raising if validation fails.
+
+  See `validate/1` for the accepted options and return shape.
   """
   @spec validate!(options()) :: config()
   def validate!(options) do
@@ -175,7 +202,21 @@ defmodule PostHog.Config do
   end
 
   @doc """
-  Validates configuration against the schema.
+  Validates configuration against the supervisor schema.
+
+  ## Parameters
+
+  - `options` - keyword list matching `t:options/0`.
+
+  ## Returns
+
+  Returns `{:ok, config}` with a normalized `t:config/0` on success, or
+  `{:error, %NimbleOptions.ValidationError{}}` when the options are invalid.
+
+  ## Remarks
+
+  String `:api_key` and `:api_host` values are trimmed before validation. A blank
+  `:api_host` falls back to the default PostHog US ingestion host.
   """
   @spec validate(options()) ::
           {:ok, config()} | {:error, NimbleOptions.ValidationError.t()}
