@@ -64,7 +64,6 @@ defmodule PostHog.Supervisor do
            supervisor_name: config.supervisor_name,
            max_batch_time_ms: Map.get(config, :max_batch_time_ms, :timer.seconds(10)),
            max_batch_events: Map.get(config, :max_batch_events, 100),
-           test_mode: config.test_mode,
            index: index
          ]},
         id: {PostHog.Sender, index}

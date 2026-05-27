@@ -6,8 +6,18 @@ defmodule PostHog.Config do
   @shared_schema [
     test_mode: [
       type: :boolean,
-      default: false,
-      doc: "Test mode allows tests assert captured events."
+      doc: "Test mode allows tests assert captured events.",
+      deprecated: "Use `mode: :test` instead."
+    ],
+    mode: [
+      type: {:in, [:normal, :drop_events, :test]},
+      default: :normal,
+      doc: """
+      Supervisor's mode of operation.
+      * `:normal` (default) - all events are sent to PostHog
+      * `:drop_events` - all events are dropped. This is useful for example in dev environment.
+      * `:test` - all events are captured for assertions. See `PostHog.Test`
+      """
     ]
   ]
 
@@ -156,6 +166,10 @@ defmodule PostHog.Config do
     |> NimbleOptions.validate!(@compiled_convenience_schema)
     |> Map.new()
     |> case do
+      %{enable: true, mode: mode} = conv when mode in [:drop_events, :test] ->
+        config = configuration_options |> Keyword.put_new(:api_key, "fake_key") |> validate!()
+        {conv, config}
+
       %{enable: true} = conv ->
         config = validate!(configuration_options)
         {conv, config}

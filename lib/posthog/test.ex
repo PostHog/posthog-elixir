@@ -2,11 +2,11 @@ defmodule PostHog.Test do
   @moduledoc """
   PostHog Test Utilities Module
 
-  PostHog makes it simple to test captured events. Make sure to set `test_mode` in your `config/test.exs`:
+  PostHog makes it simple to test captured events. Make sure to set `mode: :test` in your `config/test.exs`:
 
   ```
   config :posthog, 
-    test_mode: true
+    mode: test
   ```
 
   Now PostHog will not send your captured events to the server and will instead

@@ -34,6 +34,12 @@ defmodule PostHog.Sender do
       %{test_mode: true} ->
         PostHog.Test.remember_event(supervisor_name, event)
 
+      %{mode: :test} ->
+        PostHog.Test.remember_event(supervisor_name, event)
+
+      %{mode: :drop_events} ->
+        :ok
+
       _ ->
         senders =
           supervisor_name

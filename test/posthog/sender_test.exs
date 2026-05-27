@@ -8,12 +8,11 @@ defmodule PostHog.SenderTest do
 
   @supervisor_name __MODULE__
 
-  setup do
+  setup context do
     registry = PostHog.Registry.registry_name(@supervisor_name)
+    config = Map.merge(%{mode: :normal}, Map.get(context, :config, %{}))
 
-    start_link_supervised!(
-      {Registry, keys: :unique, name: registry, meta: [config: %{test_mode: false}]}
-    )
+    start_link_supervised!({Registry, keys: :unique, name: registry, meta: [config: config]})
 
     %{api_client: %API.Client{client: :fake_client, module: API.Mock}, registry: registry}
   end
@@ -63,6 +62,24 @@ defmodule PostHog.SenderTest do
 
       assert {:messages, ["$gen_cast": {:event, "my_event"}]} =
                Process.info(busy_pid, :messages)
+    end
+
+    @tag config: %{mode: :drop_events}
+    test "drops event in :drop_events mode", %{registry: registry} do
+      pid =
+        start_link_supervised!(
+          Supervisor.child_spec(
+            {Agent, fn -> Registry.register(registry, {PostHog.Sender, 1}, :available) end},
+            id: Agent1
+          )
+        )
+
+      :sys.suspend(pid)
+
+      assert :ok = Sender.send("my_event", @supervisor_name)
+
+      assert {:messages, []} =
+               Process.info(pid, :messages)
     end
   end
 

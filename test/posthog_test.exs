@@ -16,8 +16,21 @@ defmodule PostHogTest do
     end
 
     @tag config: [supervisor_name: CustomPostHog]
+    test "meaningful error if application isn't started" do
+      assert_raise PostHog.Error, fn ->
+        PostHog.config()
+      end
+    end
+
+    @tag config: [supervisor_name: CustomPostHog]
     test "uses custom supervisor name" do
       assert %{supervisor_name: CustomPostHog} = PostHog.config(CustomPostHog)
+    end
+
+    test "pass real error as is for custom supervisors" do
+      assert_raise ArgumentError,
+                   "unknown registry: CustomPostHog.Registry. Either the registry name is invalid or the registry is not running, possibly because its application isn't started",
+                   fn -> PostHog.config(CustomPostHog) end
     end
   end
 
@@ -146,6 +159,20 @@ defmodule PostHogTest do
                event.uuid
              )
     end
+
+    @tag config: [supervisor_name: MyPostHog, mode: :drop_events]
+    test "drop_events mode drops events" do
+      PostHog.bare_capture(MyPostHog, "case tested", "distinct_id")
+
+      assert [] = all_captured(MyPostHog)
+    end
+
+    @tag config: [supervisor_name: MyPostHog, test_mode: true, mode: :drop_events]
+    test "deprecated test_mode: true still works" do
+      PostHog.bare_capture(MyPostHog, "case tested", "distinct_id")
+
+      assert [_] = all_captured(MyPostHog)
+    end
   end
 
   describe "capture/4" do
@@ -227,6 +254,13 @@ defmodule PostHogTest do
                },
                timestamp: _
              } = event
+    end
+
+    @tag config: [supervisor_name: CustomPostHog]
+    test "meaningful error if application isn't started" do
+      assert_raise PostHog.Error, fn ->
+        PostHog.capture("case tested", %{distinct_id: "distinct_id"})
+      end
     end
   end
 
