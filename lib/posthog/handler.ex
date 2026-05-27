@@ -215,7 +215,7 @@ defmodule PostHog.Handler do
         %{
           platform: "custom",
           lang: "elixir",
-          function: Exception.format_mfa(module, function, arity_or_args),
+          function: format_function(module, function, arity_or_args),
           filename: filename,
           lineno: lineno,
           module: inspect(module),
@@ -229,6 +229,16 @@ defmodule PostHog.Handler do
       type: "raw",
       frames: frames
     }
+  end
+
+  defp format_function(module, function, arity_or_args) do
+    module
+    |> Exception.format_mfa(function, arity_or_args)
+    |> normalize_anonymous_function()
+  end
+
+  defp normalize_anonymous_function(function) do
+    String.replace(function, ~r/anonymous fn\(\d+\) in /, "anonymous fn in ")
   end
 
   defp maybe_add_source_context(frame, filename, lineno, config) do

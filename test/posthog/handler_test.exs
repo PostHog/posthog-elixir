@@ -119,6 +119,33 @@ defmodule PostHog.HandlerTest do
     end
   end
 
+  for index <- [0, 1, 9, 99, 250] do
+    test "normalizes volatile anonymous function index #{index} in stack frames", %{
+      handler_ref: ref,
+      config: %{supervisor_name: supervisor_name}
+    } do
+      stacktrace = [
+        {__MODULE__, unquote(:"anonymous fn(#{index}) in PostHog.HandlerTest.example/1"), 1,
+         [file: ~c"test/posthog/handler_test.exs", line: 1]}
+      ]
+
+      Logger.error("Hello World", crash_reason: {%RuntimeError{message: "boom"}, stacktrace})
+      LoggerHandlerKit.Assert.assert_logged(ref)
+
+      assert [event] = all_captured(supervisor_name)
+      assert %{properties: %{"$exception_list": exception_list}} = event
+
+      assert exception_list
+             |> Enum.flat_map(fn exception ->
+               get_in(exception, [:stacktrace, :frames]) || []
+             end)
+             |> Enum.any?(fn frame ->
+               frame.function ==
+                 ~s(PostHog.HandlerTest."anonymous fn in PostHog.HandlerTest.example/1"/1)
+             end)
+    end
+  end
+
   test "string message", %{handler_ref: ref, config: %{supervisor_name: supervisor_name}} do
     LoggerHandlerKit.Act.string_message()
     LoggerHandlerKit.Assert.assert_logged(ref)
