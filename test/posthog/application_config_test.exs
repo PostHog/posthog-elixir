@@ -21,39 +21,30 @@ defmodule PostHog.ApplicationConfigTest do
     end)
   end
 
-  test "read! does not raise when enabled and api_key is missing" do
-    Application.put_env(:posthog, :enable, true)
-    Application.put_env(:posthog, :api_client_module, PostHog.API.Mock)
-    Application.delete_env(:posthog, :api_key)
-    Application.delete_env(:posthog, :api_host)
+  for {label, api_key_env} <- [
+        {"missing", :missing},
+        {"nil", nil}
+      ] do
+    test "read! does not raise when enabled and api_key is #{label}" do
+      Application.put_env(:posthog, :enable, true)
+      Application.put_env(:posthog, :api_client_module, PostHog.API.Mock)
+      Application.delete_env(:posthog, :api_host)
 
-    log =
-      capture_log(fn ->
-        assert {%{enable: true}, %{api_key: "", enabled: false, api_client: nil} = config} =
-                 PostHog.Config.read!()
+      case unquote(Macro.escape(api_key_env)) do
+        :missing -> Application.delete_env(:posthog, :api_key)
+        api_key -> Application.put_env(:posthog, :api_key, api_key)
+      end
 
-        assert config.api_host == "https://us.i.posthog.com"
-      end)
+      log =
+        capture_log(fn ->
+          assert {%{enable: true}, %{api_key: "", enabled: false, api_client: nil} = config} =
+                   PostHog.Config.read!()
 
-    assert log =~
-             "posthog api_key is empty after trimming whitespace; PostHog will start in disabled/no-op mode"
-  end
+          assert config.api_host == "https://us.i.posthog.com"
+        end)
 
-  test "read! does not raise when enabled and api_key is nil" do
-    Application.put_env(:posthog, :enable, true)
-    Application.put_env(:posthog, :api_client_module, PostHog.API.Mock)
-    Application.put_env(:posthog, :api_key, nil)
-    Application.delete_env(:posthog, :api_host)
-
-    log =
-      capture_log(fn ->
-        assert {%{enable: true}, %{api_key: "", enabled: false, api_client: nil} = config} =
-                 PostHog.Config.read!()
-
-        assert config.api_host == "https://us.i.posthog.com"
-      end)
-
-    assert log =~
-             "posthog api_key is empty after trimming whitespace; PostHog will start in disabled/no-op mode"
+      assert log =~
+               "posthog api_key is empty after trimming whitespace; PostHog will start in disabled/no-op mode"
+    end
   end
 end

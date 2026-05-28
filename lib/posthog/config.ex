@@ -255,21 +255,11 @@ defmodule PostHog.Config do
         normalized_options
       end
     end)
-    |> then(fn normalized_options ->
-      if disabled_options?(normalized_options) and
-           not Keyword.has_key?(normalized_options, :api_host) do
-        Keyword.put(normalized_options, :api_host, @default_api_host)
-      else
-        normalized_options
-      end
-    end)
   end
 
   defp normalize_api_key(api_key) when is_binary(api_key), do: String.trim(api_key)
   defp normalize_api_key(nil), do: ""
   defp normalize_api_key(api_key), do: api_key
-
-  defp disabled_options?(options), do: Keyword.get(options, :api_key, "") == ""
 
   defp normalize_api_host(api_host) when is_binary(api_host) do
     api_host

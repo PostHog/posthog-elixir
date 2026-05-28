@@ -60,76 +60,27 @@ defmodule PostHog.ConfigTest do
     assert config.api_host == "https://us.i.posthog.com"
   end
 
-  test "validate disables PostHog when api_key is missing" do
-    log =
-      capture_log(fn ->
-        assert {:ok, config} =
-                 PostHog.Config.validate(api_client_module: PostHog.API.Mock)
+  for {label, api_key_option} <- [
+        {"missing", []},
+        {"nil", [api_key: nil]},
+        {"empty", [api_key: ""]},
+        {"blank after trimming whitespace", [api_key: " \n\t "]}
+      ] do
+    test "validate disables PostHog when api_key is #{label}" do
+      log =
+        capture_log(fn ->
+          options = unquote(Macro.escape(api_key_option)) ++ [api_client_module: PostHog.API.Mock]
 
-        assert config.api_key == ""
-        assert config.api_host == "https://us.i.posthog.com"
-        assert config.enabled == false
-        assert config.api_client == nil
-      end)
+          assert {:ok, config} = PostHog.Config.validate(options)
 
-    assert log =~
-             "posthog api_key is empty after trimming whitespace; PostHog will start in disabled/no-op mode"
-  end
+          assert config.api_key == ""
+          assert config.api_host == "https://us.i.posthog.com"
+          assert config.enabled == false
+          assert config.api_client == nil
+        end)
 
-  test "validate disables PostHog when api_key is nil" do
-    log =
-      capture_log(fn ->
-        assert {:ok, config} =
-                 PostHog.Config.validate(
-                   api_key: nil,
-                   api_host: "https://us.i.posthog.com",
-                   api_client_module: PostHog.API.Mock
-                 )
-
-        assert config.api_key == ""
-        assert config.enabled == false
-        assert config.api_client == nil
-      end)
-
-    assert log =~
-             "posthog api_key is empty after trimming whitespace; PostHog will start in disabled/no-op mode"
-  end
-
-  test "validate disables PostHog when api_key is empty" do
-    log =
-      capture_log(fn ->
-        assert {:ok, config} =
-                 PostHog.Config.validate(
-                   api_key: "",
-                   api_host: "https://us.i.posthog.com",
-                   api_client_module: PostHog.API.Mock
-                 )
-
-        assert config.api_key == ""
-        assert config.enabled == false
-        assert config.api_client == nil
-      end)
-
-    assert log =~
-             "posthog api_key is empty after trimming whitespace; PostHog will start in disabled/no-op mode"
-  end
-
-  test "validate disables PostHog when api_key is blank after trimming whitespace" do
-    log =
-      capture_log(fn ->
-        assert {:ok, config} =
-                 PostHog.Config.validate(
-                   api_key: " \n\t ",
-                   api_host: "https://us.i.posthog.com",
-                   api_client_module: PostHog.API.Mock
-                 )
-
-        assert config.api_key == ""
-        assert config.enabled == false
-        assert config.api_client == nil
-      end)
-
-    assert log =~
-             "posthog api_key is empty after trimming whitespace; PostHog will start in disabled/no-op mode"
+      assert log =~
+               "posthog api_key is empty after trimming whitespace; PostHog will start in disabled/no-op mode"
+    end
   end
 end
