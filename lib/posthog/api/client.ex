@@ -138,22 +138,7 @@ defmodule PostHog.API.Client do
   @callback request(client :: client(), method :: atom(), url :: String.t(), opts :: keyword()) ::
               response()
 
-  @doc """
-  Creates the default Req-backed PostHog API client.
-
-  ## Parameters
-
-  - `api_key` - PostHog project API key. It is stored privately and inserted
-    into JSON request bodies by `request/4`.
-  - `api_host` - PostHog ingestion host, such as `https://us.i.posthog.com`.
-
-  ## Returns
-
-  Returns a `t:t/0` whose `:client` field is a configured `t:Req.Request.t/0`
-  and whose `:module` field is `PostHog.API.Client`.
-  """
   @impl __MODULE__
-  @spec client(String.t(), String.t()) :: t()
   def client(api_key, api_host) do
     client =
       Req.new(base_url: api_host, retry: :transient, compress_body: true)
@@ -162,27 +147,7 @@ defmodule PostHog.API.Client do
     %__MODULE__{client: client, module: __MODULE__}
   end
 
-  @doc """
-  Sends an API request with the default Req-backed client.
-
-  ## Parameters
-
-  - `client` - `t:client/0` returned by `client/2`.
-  - `method` - HTTP method atom, for example `:post`.
-  - `url` - path relative to the configured API host.
-  - `opts` - Req options for the request.
-
-  ## Returns
-
-  Returns `t:response/0`.
-
-  ## Remarks
-
-  When `opts` contains a `:json` body, the configured API key is added to that
-  body unless an `:api_key` is already present.
-  """
   @impl __MODULE__
-  @spec request(client(), atom(), String.t(), keyword()) :: response()
   def request(client, method, url, opts) do
     client
     |> Req.merge(

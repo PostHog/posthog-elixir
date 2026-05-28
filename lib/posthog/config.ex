@@ -8,7 +8,7 @@ defmodule PostHog.Config do
       type: :boolean,
       default: false,
       doc:
-        "Test mode drops events in memory so tests can assert captured events without sending them to PostHog."
+        "Test mode keeps captured events in memory for assertions instead of sending them to PostHog."
     ]
   ]
 
