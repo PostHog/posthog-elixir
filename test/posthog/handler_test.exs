@@ -1639,7 +1639,7 @@ defmodule PostHog.HandlerTest do
                        frames: [
                          %{
                            filename: "",
-                           function: ":erlang.system_time(:foo)",
+                           function: ":erlang.system_time/1",
                            in_app: false,
                            lineno: nil,
                            module: ":erlang",
@@ -1668,10 +1668,78 @@ defmodule PostHog.HandlerTest do
                        frames: [
                          %{
                            filename: "",
-                           function: ":erlang.system_time(:foo)",
+                           function: ":erlang.system_time/1",
                            in_app: false,
                            lineno: nil,
                            module: ":erlang",
+                           platform: "custom",
+                           lang: "elixir"
+                         }
+                         | _
+                       ]
+                     },
+                     mechanism: %{type: "generic", handled: false}
+                   },
+                   %{
+                     mechanism: %{handled: true, type: "generic"},
+                     type: "Task terminating"
+                   }
+                 ]
+               }
+             } = event
+    end
+  end
+
+  test "anonymous function in stacktrace", %{
+    handler_ref: ref,
+    config: %{supervisor_name: supervisor_name}
+  } do
+    {:ok, _pid} = Task.start(fn -> Enum.map([:foo], fn :bar -> :ok end) end)
+    LoggerHandlerKit.Assert.assert_logged(ref)
+
+    assert [event] = all_captured(supervisor_name)
+
+    if pre_19?() do
+      assert %{
+               event: "$exception",
+               properties: %{
+                 "$exception_list": [
+                   %{
+                     type: "FunctionClauseError",
+                     value:
+                       "no function clause matching in anonymous fn/1 in PostHog.HandlerTest.\"test anonymous function in stacktrace\"/1",
+                     stacktrace: %{
+                       type: "raw",
+                       frames: [
+                         %{
+                           function:
+                             "anonymous fn/1 in PostHog.HandlerTest.\"test anonymous function in stacktrace\"/1",
+                           platform: "custom",
+                           lang: "elixir"
+                         }
+                         | _
+                       ]
+                     },
+                     mechanism: %{type: "generic", handled: false}
+                   }
+                 ]
+               }
+             } = event
+    else
+      assert %{
+               event: "$exception",
+               properties: %{
+                 "$exception_list": [
+                   %{
+                     type: "FunctionClauseError",
+                     value:
+                       "no function clause matching in anonymous fn/1 in PostHog.HandlerTest.\"test anonymous function in stacktrace\"/1",
+                     stacktrace: %{
+                       type: "raw",
+                       frames: [
+                         %{
+                           function:
+                             "anonymous fn/1 in PostHog.HandlerTest.\"test anonymous function in stacktrace\"/1",
                            platform: "custom",
                            lang: "elixir"
                          }

@@ -211,11 +211,12 @@ defmodule PostHog.Handler do
         in_app = module in in_app_modules
         filename = Keyword.get(location, :file, []) |> IO.chardata_to_string()
         lineno = Keyword.get(location, :line)
+        arity = with args when is_list(args) <- arity_or_args, do: length(args)
 
         %{
           platform: "custom",
           lang: "elixir",
-          function: Exception.format_mfa(module, function, arity_or_args),
+          function: Exception.format_mfa(module, function, arity),
           filename: filename,
           lineno: lineno,
           module: inspect(module),
