@@ -53,21 +53,6 @@ defmodule PostHog.Config do
                             default: %{},
                             doc: "Map of properties that should be added to all events"
                           ],
-                          sender_pool_size: [
-                            type: :pos_integer,
-                            doc:
-                              "Number of background sender workers used to batch and send events. Defaults to `max(System.schedulers_online(), 2)`."
-                          ],
-                          max_batch_time_ms: [
-                            type: :non_neg_integer,
-                            doc:
-                              "Maximum time, in milliseconds, to wait before flushing a non-empty event batch. Defaults to `10_000`."
-                          ],
-                          max_batch_events: [
-                            type: :pos_integer,
-                            doc:
-                              "Maximum number of events to collect before flushing a batch immediately. Defaults to `100`."
-                          ],
                           in_app_otp_apps: [
                             type: {:list, :atom},
                             default: [],
