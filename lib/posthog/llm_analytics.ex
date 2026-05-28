@@ -136,7 +136,7 @@ defmodule PostHog.LLMAnalytics do
     {:ok, span_id} = LLMAnalytics.capture_span("$ai_span", %{"$ai_span_name": "top level", "$ai_input_state": user_message})
     
     Task.async(fn -> 
-      LLMAnalytics.set_session(session)
+      LLMAnalytics.set_session(session_id)
       LLMAnalytics.set_trace(trace_id)
       LLMAnalytics.set_root_span(span_id)
       
@@ -145,7 +145,7 @@ defmodule PostHog.LLMAnalytics do
       ...
     end)
     
-    Req.post!("https://api.openai.com/v1/responses, json: %{input: user_message})
+    Req.post!("https://api.openai.com/v1/responses", json: %{input: user_message})
     ...
   end
   ```
@@ -295,8 +295,7 @@ defmodule PostHog.LLMAnalytics do
   @doc """
   Get root span ID for a process.
 
-  Use this function to get propagate current process' root span to a new
-  process. 
+  Use this function to propagate current process' root span to a new process.
 
   ## Examples
 
@@ -309,7 +308,7 @@ defmodule PostHog.LLMAnalytics do
       iex> PostHog.LLMAnalytics.get_root_span(MyPostHog)
       nil
   """
-  @spec get_root_span(PostHog.supervisor_name()) :: span_id()
+  @spec get_root_span(PostHog.supervisor_name()) :: span_id() | nil
   def get_root_span(name \\ PostHog) do
     Process.get({name, @root_span_key})
   end

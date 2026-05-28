@@ -7,7 +7,8 @@ defmodule PostHog.Config do
     test_mode: [
       type: :boolean,
       default: false,
-      doc: "Test mode allows tests assert captured events."
+      doc:
+        "Test mode keeps captured events in memory for assertions instead of sending them to PostHog."
     ]
   ]
 
@@ -134,12 +135,21 @@ defmodule PostHog.Config do
   """
 
   @typedoc """
-  Map containing valid configuration.
+  Map containing validated configuration for a PostHog supervision tree.
 
-  It mostly follows `t:options/0`, but the internal structure shouldn't be relied upon.
+  It mostly follows `t:options/0`, but also includes runtime values such as the
+  initialized API client, resolved in-app modules, and system global properties.
+  The internal structure should not be relied upon outside of starting
+  `PostHog.Supervisor` or reading values through `PostHog.config/1`.
   """
   @opaque config() :: map()
 
+  @typedoc """
+  Keyword options accepted by `validate/1` and `validate!/1`.
+
+  See the module documentation for the full schema, defaults, and remarks for
+  each configuration option.
+  """
   @type options() :: unquote(NimbleOptions.option_typespec(@compiled_configuration_schema))
 
   @doc false
@@ -166,7 +176,9 @@ defmodule PostHog.Config do
   end
 
   @doc """
-  See `validate/1`.
+  Validates configuration and returns a `t:config/0`, raising if validation fails.
+
+  See `validate/1` for the accepted options and return shape.
   """
   @spec validate!(options()) :: config()
   def validate!(options) do
@@ -175,7 +187,21 @@ defmodule PostHog.Config do
   end
 
   @doc """
-  Validates configuration against the schema.
+  Validates configuration against the supervisor schema.
+
+  ## Parameters
+
+  - `options` - keyword list matching `t:options/0`.
+
+  ## Returns
+
+  Returns `{:ok, config}` with a normalized `t:config/0` on success, or
+  `{:error, %NimbleOptions.ValidationError{}}` when the options are invalid.
+
+  ## Remarks
+
+  String `:api_key` and `:api_host` values are trimmed before validation. A blank
+  `:api_host` falls back to the default PostHog US ingestion host.
   """
   @spec validate(options()) ::
           {:ok, config()} | {:error, NimbleOptions.ValidationError.t()}

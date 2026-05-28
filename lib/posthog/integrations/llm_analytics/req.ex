@@ -72,16 +72,29 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
   alias PostHog.LLMAnalytics
 
   @doc """
-  Attach plugin to a `Req.Request` struct.
+  Attaches the LLM Analytics plugin to a `Req.Request` struct.
 
-  The plugin registers the `posthog_supervisor` option. Use it if you run a [custom
-  PostHog instance](advanced-configuration.md).
+  ## Parameters
+
+  - `request` - the `Req.Request` to instrument.
+  - `options` - plugin options merged into the request.
+
+  ## Options
+
+  - `:posthog_supervisor` - PostHog supervisor name to capture through. Use this
+    if you run a [custom PostHog instance](advanced-configuration.md).
+
+  ## Returns
+
+  Returns the updated `Req.Request` with request, response, and error steps
+  installed.
 
   ## Examples
 
       iex> Req.new() |> PostHog.Integrations.LLMAnalytics.Req.attach()
       iex> Req.new() |> PostHog.Integrations.LLMAnalytics.Req.attach(posthog_supervisor: MyPostHog)
   """
+  @spec attach(Req.Request.t(), keyword()) :: Req.Request.t()
   def attach(%Req.Request{} = request, options \\ []) do
     request
     |> Req.Request.register_options([:posthog_supervisor])

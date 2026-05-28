@@ -47,8 +47,15 @@ defmodule PostHog.FeatureFlags.Result do
       }
   """
 
+  @typedoc "JSON-compatible value used for feature flag payloads."
   @type json :: String.t() | number() | boolean() | nil | [json()] | %{String.t() => json()}
 
+  @typedoc """
+  Result for a single evaluated feature flag.
+
+  The struct fields mirror the data returned by PostHog's `/flags` endpoint and
+  the metadata emitted on `$feature_flag_called` events.
+  """
   @type t :: %__MODULE__{
           key: String.t(),
           enabled: boolean(),

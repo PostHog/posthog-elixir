@@ -113,90 +113,88 @@ You can always inspect the context:
 iex> PostHog.get_context()
 %{distinct_id: "distinct_id_of_the_user"}
 iex> PostHog.get_event_context("sensitive_event")
-%{distinct_id: "distinct_id_of_the_user", "$process_person_profile": true}
+%{distinct_id: "distinct_id_of_the_user", "$process_person_profile": false}
 ```
 
 ## Feature Flags
 
-`PostHog.FeatureFlags.check/2` is the main function for checking a feature flag.
+Evaluate feature flags once for a user with `PostHog.FeatureFlags.evaluate_flags/1`,
+then read values from the returned snapshot.
 
 ```elixir
-# Simple boolean feature flag
-iex> PostHog.FeatureFlags.check("example-feature-flag-1", "user123")
-{:ok, true}
+# Boolean feature flag
+{:ok, snapshot} = PostHog.FeatureFlags.evaluate_flags("user123")
+if PostHog.FeatureFlags.Evaluations.enabled?(snapshot, "new-dashboard") do
+  # Do something differently for this user
+end
 
-# Note how it automatically sets `$feature/example-feature-flag-1` property in the context
-iex> PostHog.get_context()
-%{"$feature/example-feature-flag-1" => true}
+# Multivariate feature flag
+case PostHog.FeatureFlags.Evaluations.get_flag(snapshot, "checkout-flow") do
+  "variant-a" -> :variant_a
+  true -> :enabled_boolean_flag
+  false -> :disabled
+  nil -> :not_returned
+end
 
-# It will attempt to take distinct_id from the context if it's not provided
-iex> PostHog.set_context(%{distinct_id: "user123"})
-:ok
-iex> PostHog.FeatureFlags.check("example-feature-flag-1")
-{:ok, true}
-
-# You can also pass a map with body parameters that will be sent to the /flags API as-is
-iex> PostHog.FeatureFlags.check("example-feature-flag-1", %{distinct_id: "user123", groups: %{group_type: "group_id"}})
-{:ok, true}
-
-# It returns variant if it's set
-iex> PostHog.FeatureFlags.check("example-feature-flag-2", "user123")
-{:ok, "variant2"}
-
-# Returns error if feature flag doesn't exist
-iex> PostHog.FeatureFlags.check("example-feature-flag-3", "user123")
-{:error, %PostHog.UnexpectedResponseError{message: "Feature flag example-feature-flag-3 was not found in the response", response: ...}}
+# Optional payload
+payload = PostHog.FeatureFlags.Evaluations.get_flag_payload(snapshot, "checkout-flow")
 ```
 
-If you're feeling adventurous and/or simply writing a script, you can use the `PostHog.FeatureFlags.check!/2` helper instead and it will return a boolean or raise an error.
+`get_flag/2` returns the variant string for multivariate flags, `true` for enabled
+boolean flags, `false` for disabled flags, and `nil` when the flag was not returned
+by the evaluation.
+
+### Include feature flag information when capturing events
+
+If you want to break down or filter captured events by feature flag value, put the
+same snapshot in the process context before capturing events:
 
 ```elixir
-# Simple boolean feature flag
-iex> PostHog.FeatureFlags.check!("example-feature-flag-1", "user123")
-true
+{:ok, snapshot} = PostHog.FeatureFlags.evaluate_flags("user123")
 
-# Works for variants too
-iex> PostHog.FeatureFlags.check!("example-feature-flag-2", "user123")
-"variant2"
+if PostHog.FeatureFlags.Evaluations.enabled?(snapshot, "new-dashboard") do
+  # Do something differently for this user
+end
 
-# Raises error if feature flag doesn't exist
-iex> PostHog.FeatureFlags.check!("example-feature-flag-3", "user123")
-** (PostHog.UnexpectedResponseError) Feature flag example-feature-flag-3 was not found in the response
+PostHog.FeatureFlags.set_in_context(snapshot)
+PostHog.capture("page_viewed", %{distinct_id: "user123"})
 ```
 
-### Getting the Full Flag Result
-
-If you need more than just the value -- for example, the payload configured for a
-flag or variant -- use `PostHog.FeatureFlags.get_feature_flag_result/2`:
+This attaches `$feature/<flag-key>` properties and `$active_feature_flags` without
+making another `/flags` request. To reduce event property bloat, filter the
+snapshot first:
 
 ```elixir
-iex> PostHog.FeatureFlags.get_feature_flag_result("my-flag", "user123")
-{:ok, %PostHog.FeatureFlags.Result{key: "my-flag", enabled: true, variant: nil, payload: nil}}
+# Attach only flags accessed with enabled?/2 or get_flag/2
+PostHog.FeatureFlags.set_in_context(
+  PostHog.FeatureFlags.Evaluations.only_accessed(snapshot)
+)
 
-# Multivariant flag with a JSON payload
-iex> PostHog.FeatureFlags.get_feature_flag_result("my-experiment", "user123")
-{:ok, %PostHog.FeatureFlags.Result{key: "my-experiment", enabled: true, variant: "control", payload: %{"button_color" => "blue"}}}
-
-# Flag not found
-iex> PostHog.FeatureFlags.get_feature_flag_result("non-existent-flag", "user123")
-{:ok, nil}
+# Or attach only specific flags
+PostHog.FeatureFlags.set_in_context(
+  PostHog.FeatureFlags.Evaluations.only(snapshot, ["checkout-flow", "new-dashboard"])
+)
 ```
 
-By default this sends a `$feature_flag_called` event, which PostHog uses to
-track feature flag usage in your analytics, and to measure experiment exposure
-when the flag is linked to an A/B test. You can opt out with `send_event: false`:
+### Evaluating only specific flags
+
+By default, `evaluate_flags/1` evaluates every flag for the user. If you only need
+a few flags, pass `:flag_keys` to request only those flags:
 
 ```elixir
-iex> PostHog.FeatureFlags.get_feature_flag_result("my-flag", "user123", send_event: false)
-{:ok, %PostHog.FeatureFlags.Result{key: "my-flag", enabled: true, variant: nil, payload: nil}}
+{:ok, snapshot} =
+  PostHog.FeatureFlags.evaluate_flags(%{
+    distinct_id: "user123",
+    flag_keys: ["checkout-flow", "new-dashboard"]
+  })
 ```
 
-A bang variant is also available:
-
-```elixir
-iex> PostHog.FeatureFlags.get_feature_flag_result!("my-flag", "user123")
-%PostHog.FeatureFlags.Result{key: "my-flag", enabled: true, variant: nil, payload: nil}
-```
+> #### Deprecated feature flag helpers {: .warning}
+>
+> `PostHog.FeatureFlags.check/2`, `PostHog.FeatureFlags.check!/2`,
+> `PostHog.FeatureFlags.get_feature_flag_result/2`, and
+> `PostHog.FeatureFlags.get_feature_flag_result!/2` still work during the
+> migration period, but prefer `evaluate_flags/1` for new code.
 
 ## Error Tracking
 
