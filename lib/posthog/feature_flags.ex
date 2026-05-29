@@ -29,7 +29,15 @@ defmodule PostHog.FeatureFlags do
   def flags(name \\ PostHog, body) do
     config = PostHog.config(name)
 
-    case PostHog.API.flags(config.api_client, body) do
+    if Map.get(config, :enabled, true) do
+      request_flags(config.api_client, body)
+    else
+      empty_flags_response()
+    end
+  end
+
+  defp request_flags(api_client, body) do
+    case PostHog.API.flags(api_client, body) do
       {:ok, %{status: 200, body: %{"flags" => _}}} = resp ->
         resp
 
@@ -47,6 +55,8 @@ defmodule PostHog.FeatureFlags do
         error
     end
   end
+
+  defp empty_flags_response, do: {:ok, %{status: 200, body: %{"flags" => %{}}}}
 
   @doc false
   def flags_for(distinct_id_or_body) when not is_atom(distinct_id_or_body),

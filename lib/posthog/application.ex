@@ -8,7 +8,7 @@ defmodule PostHog.Application do
 
     children =
       if conv_config.enable do
-        if conv_config.enable_error_tracking do
+        if conv_config.enable_error_tracking and supervisor_config.enabled do
           :logger.add_handler(:posthog, PostHog.Handler, %{config: supervisor_config})
         end
 
