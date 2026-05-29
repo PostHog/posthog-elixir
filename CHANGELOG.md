@@ -1,5 +1,11 @@
 # posthog
 
+## 2.8.3 — 2026-05-28
+
+### Patch changes
+
+- [98f1308](https://github.com/posthog/posthog-elixir/commit/98f130836deb2011735e41400c24dea9bdfc0454) Improve error tracking grouping by always using arity to format stacktrace frames — Thanks @martosaur!
+
 ## 2.8.2 — 2026-05-18
 
 ### Patch changes
