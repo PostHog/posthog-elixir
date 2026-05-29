@@ -12,7 +12,8 @@ defmodule PostHog.SupervisorTest do
           api_key: " \n\t ",
           api_host: "https://us.i.posthog.com",
           supervisor_name: @supervisor_name,
-          enable_source_code_context: true
+          enable_source_code_context: true,
+          test_mode: true
         )
       end)
 
@@ -29,5 +30,6 @@ defmodule PostHog.SupervisorTest do
              |> GenServer.whereis()
 
     assert :ok = PostHog.bare_capture(@supervisor_name, "disabled capture", "distinct_id", %{})
+    assert PostHog.Test.all_captured(@supervisor_name) == []
   end
 end

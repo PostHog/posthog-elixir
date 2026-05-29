@@ -28,38 +28,36 @@ defmodule PostHog.Sender do
   # Client
 
   def send(event, supervisor_name) do
-    supervisor_name
-    |> PostHog.Registry.config()
-    |> case do
-      %{enabled: false} ->
-        :ok
-
-      %{test_mode: true} ->
-        PostHog.Test.remember_event(supervisor_name, event)
-
-      _ ->
-        send_to_sender(event, supervisor_name)
-    end
-  end
-
-  defp send_to_sender(event, supervisor_name) do
-    senders =
-      supervisor_name
-      |> PostHog.Registry.registry_name()
-      |> Registry.select([{{{__MODULE__, :_}, :"$1", :"$2"}, [], [{{:"$2", :"$1"}}]}])
-
-    case senders do
+    case senders(supervisor_name) do
       [] ->
         :ok
 
       senders ->
-        # Pick the first available sender, otherwise random busy one.
-        senders
-        |> Keyword.get_lazy(:available, fn ->
-          senders |> Keyword.values() |> Enum.random()
-        end)
-        |> GenServer.cast({:event, event})
+        supervisor_name
+        |> PostHog.Registry.config()
+        |> case do
+          %{test_mode: true} ->
+            PostHog.Test.remember_event(supervisor_name, event)
+
+          _ ->
+            send_to_sender(event, senders)
+        end
     end
+  end
+
+  defp senders(supervisor_name) do
+    supervisor_name
+    |> PostHog.Registry.registry_name()
+    |> Registry.select([{{{__MODULE__, :_}, :"$1", :"$2"}, [], [{{:"$2", :"$1"}}]}])
+  end
+
+  defp send_to_sender(event, senders) do
+    # Pick the first available sender, otherwise random busy one.
+    senders
+    |> Keyword.get_lazy(:available, fn ->
+      senders |> Keyword.values() |> Enum.random()
+    end)
+    |> GenServer.cast({:event, event})
   end
 
   # Callbacks
