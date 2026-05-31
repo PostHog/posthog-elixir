@@ -46,9 +46,15 @@ defmodule PostHog.Sender do
   end
 
   defp senders(supervisor_name) do
-    supervisor_name
-    |> PostHog.Registry.registry_name()
-    |> Registry.select([{{{__MODULE__, :_}, :"$1", :"$2"}, [], [{{:"$2", :"$1"}}]}])
+    registry = PostHog.Registry.registry_name(supervisor_name)
+
+    if Process.whereis(registry) do
+      Registry.select(registry, [{{{__MODULE__, :_}, :"$1", :"$2"}, [], [{{:"$2", :"$1"}}]}])
+    else
+      []
+    end
+  rescue
+    ArgumentError -> []
   end
 
   defp send_to_sender(event, senders) do
