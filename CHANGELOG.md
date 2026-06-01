@@ -1,5 +1,11 @@
 # posthog
 
+## 2.8.4 — 2026-06-01
+
+### Patch changes
+
+- [5d18b01](https://github.com/posthog/posthog-elixir/commit/5d18b01501516e142b26ab53ef9daff10befea28) Start in disabled/no-op mode instead of raising or sending events when the API key is missing, blank, or the supervisor is unavailable. — Thanks @marandaneto!
+
 ## 2.8.3 — 2026-05-28
 
 ### Patch changes
