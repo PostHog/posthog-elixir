@@ -126,6 +126,12 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
       assert all_captured() == []
     end
 
+    @tag config: [api_key: "", supervisor_name: PostHog]
+    test "returns an empty snapshot when PostHog is disabled" do
+      assert {:ok, %Evaluations{distinct_id: "foo", flags: %{}}} =
+               FeatureFlags.evaluate_flags("foo")
+    end
+
     @tag config: [supervisor_name: MyPostHog]
     test "supports a named PostHog instance" do
       expect(API.Mock, :request, fn _client, :post, "/flags", _opts ->

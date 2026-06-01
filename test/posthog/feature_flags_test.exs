@@ -92,6 +92,12 @@ defmodule PostHog.FeatureFlagsTest do
       assert {:ok, %{body: %{"flags" => _}}} =
                FeatureFlags.flags(MyPostHog, %{distinct_id: "foo"})
     end
+
+    @tag config: [api_key: "", supervisor_name: PostHog]
+    test "returns empty flags when PostHog is disabled" do
+      assert {:ok, %{status: 200, body: %{"flags" => %{}}}} =
+               FeatureFlags.flags(%{distinct_id: "foo"})
+    end
   end
 
   describe "flags_for/2" do
