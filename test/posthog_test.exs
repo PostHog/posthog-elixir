@@ -76,6 +76,22 @@ defmodule PostHogTest do
       Jason.encode!(event)
     end
 
+    @tag config: [is_server: false, supervisor_name: PostHog]
+    test "omits $is_server when is_server is false" do
+      PostHog.bare_capture("case tested", "distinct_id")
+
+      assert [event] = all_captured()
+
+      assert %{
+               properties: %{
+                 "$lib": "posthog-elixir",
+                 "$lib_version": _
+               } = properties
+             } = event
+
+      refute Map.has_key?(properties, :"$is_server")
+    end
+
     @tag config: [supervisor_name: CustomPostHog]
     test "simple call for custom supervisor" do
       PostHog.bare_capture(CustomPostHog, "case tested", "distinct_id")
