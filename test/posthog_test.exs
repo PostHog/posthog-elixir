@@ -128,7 +128,8 @@ defmodule PostHogTest do
 
       assert [%{properties: properties}] = all_captured()
 
-      assert %{foo: "bar", "$lib": "posthog-elixir", "$lib_version": _} = properties
+      assert %{foo: "bar", "$lib": "posthog-elixir", "$lib_version": _, "$is_server": true} =
+               properties
       refute properties[:hello]
     end
 
