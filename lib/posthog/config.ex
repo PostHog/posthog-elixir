@@ -114,7 +114,8 @@ defmodule PostHog.Config do
 
   @system_global_properties %{
     "$lib": "posthog-elixir",
-    "$lib_version": Mix.Project.config()[:version]
+    "$lib_version": Mix.Project.config()[:version],
+    "$is_server": true
   }
 
   @moduledoc """

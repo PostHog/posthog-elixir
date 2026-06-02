@@ -67,7 +67,8 @@ defmodule PostHogTest do
                  egg: "spam",
                  struct: %{hello: nil},
                  "$lib": "posthog-elixir",
-                 "$lib_version": _
+                 "$lib_version": _,
+                 "$is_server": true
                },
                timestamp: _
              } = event
