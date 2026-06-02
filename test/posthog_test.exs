@@ -80,15 +80,9 @@ defmodule PostHogTest do
     test "omits $is_server when is_server is false" do
       PostHog.bare_capture("case tested", "distinct_id")
 
-      assert [event] = all_captured()
+      assert [%{properties: properties}] = all_captured()
 
-      assert %{
-               properties: %{
-                 "$lib": "posthog-elixir",
-                 "$lib_version": _
-               } = properties
-             } = event
-
+      assert %{"$lib": "posthog-elixir", "$lib_version": _} = properties
       refute Map.has_key?(properties, :"$is_server")
     end
 
@@ -128,8 +122,8 @@ defmodule PostHogTest do
 
       assert [%{properties: properties}] = all_captured()
 
-      assert %{foo: "bar", "$lib": "posthog-elixir", "$lib_version": _, "$is_server": true} =
-               properties
+      assert %{foo: "bar", "$lib": "posthog-elixir", "$lib_version": _} = properties
+      assert properties[:"$is_server"] == true
       refute properties[:hello]
     end
 
