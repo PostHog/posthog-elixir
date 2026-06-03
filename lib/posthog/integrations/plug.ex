@@ -108,8 +108,6 @@ defmodule PostHog.Integrations.Plug do
     if value == "", do: nil, else: value
   end
 
-  defp sanitize_value(_value), do: nil
-
   defp put_if_present(map, _key, nil), do: map
   defp put_if_present(map, key, value), do: Map.put(map, key, value)
 
