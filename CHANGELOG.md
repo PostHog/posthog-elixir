@@ -1,5 +1,11 @@
 # posthog
 
+## 2.9.0 — 2026-06-03
+
+### Minor changes
+
+- [8672156](https://github.com/posthog/posthog-elixir/commit/8672156213693d3865c77b7474f5e44885d8cccb) Add a configurable `$is_server` event property (default `true`) so PostHog can identify server-side events. Set `is_server: false` when using posthog-elixir as a client/CLI so the device OS is attributed normally. — Thanks @turnipdabeets for your first contribution 🎉!
+
 ## 2.8.4 — 2026-06-01
 
 ### Patch changes
