@@ -54,6 +54,12 @@ defmodule PostHog.Config do
                             default: %{},
                             doc: "Map of properties that should be added to all events"
                           ],
+                          is_server: [
+                            type: :boolean,
+                            default: true,
+                            doc:
+                              "Whether this SDK runs as a server. When `true` (the default), a `$is_server: true` property is added to all events so PostHog attributes them as server-side. Set to `false` when using posthog-elixir as a client/CLI so the device OS is attributed normally."
+                          ],
                           in_app_otp_apps: [
                             type: {:list, :atom},
                             default: [],
@@ -223,7 +229,14 @@ defmodule PostHog.Config do
           config.api_client_module.client(config.api_key, config.api_host)
         end
 
-      global_properties = Map.merge(config.global_properties, @system_global_properties)
+      system_global_properties =
+        if config.is_server do
+          Map.put(@system_global_properties, :"$is_server", true)
+        else
+          @system_global_properties
+        end
+
+      global_properties = Map.merge(config.global_properties, system_global_properties)
 
       final_config =
         config
