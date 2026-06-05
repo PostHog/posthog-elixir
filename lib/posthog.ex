@@ -9,7 +9,7 @@ defmodule PostHog do
   @typedoc ~S(Event name, such as `"user_signed_up"` or `"$create_alias"`)
   @type event() :: String.t()
 
-  @typedoc "string representing distinct ID"
+  @typedoc "String representing a PostHog distinct ID."
   @type distinct_id() :: String.t()
 
   @typedoc """
@@ -194,6 +194,7 @@ defmodule PostHog do
       > PostHog.get_event_context(MyPostHog, "$exception")
       %{foo: "bar"}
   """
-  @spec get_event_context(supervisor_name()) :: properties()
+  @spec get_event_context(event()) :: properties()
+  @spec get_event_context(supervisor_name(), event()) :: properties()
   def get_event_context(name \\ __MODULE__, event), do: PostHog.Context.get(name, event)
 end

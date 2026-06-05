@@ -120,7 +120,7 @@ defmodule PostHog.Test do
           :go -> :ok
         end
 
-        PostHog.capture("event", "user123")
+        PostHog.capture("event", %{distinct_id: "user123"})
         send(test_pid, :ready)
       end)
 
@@ -160,7 +160,7 @@ defmodule PostHog.Test do
 
   ## Examples:
 
-      setup :set_posthog_shared
+      setup {PostHog.Test, :set_posthog_shared}
   """
   @spec set_posthog_shared(map()) :: :ok
   def set_posthog_shared(_test_context \\ %{}) do

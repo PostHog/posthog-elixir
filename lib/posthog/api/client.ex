@@ -98,16 +98,31 @@ defmodule PostHog.API.Client do
 
   defstruct [:client, :module]
 
+  @typedoc """
+  Wrapper returned by `c:client/2` and stored in `t:PostHog.Config.config/0`.
+
+  - `:client` - opaque client state passed back to `c:request/4`.
+  - `:module` - module implementing this behaviour.
+  """
   @type t() :: %__MODULE__{
           client: client(),
           module: atom()
         }
+
   @typedoc """
   Arbitrary term that is passed as the first argument to the `c:request/4` callback.
 
   For the default client, this is a `t:Req.Request.t/0` struct.
   """
   @type client() :: any()
+
+  @typedoc """
+  Response tuple returned by `c:request/4`.
+
+  Successful responses must expose at least a numeric `:status` and decoded
+  `:body`; errors should return the exception or error struct from the HTTP
+  client.
+  """
   @type response() :: {:ok, %{status: non_neg_integer(), body: any()}} | {:error, Exception.t()}
 
   @doc """

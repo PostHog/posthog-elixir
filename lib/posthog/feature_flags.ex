@@ -29,7 +29,15 @@ defmodule PostHog.FeatureFlags do
   def flags(name \\ PostHog, body) do
     config = PostHog.config(name)
 
-    case PostHog.API.flags(config.api_client, body) do
+    if Map.get(config, :enabled, true) do
+      request_flags(config.api_client, body)
+    else
+      empty_flags_response()
+    end
+  end
+
+  defp request_flags(api_client, body) do
+    case PostHog.API.flags(api_client, body) do
       {:ok, %{status: 200, body: %{"flags" => _}}} = resp ->
         resp
 
@@ -47,6 +55,8 @@ defmodule PostHog.FeatureFlags do
         error
     end
   end
+
+  defp empty_flags_response, do: {:ok, %{status: 200, body: %{"flags" => %{}}}}
 
   @doc false
   def flags_for(distinct_id_or_body) when not is_atom(distinct_id_or_body),
@@ -66,7 +76,7 @@ defmodule PostHog.FeatureFlags do
 
   Get all feature flags with full request body:
 
-      PostHog.FeatureFlags.flags_for(%{distinct_id: "user123", group: %{group_type: "group_id"}})
+      PostHog.FeatureFlags.flags_for(%{distinct_id: "user123", groups: %{group_type: "group_id"}})
 
   Get all feature flags for `distinct_id` from the context:
 
@@ -164,21 +174,27 @@ defmodule PostHog.FeatureFlags do
     end
   end
 
-  @doc false
-  def set_in_context(%__MODULE__.Evaluations{} = snapshot),
-    do: set_in_context(PostHog, snapshot)
-
   @doc """
   Copies a snapshot's `$feature/<key>` and `$active_feature_flags` properties
-  into the per-process PostHog context.
+  into the default per-process PostHog context.
+
+  ## Parameters
+
+  - `snapshot` - `t:PostHog.FeatureFlags.Evaluations.t/0` returned by
+    `evaluate_flags/2` or one of the filtering helpers.
+
+  ## Returns
+
+  Returns `:ok`.
+
+  ## Remarks
 
   Any subsequent `PostHog.capture/3` from this process automatically attaches
   these properties to the captured event — no additional `/flags` request,
   with the values guaranteed to match what the snapshot already evaluated.
 
-  This is the idiomatic Elixir way to enrich captured events from an
-  `evaluate_flags/2` snapshot. For one-off enrichment without touching context,
-  merge `PostHog.FeatureFlags.Evaluations.event_properties/1` into a capture's
+  For one-off enrichment without touching context, merge
+  `PostHog.FeatureFlags.Evaluations.event_properties/1` into a capture's
   properties directly.
 
   ## Examples
@@ -188,6 +204,29 @@ defmodule PostHog.FeatureFlags do
 
       # All subsequent captures pick up $feature/* and $active_feature_flags
       PostHog.capture("page_viewed", %{distinct_id: "user123"})
+  """
+  @spec set_in_context(__MODULE__.Evaluations.t()) :: :ok
+  def set_in_context(%__MODULE__.Evaluations{} = snapshot),
+    do: set_in_context(PostHog, snapshot)
+
+  @doc """
+  Copies a snapshot's `$feature/<key>` and `$active_feature_flags` properties
+  into a named PostHog instance's per-process context.
+
+  ## Parameters
+
+  - `name` - supervisor name of the PostHog instance whose context should be
+    updated.
+  - `snapshot` - `t:PostHog.FeatureFlags.Evaluations.t/0` returned by
+    `evaluate_flags/2` or one of the filtering helpers.
+
+  ## Returns
+
+  Returns `:ok`.
+
+  ## Remarks
+
+  This is the named-instance variant of `set_in_context/1`.
   """
   @spec set_in_context(PostHog.supervisor_name(), __MODULE__.Evaluations.t()) :: :ok
   def set_in_context(name, %__MODULE__.Evaluations{} = snapshot) when is_atom(name) do
@@ -245,7 +284,7 @@ defmodule PostHog.FeatureFlags do
 
   Check boolean feature flag through a named PostHog instance:
 
-      PostHog.check(MyPostHog, "example-feature-flag-1", "user123")
+      PostHog.FeatureFlags.check(MyPostHog, "example-feature-flag-1", "user123")
   """
   @spec check(PostHog.supervisor_name(), String.t(), PostHog.distinct_id() | map() | nil) ::
           {:ok, boolean()} | {:ok, String.t()} | {:error, Exception.t()}

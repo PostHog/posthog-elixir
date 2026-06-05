@@ -1,5 +1,23 @@
 # posthog
 
+## 2.9.0 — 2026-06-03
+
+### Minor changes
+
+- [8672156](https://github.com/posthog/posthog-elixir/commit/8672156213693d3865c77b7474f5e44885d8cccb) Add a configurable `$is_server` event property (default `true`) so PostHog can identify server-side events. Set `is_server: false` when using posthog-elixir as a client/CLI so the device OS is attributed normally. — Thanks @turnipdabeets for your first contribution 🎉!
+
+## 2.8.4 — 2026-06-01
+
+### Patch changes
+
+- [5d18b01](https://github.com/posthog/posthog-elixir/commit/5d18b01501516e142b26ab53ef9daff10befea28) Start in disabled/no-op mode instead of raising or sending events when the API key is missing, blank, or the supervisor is unavailable. — Thanks @marandaneto!
+
+## 2.8.3 — 2026-05-28
+
+### Patch changes
+
+- [98f1308](https://github.com/posthog/posthog-elixir/commit/98f130836deb2011735e41400c24dea9bdfc0454) Improve error tracking grouping by always using arity to format stacktrace frames — Thanks @martosaur!
+
 ## 2.8.2 — 2026-05-18
 
 ### Patch changes

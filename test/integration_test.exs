@@ -23,8 +23,14 @@ defmodule PostHog.IntegrationTest do
         |> PostHog.Registry.via(PostHog.Sender, 1)
         |> GenServer.whereis()
 
-      send(sender_pid, :batch_time_reached)
-      :sys.get_status(sender_pid)
+      case :sys.get_state(sender_pid) do
+        %{timer_ref: ref} ->
+          send(sender_pid, {:timeout, ref, :batch_time_reached})
+          :sys.get_status(sender_pid)
+
+        _ ->
+          :ok
+      end
     end
 
     :logger.add_handler(:posthog, PostHog.Handler, %{config: config})
@@ -70,6 +76,18 @@ defmodule PostHog.IntegrationTest do
 
     test "task exit", %{wait_fun: wait} do
       LoggerHandlerKit.Act.task_error(:exit)
+      wait.()
+    end
+
+    test "anonymous function", %{wait_fun: wait} do
+      {:ok, pid} =
+        Task.start(fn ->
+          Enum.map([:foo], fn x when is_binary(x) -> :ok end)
+        end)
+
+      ref = Process.monitor(pid)
+      assert_receive({:DOWN, ^ref, _, _, _})
+
       wait.()
     end
 

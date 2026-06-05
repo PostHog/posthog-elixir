@@ -1,5 +1,7 @@
-# Portions of this file are inspired from getsentry/sentry-elixir
-# (lib/sentry/sources.ex) by Software, Inc. dba Sentry, used under the MIT License.
+# Portions of this file are derived from getsentry/sentry-elixir
+# Copyright (c) 2014 Stanislav Vishnevskiy
+# Copyright (c) 2023 Functional Software, Inc. dba Sentry
+# Licensed under the MIT License: https://github.com/getsentry/sentry-elixir/blob/master/LICENSE
 
 defmodule PostHog.ErrorTracking.Sources do
   @moduledoc false

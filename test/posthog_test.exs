@@ -67,12 +67,23 @@ defmodule PostHogTest do
                  egg: "spam",
                  struct: %{hello: nil},
                  "$lib": "posthog-elixir",
-                 "$lib_version": _
+                 "$lib_version": _,
+                 "$is_server": true
                },
                timestamp: _
              } = event
 
       Jason.encode!(event)
+    end
+
+    @tag config: [is_server: false, supervisor_name: PostHog]
+    test "omits $is_server when is_server is false" do
+      PostHog.bare_capture("case tested", "distinct_id")
+
+      assert [%{properties: properties}] = all_captured()
+
+      assert %{"$lib": "posthog-elixir", "$lib_version": _} = properties
+      refute Map.has_key?(properties, :"$is_server")
     end
 
     @tag config: [supervisor_name: CustomPostHog]
@@ -112,6 +123,7 @@ defmodule PostHogTest do
       assert [%{properties: properties}] = all_captured()
 
       assert %{foo: "bar", "$lib": "posthog-elixir", "$lib_version": _} = properties
+      assert properties[:"$is_server"] == true
       refute properties[:hello]
     end
 

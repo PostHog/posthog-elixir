@@ -7,7 +7,8 @@ defmodule PostHog.Config do
     test_mode: [
       type: :boolean,
       default: false,
-      doc: "Test mode allows tests assert captured events."
+      doc:
+        "Test mode keeps captured events in memory for assertions instead of sending them to PostHog."
     ]
   ]
 
@@ -20,9 +21,10 @@ defmodule PostHog.Config do
                           ],
                           api_key: [
                             type: :string,
-                            required: true,
+                            default: "",
                             doc: """
                             Your PostHog Project API key. Find it in your project's settings under the Project ID section.
+                            If omitted or empty after trimming whitespace, PostHog starts in disabled/no-op mode.
                             """
                           ],
                           api_client_module: [
@@ -51,6 +53,12 @@ defmodule PostHog.Config do
                             type: :map,
                             default: %{},
                             doc: "Map of properties that should be added to all events"
+                          ],
+                          is_server: [
+                            type: :boolean,
+                            default: true,
+                            doc:
+                              "Whether this SDK runs as a server. When `true` (the default), a `$is_server: true` property is added to all events so PostHog attributes them as server-side. Set to `false` when using posthog-elixir as a client/CLI so the device OS is attributed normally."
                           ],
                           in_app_otp_apps: [
                             type: {:list, :atom},
@@ -134,12 +142,21 @@ defmodule PostHog.Config do
   """
 
   @typedoc """
-  Map containing valid configuration.
+  Map containing validated configuration for a PostHog supervision tree.
 
-  It mostly follows `t:options/0`, but the internal structure shouldn't be relied upon.
+  It mostly follows `t:options/0`, but also includes runtime values such as the
+  initialized API client, resolved in-app modules, and system global properties.
+  The internal structure should not be relied upon outside of starting
+  `PostHog.Supervisor` or reading values through `PostHog.config/1`.
   """
   @opaque config() :: map()
 
+  @typedoc """
+  Keyword options accepted by `validate/1` and `validate!/1`.
+
+  See the module documentation for the full schema, defaults, and remarks for
+  each configuration option.
+  """
   @type options() :: unquote(NimbleOptions.option_typespec(@compiled_configuration_schema))
 
   @doc false
@@ -166,7 +183,9 @@ defmodule PostHog.Config do
   end
 
   @doc """
-  See `validate/1`.
+  Validates configuration and returns a `t:config/0`, raising if validation fails.
+
+  See `validate/1` for the accepted options and return shape.
   """
   @spec validate!(options()) :: config()
   def validate!(options) do
@@ -175,7 +194,21 @@ defmodule PostHog.Config do
   end
 
   @doc """
-  Validates configuration against the schema.
+  Validates configuration against the supervisor schema.
+
+  ## Parameters
+
+  - `options` - keyword list matching `t:options/0`.
+
+  ## Returns
+
+  Returns `{:ok, config}` with a normalized `t:config/0` on success, or
+  `{:error, %NimbleOptions.ValidationError{}}` when the options are invalid.
+
+  ## Remarks
+
+  String `:api_key` and `:api_host` values are trimmed before validation. A blank
+  `:api_host` falls back to the default PostHog US ingestion host.
   """
   @spec validate(options()) ::
           {:ok, config()} | {:error, NimbleOptions.ValidationError.t()}
@@ -184,15 +217,31 @@ defmodule PostHog.Config do
 
     with {:ok, validated} <-
            NimbleOptions.validate(normalized_options, @compiled_configuration_schema) do
+      api_key_blank? = blank_api_key?(validated)
       log_blank_api_key(validated)
 
       config = Map.new(validated)
-      client = config.api_client_module.client(config.api_key, config.api_host)
-      global_properties = Map.merge(config.global_properties, @system_global_properties)
+
+      client =
+        if api_key_blank? do
+          nil
+        else
+          config.api_client_module.client(config.api_key, config.api_host)
+        end
+
+      system_global_properties =
+        if config.is_server do
+          Map.put(@system_global_properties, :"$is_server", true)
+        else
+          @system_global_properties
+        end
+
+      global_properties = Map.merge(config.global_properties, system_global_properties)
 
       final_config =
         config
         |> Map.put(:api_client, client)
+        |> Map.put(:enabled, not api_key_blank?)
         |> Map.put(
           :in_app_modules,
           config.in_app_otp_apps |> Enum.flat_map(&Application.spec(&1, :modules)) |> MapSet.new()
@@ -222,6 +271,7 @@ defmodule PostHog.Config do
   end
 
   defp normalize_api_key(api_key) when is_binary(api_key), do: String.trim(api_key)
+  defp normalize_api_key(nil), do: ""
   defp normalize_api_key(api_key), do: api_key
 
   defp normalize_api_host(api_host) when is_binary(api_host) do
@@ -235,10 +285,12 @@ defmodule PostHog.Config do
 
   defp normalize_api_host(api_host), do: api_host
 
+  defp blank_api_key?(validated), do: validated[:api_key] == ""
+
   defp log_blank_api_key(validated) do
-    if validated[:api_key] == "" do
-      Logger.error(
-        "posthog api_key is empty after trimming whitespace; check your project API key"
+    if blank_api_key?(validated) do
+      Logger.warning(
+        "posthog api_key is empty after trimming whitespace; PostHog will start in disabled/no-op mode"
       )
     end
   end

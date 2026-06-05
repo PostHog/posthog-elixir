@@ -1,7 +1,7 @@
 defmodule PostHog.MixProject do
   use Mix.Project
 
-  @version "2.8.2"
+  @version "2.9.0"
   @source_url "https://github.com/posthog/posthog-elixir"
 
   def project do
@@ -47,7 +47,13 @@ defmodule PostHog.MixProject do
       assets: %{
         "assets" => "assets"
       },
-      extras: ["README.md", "CHANGELOG.md", "MIGRATION.md", "guides/advanced-configuration.md"],
+      extras: [
+        "README.md",
+        "CHANGELOG.md",
+        "MIGRATION.md",
+        "CONTRIBUTING.md",
+        "guides/advanced-configuration.md"
+      ],
       groups_for_modules: [
         Integrations: [PostHog.Integrations.Plug, PostHog.Integrations.LLMAnalytics.Req],
         Testing: [PostHog.Test]
