@@ -27,6 +27,17 @@ defmodule PostHog.ErrorTracking.SourcesTest do
     supervisor_name
   end
 
+  defp line_number_for(path, expected_line) do
+    path
+    |> File.read!()
+    |> String.replace_suffix("\n", "")
+    |> String.split("\n")
+    |> Enum.with_index(1)
+    |> Enum.find_value(fn {line, line_number} ->
+      if line == expected_line, do: line_number
+    end)
+  end
+
   describe "get_source_context/3" do
     setup do
       source_map = %{
@@ -116,11 +127,14 @@ defmodule PostHog.ErrorTracking.SourcesTest do
     test "returns source map for a loaded file" do
       supervisor_name = start_sources!(root_source_code_paths: [File.cwd!()])
 
-      result =
-        Sources.get_source_map_for_file(supervisor_name, "lib/posthog/error_tracking/sources.ex")
+      source_path = "lib/posthog/error_tracking/sources.ex"
+      source_line = "defmodule PostHog.ErrorTracking.Sources do"
+      line_number = line_number_for(source_path, source_line)
+
+      result = Sources.get_source_map_for_file(supervisor_name, source_path)
 
       assert is_map(result)
-      assert result[4] == "defmodule PostHog.ErrorTracking.Sources do"
+      assert result[line_number] == source_line
     end
   end
 
@@ -158,9 +172,13 @@ defmodule PostHog.ErrorTracking.SourcesTest do
       assert Enum.all?(result, fn {path, _} -> String.ends_with?(path, ".ex") end)
 
       # Spot-check a known file: sources.ex itself
-      source_lines = result["lib/posthog/error_tracking/sources.ex"]
+      source_path = "lib/posthog/error_tracking/sources.ex"
+      source_line = "defmodule PostHog.ErrorTracking.Sources do"
+      line_number = line_number_for(source_path, source_line)
+
+      source_lines = result[source_path]
       assert is_map(source_lines)
-      assert source_lines[4] == "defmodule PostHog.ErrorTracking.Sources do"
+      assert source_lines[line_number] == source_line
     end
 
     test "excludes directories matching the default patterns" do
