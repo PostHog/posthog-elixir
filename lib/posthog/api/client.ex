@@ -141,7 +141,12 @@ defmodule PostHog.API.Client do
   # PostHog uses the User-Agent to identify the SDK and classify it as
   # server-side; without it, flags gated to the server runtime are omitted
   # from /flags responses.
-  @user_agent "posthog-elixir/#{Mix.Project.config()[:version]}"
+  @user_agent PostHog.Lib.user_agent()
+
+  @doc """
+  The User-Agent header value sent with every API request.
+  """
+  def user_agent, do: @user_agent
 
   @impl __MODULE__
   def client(api_key, api_host) do

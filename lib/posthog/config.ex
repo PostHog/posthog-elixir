@@ -119,8 +119,8 @@ defmodule PostHog.Config do
   @compiled_convenience_schema NimbleOptions.new!(@convenience_schema)
 
   @system_global_properties %{
-    "$lib": "posthog-elixir",
-    "$lib_version": Mix.Project.config()[:version]
+    "$lib": PostHog.Lib.name(),
+    "$lib_version": PostHog.Lib.version()
   }
 
   @moduledoc """

@@ -5,7 +5,6 @@ defmodule PostHog.API.ClientTest do
     %PostHog.API.Client{client: req} =
       PostHog.API.Client.client("phc_test", "https://us.i.posthog.com")
 
-    version = Mix.Project.config()[:version]
-    assert req.headers["user-agent"] == ["posthog-elixir/#{version}"]
+    assert req.headers["user-agent"] == [PostHog.API.Client.user_agent()]
   end
 end
