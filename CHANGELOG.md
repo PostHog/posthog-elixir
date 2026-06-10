@@ -1,5 +1,11 @@
 # posthog
 
+## 2.9.1 — 2026-06-10
+
+### Patch changes
+
+- [31b1d0f](https://github.com/posthog/posthog-elixir/commit/31b1d0f165f69d508273f6ef0dcd1beb0b167f01) Send a `posthog-elixir/<version>` User-Agent header on all API requests so PostHog recognizes the SDK as server-side and includes flags gated to the server runtime in `/flags` responses. — Thanks @haacked!
+
 ## 2.9.0 — 2026-06-03
 
 ### Minor changes
