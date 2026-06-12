@@ -82,7 +82,7 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
   ## Options
 
   - `:posthog_supervisor` - PostHog supervisor name to capture through. Use this
-    if you run a [custom PostHog instance](advanced-configuration.md).
+    if you run a [custom PostHog instance](https://posthog.com/docs/libraries/elixir#advanced-configuration).
 
   ## Returns
 
