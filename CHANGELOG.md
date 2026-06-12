@@ -1,5 +1,11 @@
 # posthog
 
+## 2.9.2 — 2026-06-12
+
+### Patch changes
+
+- [4aa5504](https://github.com/posthog/posthog-elixir/commit/4aa5504873657c0f25b6ffb402a6bde0ecb39142) relax Req and uuid-v7 version requirements — Thanks @martosaur!
+
 ## 2.9.1 — 2026-06-10
 
 ### Patch changes
