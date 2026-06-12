@@ -175,18 +175,6 @@ jobs:
           elixir-version: ${{ env.ELIXIR_VERSION }}
           otp-version: ${{ env.OTP_VERSION }}
 
-      - name: Restore dependencies cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: deps
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}
-          restore-keys: |
-            ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}-${{ env.ELIXIR_VERSION }}-
-            ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}-
-            ${{ runner.os }}-mix-
-
-      - name: Install dependencies
-        run: mix deps.get
 
       - name: Build Hex package
         run: mix hex.build
