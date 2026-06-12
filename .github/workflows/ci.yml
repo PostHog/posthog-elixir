@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+env:
+  ELIXIR_VERSION: "1.18.3"
+  OTP_VERSION: "27.3"
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -81,17 +85,17 @@ jobs:
       - name: Set up Elixir
         uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
         with:
-          elixir-version: 1.18.3
-          otp-version: 27.3
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
 
       - name: Restore dependencies cache
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: deps
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}-1.18.3-27.3
+          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}
           # Fallback to same elixir version, then same lockfile, then any cache
           restore-keys: |
-            ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}-1.18.3-
+            ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}-${{ env.ELIXIR_VERSION }}-
             ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}-
             ${{ runner.os }}-mix-
 
@@ -110,17 +114,17 @@ jobs:
       - name: Set up Elixir
         uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
         with:
-          elixir-version: 1.18.3
-          otp-version: 27.3
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
 
       - name: Restore dependencies cache
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: deps
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}-1.18.3-27.3
+          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}
           # Fallback to same elixir version, then same lockfile, then any cache
           restore-keys: |
-            ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}-1.18.3-
+            ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}-${{ env.ELIXIR_VERSION }}-
             ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}-
             ${{ runner.os }}-mix-
 
@@ -139,17 +143,17 @@ jobs:
       - name: Set up Elixir
         uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
         with:
-          elixir-version: 1.18.3
-          otp-version: 27.3
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
 
       - name: Restore dependencies cache
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: deps
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}-1.18.3-27.3
+          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}
           # Fallback to same elixir version, then same lockfile, then any cache
           restore-keys: |
-            ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}-1.18.3-
+            ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}-${{ env.ELIXIR_VERSION }}-
             ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}-
             ${{ runner.os }}-mix-
 
