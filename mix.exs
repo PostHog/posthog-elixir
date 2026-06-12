@@ -66,10 +66,10 @@ defmodule PostHog.MixProject do
   defp deps do
     [
       {:nimble_options, "~> 1.1"},
-      {:req, "~> 0.5.10"},
+      {:req, "~> 0.5"},
       {:logger_json, "~> 7.0"},
       {:nimble_ownership, "~> 1.0"},
-      {:uuid_v7, "~> 0.6.0"},
+      {:uuid_v7, "~> 0.6"},
       # Development tools
       {:ex_doc, "~> 0.37", only: :dev, runtime: false},
       {:logger_handler_kit, "~> 0.4", only: :test},
