@@ -163,6 +163,9 @@ jobs:
       - name: Compile with warnings as errors
         run: mix compile --warnings-as-errors
 
+      - name: Check public API snapshot
+        run: mix posthog.public_api --check
+
   package:
     name: Hex package build
     runs-on: ubuntu-latest
