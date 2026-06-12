@@ -175,6 +175,5 @@ jobs:
           elixir-version: ${{ env.ELIXIR_VERSION }}
           otp-version: ${{ env.OTP_VERSION }}
 
-
       - name: Build Hex package
         run: mix hex.build
