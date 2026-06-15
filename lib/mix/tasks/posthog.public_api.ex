@@ -162,21 +162,17 @@ defmodule Mix.Tasks.Posthog.PublicApi do
         Mix.shell().info("Public API snapshot is up to date")
 
       {:ok, current} ->
-        write_generated_snapshot(path, snapshot)
-
         Mix.raise("""
         Public API snapshot is out of date.
 
         Run `mix posthog.public_api --update` and commit #{path}.
-        To inspect the change locally, run `git diff -- #{path}`.
+        To inspect the change locally, run `mix posthog.public_api --update` and then `git diff -- #{path}`.
 
         Current snapshot bytes: #{byte_size(current)}
         Generated snapshot bytes: #{byte_size(snapshot)}
         """)
 
       {:error, :enoent} ->
-        write_generated_snapshot(path, snapshot)
-
         Mix.raise("""
         Public API snapshot does not exist.
 
@@ -186,9 +182,5 @@ defmodule Mix.Tasks.Posthog.PublicApi do
       {:error, reason} ->
         Mix.raise("Could not read #{path}: #{inspect(reason)}")
     end
-  end
-
-  defp write_generated_snapshot(path, snapshot) do
-    File.write!(path, snapshot)
   end
 end
