@@ -168,8 +168,8 @@ defmodule Mix.Tasks.Posthog.PublicApi do
         Run `mix posthog.public_api --update` and commit #{path}.
         To inspect the change locally, run `mix posthog.public_api --update` and then `git diff -- #{path}`.
 
-        Current snapshot bytes: #{byte_size(current)}
-        Generated snapshot bytes: #{byte_size(snapshot)}
+        Diff:
+        #{snapshot_diff(path, current, snapshot)}
         """)
 
       {:error, :enoent} ->
@@ -181,6 +181,28 @@ defmodule Mix.Tasks.Posthog.PublicApi do
 
       {:error, reason} ->
         Mix.raise("Could not read #{path}: #{inspect(reason)}")
+    end
+  end
+
+  defp snapshot_diff(path, current, snapshot) do
+    generated_path =
+      System.tmp_dir!()
+      |> Path.join("#{Path.basename(path)}.generated-#{System.unique_integer([:positive])}")
+
+    try do
+      File.write!(generated_path, snapshot)
+
+      {diff, _status} =
+        System.cmd("git", ["diff", "--no-index", "--", path, generated_path],
+          stderr_to_stdout: true
+        )
+
+      diff
+    rescue
+      _error ->
+        "Could not generate diff. Current snapshot bytes: #{byte_size(current)}. Generated snapshot bytes: #{byte_size(snapshot)}."
+    after
+      File.rm(generated_path)
     end
   end
 end
