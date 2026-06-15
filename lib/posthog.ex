@@ -36,6 +36,25 @@ defmodule PostHog do
   @spec config(supervisor_name()) :: PostHog.Config.config()
   def config(name \\ __MODULE__), do: PostHog.Registry.config(name)
 
+  @doc """
+  Returns whether a named `PostHog` supervisor is enabled.
+
+  A supervisor is disabled when it was started without a configured API key. In
+  disabled mode, capture calls become no-ops.
+
+  ## Examples
+
+  Check the default `PostHog` instance:
+
+      PostHog.enabled?()
+
+  Check a named instance:
+
+      PostHog.enabled?(MyPostHog)
+  """
+  @spec enabled?(supervisor_name()) :: boolean()
+  def enabled?(name \\ __MODULE__), do: config(name).enabled
+
   @doc false
   def bare_capture(event, distinct_id, %{} = properties),
     do: bare_capture(__MODULE__, event, distinct_id, properties)

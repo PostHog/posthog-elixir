@@ -21,6 +21,17 @@ defmodule PostHogTest do
     end
   end
 
+  describe "enabled?/1" do
+    test "returns true when the PostHog instance has an API key" do
+      assert PostHog.enabled?()
+    end
+
+    @tag config: [api_key: "", supervisor_name: DisabledPostHog]
+    test "returns false when the PostHog instance has no API key" do
+      refute PostHog.enabled?(DisabledPostHog)
+    end
+  end
+
   describe "bare_capture/4" do
     test "simple call" do
       PostHog.bare_capture("case tested", "distinct_id")
