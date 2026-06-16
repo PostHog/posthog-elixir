@@ -1,5 +1,11 @@
 # posthog
 
+## 2.10.0 — 2026-06-16
+
+### Minor changes
+
+- [e086cb7](https://github.com/posthog/posthog-elixir/commit/e086cb7fffe9954e20640160d3eac510d4246c25) Add PostHog.LLMAnalytics.pop_span/1 function for convenient span context handoff between processes — Thanks @martosaur!
+
 ## 2.9.2 — 2026-06-12
 
 ### Patch changes
