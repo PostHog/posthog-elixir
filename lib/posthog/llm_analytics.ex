@@ -127,7 +127,8 @@ defmodule PostHog.LLMAnalytics do
 
   Just as with Context, LLMAnalytics tracks the current trace and span in the
   process dictionary. Any time you spawn a new process, you'll need to propagate
-  this information. Use `set_session/2`, `set_trace/2` and `set_root_span/2`:
+  this information. Use `set_session/2`, `set_trace/2` and `set_root_span/2` or
+  `pop_span/1`:
 
   ```
   def generate_response(user_message) do
@@ -401,7 +402,28 @@ defmodule PostHog.LLMAnalytics do
     capture_current_span(name, type, properties)
   end
 
-  defp pop_span(name) do
+  @doc """
+  Pop current span from process dictionary.
+
+  This is useful for when you started a span in the current process, but want to
+  hand it off to another process and capture there.
+
+  ## Examples
+
+      iex> PostHog.LLMAnalytics.start_span(%{"$ai_span_name": "LLM Call"})
+      "019ecdb3-ba1d-7504-978a-60242768140f"
+      iex> current_span = PostHog.LLMAnalytics.pop_span()
+      %{
+        "$ai_span_id": "019ecdb3-ba1d-7504-978a-60242768140f",
+        "$ai_span_name": "LLM Call"
+      }
+      iex> Task.async(fn ->
+        PostHog.LLMAnalytics.start_span(current_span)
+        PostHog.LLMAnalytics.capture_current_span("$ai_span")
+      end)
+  """
+  @spec pop_span(PostHog.supervisor_name()) :: PostHog.properties()
+  def pop_span(name \\ PostHog) do
     case Process.get({name, @span_backlog_key}) do
       [span | rest] ->
         Process.put({name, @span_backlog_key}, rest)

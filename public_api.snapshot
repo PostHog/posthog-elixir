@@ -123,6 +123,8 @@ PostHog.LLMAnalytics
     get_session/1 doc: documented
     get_trace/0 doc: none
     get_trace/1 doc: documented
+    pop_span/0 doc: none
+    pop_span/1 doc: documented
     set_root_span/1 doc: none
     set_root_span/2 doc: documented
     set_session/0 doc: none

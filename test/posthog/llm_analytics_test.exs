@@ -512,4 +512,35 @@ defmodule Posthog.LLMAnalyticsTest do
              ] = all_captured(MyPostHog)
     end
   end
+
+  describe "pop_span/1" do
+    test "pops current span from the backlog" do
+      span_id = LLMAnalytics.start_span(%{foo: "bar"})
+
+      assert %{foo: "bar", "$ai_span_id": span_id} == LLMAnalytics.pop_span()
+      assert [] == Process.get({PostHog, :__llm_analytics_spans})
+    end
+
+    test "creates a new span if none is in the backlog" do
+      assert %{"$ai_span_id": "" <> _span_id} = LLMAnalytics.pop_span()
+      assert nil == Process.get({PostHog, :__llm_analytics_spans})
+    end
+
+    test "respects root span when popping a new one" do
+      LLMAnalytics.set_root_span("root_span_id")
+
+      assert %{"$ai_span_id": "" <> _span_id, "$ai_parent_id": "root_span_id"} =
+               LLMAnalytics.pop_span()
+
+      assert nil == Process.get({PostHog, :__llm_analytics_spans})
+    end
+
+    @tag config: [supervisor_name: MyPostHog]
+    test "custom PostHog instance" do
+      span_id = LLMAnalytics.start_span(MyPostHog, %{foo: "bar"})
+
+      assert %{foo: "bar", "$ai_span_id": span_id} == LLMAnalytics.pop_span(MyPostHog)
+      assert [] == Process.get({MyPostHog, :__llm_analytics_spans})
+    end
+  end
 end

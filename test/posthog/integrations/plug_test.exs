@@ -24,7 +24,6 @@ defmodule PostHog.Integrations.PlugTest do
 
   defmodule MyRouter do
     use Plug.Router
-    require Logger
 
     plug(PostHog.Integrations.Plug)
     plug(:match)
