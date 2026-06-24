@@ -24,24 +24,26 @@ defmodule PostHog.FeatureFlags.CalledCache do
         true
 
       pid ->
-        Agent.get_and_update(pid, fn seen ->
-          cond do
-            MapSet.member?(seen, key) ->
-              {false, seen}
-
-            MapSet.size(seen) >= @max_size ->
-              # Intentionally flush instead of evicting individual entries to keep
-              # the hot path simple. Previously seen values may emit again after
-              # the cache rolls over.
-              {true, MapSet.new([key])}
-
-            true ->
-              {true, MapSet.put(seen, key)}
-          end
-        end)
+        Agent.get_and_update(pid, &mark_seen(&1, key))
     end
   catch
     :exit, _ -> true
+  end
+
+  defp mark_seen(seen, key) do
+    cond do
+      MapSet.member?(seen, key) ->
+        {false, seen}
+
+      MapSet.size(seen) >= @max_size ->
+        # Intentionally flush instead of evicting individual entries to keep
+        # the hot path simple. Previously seen values may emit again after
+        # the cache rolls over.
+        {true, MapSet.new([key])}
+
+      true ->
+        {true, MapSet.put(seen, key)}
+    end
   end
 
   defp cache_pid(supervisor_name) do
