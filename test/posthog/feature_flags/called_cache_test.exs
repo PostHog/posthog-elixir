@@ -18,19 +18,27 @@ defmodule PostHog.FeatureFlags.CalledCacheTest do
   test "flushes the cache when it reaches the maximum size", %{config: config} do
     supervisor_name = config.supervisor_name
     seed_key = {"seed-user", "flag", true}
+    table = table(supervisor_name)
 
     full_cache =
       1..(@max_size - 1)
-      |> Enum.map(&{"user-#{&1}", "flag", true})
-      |> MapSet.new()
-      |> MapSet.put(seed_key)
+      |> Enum.map(&{{"user-#{&1}", "flag", true}})
+      |> then(&[{seed_key} | &1])
 
-    Agent.update(PostHog.Registry.via(supervisor_name, CalledCache), fn _seen -> full_cache end)
+    :ets.insert(table, full_cache)
 
     refute CalledCache.first_seen?(supervisor_name, "seed-user", "flag", true)
 
     assert CalledCache.first_seen?(supervisor_name, "overflow-user", "flag", true)
     assert CalledCache.first_seen?(supervisor_name, "seed-user", "flag", true)
     refute CalledCache.first_seen?(supervisor_name, "overflow-user", "flag", true)
+  end
+
+  defp table(supervisor_name) do
+    [{pid, _value}] = Registry.lookup(PostHog.Registry.registry_name(supervisor_name), CalledCache)
+
+    pid
+    |> :sys.get_state()
+    |> Map.fetch!(:table)
   end
 end
