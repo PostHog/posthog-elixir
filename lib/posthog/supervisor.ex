@@ -57,7 +57,8 @@ defmodule PostHog.Supervisor do
         {Registry,
          keys: :unique,
          name: PostHog.Registry.registry_name(config.supervisor_name),
-         meta: [config: config]}
+         meta: [config: config]},
+        {PostHog.FeatureFlags.CalledCache, supervisor_name: config.supervisor_name}
       ] ++ senders(config) ++ sources(config)
 
     Process.put(:"$callers", callers)

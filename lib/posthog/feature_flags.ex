@@ -620,7 +620,9 @@ defmodule PostHog.FeatureFlags do
       |> maybe_put(:"$feature_flag_payload", result.payload)
       |> maybe_put(:"$feature_flag_error", errors)
 
-    PostHog.capture(name, "$feature_flag_called", properties)
+    if PostHog.FeatureFlags.CalledCache.first_seen?(name, distinct_id, result.key, value) do
+      PostHog.capture(name, "$feature_flag_called", properties)
+    end
 
     if flag_missing? do
       :ok
