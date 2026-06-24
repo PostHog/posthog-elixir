@@ -19,26 +19,41 @@ defmodule PostHog.FeatureFlags.CalledCache do
   def first_seen?(supervisor_name, distinct_id, flag_key, value) do
     key = {to_string(distinct_id), flag_key, value}
 
-    Agent.get_and_update(PostHog.Registry.via(supervisor_name, __MODULE__), fn seen ->
-      cond do
-        MapSet.member?(seen, key) ->
-          {false, seen}
-
-        MapSet.size(seen) >= @max_size ->
-          {true, MapSet.new([key])}
-
-        true ->
-          {true, MapSet.put(seen, key)}
-      end
-    end)
-  rescue
-    error in ArgumentError ->
-      if String.starts_with?(Exception.message(error), "unknown registry: ") do
+    case cache_pid(supervisor_name) do
+      nil ->
         true
-      else
-        reraise(error, __STACKTRACE__)
-      end
+
+      pid ->
+        Agent.get_and_update(pid, fn seen ->
+          cond do
+            MapSet.member?(seen, key) ->
+              {false, seen}
+
+            MapSet.size(seen) >= @max_size ->
+              # Intentionally flush instead of evicting individual entries to keep
+              # the hot path simple. Previously seen values may emit again after
+              # the cache rolls over.
+              {true, MapSet.new([key])}
+
+            true ->
+              {true, MapSet.put(seen, key)}
+          end
+        end)
+    end
   catch
     :exit, _ -> true
+  end
+
+  defp cache_pid(supervisor_name) do
+    registry_name = PostHog.Registry.registry_name(supervisor_name)
+
+    with registry_pid when is_pid(registry_pid) <- Process.whereis(registry_name),
+         [{pid, _value}] <- Registry.lookup(registry_name, __MODULE__) do
+      pid
+    else
+      _ -> nil
+    end
+  rescue
+    ArgumentError -> nil
   end
 end
