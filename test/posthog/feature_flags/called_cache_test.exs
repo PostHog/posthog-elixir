@@ -35,7 +35,8 @@ defmodule PostHog.FeatureFlags.CalledCacheTest do
   end
 
   defp table(supervisor_name) do
-    [{pid, _value}] = Registry.lookup(PostHog.Registry.registry_name(supervisor_name), CalledCache)
+    [{pid, _value}] =
+      Registry.lookup(PostHog.Registry.registry_name(supervisor_name), CalledCache)
 
     pid
     |> :sys.get_state()
