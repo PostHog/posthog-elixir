@@ -224,12 +224,29 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
       assert properties["$feature/variant-flag"] == "control"
     end
 
-    test "fires on every access (no dedup in this PR)", %{snapshot: snapshot} do
+    test "dedupes repeated access for the same flag value", %{snapshot: snapshot} do
       Evaluations.enabled?(snapshot, "boolean-flag")
       Evaluations.enabled?(snapshot, "boolean-flag")
       Evaluations.get_flag(snapshot, "boolean-flag")
 
-      assert length(all_captured()) == 3
+      assert [%{event: "$feature_flag_called"}] = all_captured()
+    end
+
+    test "fires again when the same flag returns a different value" do
+      true_result = %FeatureFlags.Result{key: "changing-flag", enabled: true}
+      false_result = %FeatureFlags.Result{key: "changing-flag", enabled: false}
+
+      FeatureFlags.log_feature_flag_usage(PostHog, "foo", true_result)
+      FeatureFlags.log_feature_flag_usage(PostHog, "foo", false_result)
+      FeatureFlags.log_feature_flag_usage(PostHog, "foo", true_result)
+      FeatureFlags.log_feature_flag_usage(PostHog, "foo", false_result)
+
+      events = all_captured()
+      assert length(events) == 2
+
+      assert events
+             |> Enum.map(& &1.properties[:"$feature_flag_response"])
+             |> Enum.sort() == [false, true]
     end
   end
 
