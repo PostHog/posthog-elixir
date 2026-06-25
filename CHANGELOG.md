@@ -1,5 +1,11 @@
 # posthog
 
+## 2.10.1 — 2026-06-25
+
+### Patch changes
+
+- [4d2af12](https://github.com/posthog/posthog-elixir/commit/4d2af126799158f7cc99e6d760bb0d922562e618) Dedupe feature flag called events by response — Thanks @marandaneto!
+
 ## 2.10.0 — 2026-06-16
 
 ### Minor changes
