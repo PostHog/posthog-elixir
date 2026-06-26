@@ -77,7 +77,13 @@ defmodule PostHog.Handler do
       initial_exception = exception(log_event, config)
 
       reporter_exception =
-        log_event |> Map.update!(:meta, &reporter_metadata/1) |> exception(config)
+        log_event
+        |> Map.update!(:meta, fn metadata ->
+          metadata
+          |> Map.delete(:crash_reason)
+          |> Map.put(:posthog_reporter, true)
+        end)
+        |> exception(config)
 
       [initial_exception, reporter_exception]
     end
@@ -97,7 +103,13 @@ defmodule PostHog.Handler do
       initial_exception = exception(log_event, config)
 
       reporter_exception =
-        log_event |> Map.update!(:meta, &reporter_metadata/1) |> exception(config)
+        log_event
+        |> Map.update!(:meta, fn metadata ->
+          metadata
+          |> Map.delete(:crash_reason)
+          |> Map.put(:posthog_reporter, true)
+        end)
+        |> exception(config)
 
       [reporter_exception, initial_exception]
     end
@@ -105,12 +117,6 @@ defmodule PostHog.Handler do
 
   defp exceptions(log_event, config) do
     [exception(log_event, config)]
-  end
-
-  defp reporter_metadata(metadata) do
-    metadata
-    |> Map.delete(:crash_reason)
-    |> Map.put(:posthog_reporter, true)
   end
 
   defp exception(log_event, config) do
