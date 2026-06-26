@@ -77,7 +77,7 @@ defmodule PostHog.Handler do
       initial_exception = exception(log_event, config)
 
       reporter_exception =
-        log_event |> Map.update!(:meta, &Map.delete(&1, :crash_reason)) |> exception(config)
+        log_event |> Map.update!(:meta, &reporter_metadata/1) |> exception(config)
 
       [initial_exception, reporter_exception]
     end
@@ -97,7 +97,7 @@ defmodule PostHog.Handler do
       initial_exception = exception(log_event, config)
 
       reporter_exception =
-        log_event |> Map.update!(:meta, &Map.delete(&1, :crash_reason)) |> exception(config)
+        log_event |> Map.update!(:meta, &reporter_metadata/1) |> exception(config)
 
       [reporter_exception, initial_exception]
     end
@@ -105,6 +105,12 @@ defmodule PostHog.Handler do
 
   defp exceptions(log_event, config) do
     [exception(log_event, config)]
+  end
+
+  defp reporter_metadata(metadata) do
+    metadata
+    |> Map.delete(:crash_reason)
+    |> Map.put(:posthog_reporter, true)
   end
 
   defp exception(log_event, config) do
@@ -134,6 +140,16 @@ defmodule PostHog.Handler do
 
   defp do_type(%{meta: %{crash_reason: {reason, _}}}),
     do: Exception.format_banner(:exit, reason)
+
+  defp do_type(%{msg: {:string, chardata}, meta: %{error_logger: _}}),
+    do: IO.chardata_to_string(chardata)
+
+  defp do_type(%{msg: {:string, chardata}, meta: %{posthog_reporter: true}}),
+    do: IO.chardata_to_string(chardata)
+
+  defp do_type(%{level: level, msg: {:string, _}, meta: %{mfa: {_, _, _}, file: file, line: _}})
+       when is_binary(file) or is_list(file),
+       do: "Logger.#{level}"
 
   defp do_type(%{msg: {:string, chardata}}), do: IO.chardata_to_string(chardata)
 
