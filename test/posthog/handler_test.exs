@@ -98,8 +98,9 @@ defmodule PostHog.HandlerTest do
            } = event
 
     assert filename == "test/posthog/handler_test.exs"
-    assert String.contains?(function, "PostHog.HandlerTest")
-    refute String.ends_with?(function, ":#{expected_line}")
+
+    assert function ==
+             "PostHog.HandlerTest.\"test adds synthetic stacktrace frame for plain logger messages\"/1"
   end
 
   @tag config: [capture_level: :warning]
