@@ -99,7 +99,7 @@ defmodule PostHog.HandlerTest do
 
     assert filename == "test/posthog/handler_test.exs"
     assert String.contains?(function, "PostHog.HandlerTest")
-    assert String.ends_with?(function, ":#{expected_line}")
+    refute String.ends_with?(function, ":#{expected_line}")
   end
 
   @tag config: [capture_level: :warning]

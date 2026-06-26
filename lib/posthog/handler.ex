@@ -216,7 +216,7 @@ defmodule PostHog.Handler do
       %{
         platform: "custom",
         lang: "elixir",
-        function: "#{Exception.format_mfa(module, function, arity_or_args)}:#{line}",
+        function: Exception.format_mfa(module, function, arity_or_args),
         filename: filename,
         lineno: line,
         module: inspect(module),
