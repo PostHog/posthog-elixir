@@ -62,6 +62,46 @@ defmodule PostHog.HandlerTest do
            } = event
   end
 
+  test "adds synthetic stacktrace frame for plain logger messages", %{
+    handler_ref: ref,
+    config: %{supervisor_name: supervisor_name}
+  } do
+    expected_line = __ENV__.line + 1
+    Logger.info("Hello World")
+    LoggerHandlerKit.Assert.assert_logged(ref)
+
+    assert [event] = all_captured(supervisor_name)
+
+    assert %{
+             properties: %{
+               "$exception_list": [
+                 %{
+                   stacktrace: %{
+                     type: "raw",
+                     frames: [
+                       %{
+                         platform: "custom",
+                         lang: "elixir",
+                         filename: filename,
+                         function: function,
+                         lineno: ^expected_line,
+                         module: "PostHog.HandlerTest",
+                         in_app: false,
+                         resolved: true,
+                         synthetic: true
+                       }
+                     ]
+                   }
+                 }
+               ]
+             }
+           } = event
+
+    assert String.ends_with?(filename, "test/posthog/handler_test.exs")
+    assert String.contains?(function, "PostHog.HandlerTest")
+    assert String.ends_with?(function, ":#{expected_line}")
+  end
+
   @tag config: [capture_level: :warning]
   test "ignores messages lower than capture_level", %{
     handler_ref: ref,

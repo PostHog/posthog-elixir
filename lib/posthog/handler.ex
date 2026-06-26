@@ -203,7 +203,60 @@ defmodule PostHog.Handler do
        ),
        do: %{stacktrace: do_stacktrace(stacktrace, in_app_modules, config)}
 
+  defp stacktrace(%{meta: meta}, in_app_modules, config) do
+    case synthetic_frame(meta, in_app_modules, config) do
+      nil -> %{}
+      frame -> %{stacktrace: %{type: "raw", frames: [frame]}}
+    end
+  end
+
   defp stacktrace(_event, _, _), do: %{}
+
+  defp synthetic_frame(%{line: line} = metadata, in_app_modules, config) when is_integer(line) do
+    {module, function, arity_or_args} = Map.get(metadata, :mfa, {nil, nil, nil})
+    filename = metadata |> Map.get(:file) |> safe_chardata_to_string()
+
+    with {:ok, function_name} <-
+           synthetic_function_name(module, function, arity_or_args, filename, line) do
+      %{
+        platform: "custom",
+        lang: "elixir",
+        function: function_name,
+        filename: filename,
+        lineno: line,
+        module: if(module, do: inspect(module)),
+        in_app: module in in_app_modules,
+        resolved: true,
+        synthetic: true
+      }
+      |> maybe_add_source_context(filename, line, config)
+    else
+      :error -> nil
+    end
+  end
+
+  defp synthetic_frame(_metadata, _in_app_modules, _config), do: nil
+
+  defp synthetic_function_name(module, function, arity_or_args, _filename, line)
+       when is_atom(module) and is_atom(function) and
+              (is_integer(arity_or_args) or is_list(arity_or_args)) do
+    {:ok, "#{Exception.format_mfa(module, function, arity_or_args)}:#{line}"}
+  end
+
+  defp synthetic_function_name(_module, _function, _arity_or_args, filename, line)
+       when is_binary(filename) do
+    {:ok, "#{filename}:#{line}"}
+  end
+
+  defp synthetic_function_name(_module, _function, _arity_or_args, _filename, _line), do: :error
+
+  defp safe_chardata_to_string(nil), do: nil
+
+  defp safe_chardata_to_string(chardata) do
+    IO.chardata_to_string(chardata)
+  rescue
+    _ -> nil
+  end
 
   defp do_stacktrace([_ | _] = stacktrace, in_app_modules, config) do
     frames =
