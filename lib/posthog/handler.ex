@@ -216,22 +216,23 @@ defmodule PostHog.Handler do
     {module, function, arity_or_args} = Map.get(metadata, :mfa, {nil, nil, nil})
     filename = metadata |> Map.get(:file) |> safe_chardata_to_string()
 
-    with {:ok, function_name} <-
-           synthetic_function_name(module, function, arity_or_args, filename, line) do
-      %{
-        platform: "custom",
-        lang: "elixir",
-        function: function_name,
-        filename: filename,
-        lineno: line,
-        module: if(module, do: inspect(module)),
-        in_app: module in in_app_modules,
-        resolved: true,
-        synthetic: true
-      }
-      |> maybe_add_source_context(filename, line, config)
-    else
-      :error -> nil
+    case synthetic_function_name(module, function, arity_or_args, filename, line) do
+      {:ok, function_name} ->
+        %{
+          platform: "custom",
+          lang: "elixir",
+          function: function_name,
+          filename: filename,
+          lineno: line,
+          module: if(module, do: inspect(module)),
+          in_app: module in in_app_modules,
+          resolved: true,
+          synthetic: true
+        }
+        |> maybe_add_source_context(filename, line, config)
+
+      :error ->
+        nil
     end
   end
 
