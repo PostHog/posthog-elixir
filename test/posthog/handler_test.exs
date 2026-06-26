@@ -97,7 +97,7 @@ defmodule PostHog.HandlerTest do
              }
            } = event
 
-    assert String.ends_with?(filename, "test/posthog/handler_test.exs")
+    assert filename == "test/posthog/handler_test.exs"
     assert String.contains?(function, "PostHog.HandlerTest")
     assert String.ends_with?(function, ":#{expected_line}")
   end

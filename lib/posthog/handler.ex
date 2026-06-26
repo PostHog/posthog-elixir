@@ -209,7 +209,8 @@ defmodule PostHog.Handler do
          config
        )
        when is_binary(file) or is_list(file) do
-    filename = IO.chardata_to_string(file)
+    filename =
+      file |> IO.chardata_to_string() |> normalize_source_filename(config.root_source_code_paths)
 
     frame =
       %{
@@ -229,6 +230,22 @@ defmodule PostHog.Handler do
   end
 
   defp stacktrace(_event, _, _), do: %{}
+
+  defp normalize_source_filename(filename, root_paths) do
+    relative_to_source_root =
+      root_paths
+      |> Enum.map(&Path.expand/1)
+      |> Enum.sort_by(&String.length/1, :desc)
+      |> Enum.find_value(fn root ->
+        relative = Path.relative_to(filename, root)
+
+        if relative != filename do
+          relative
+        end
+      end)
+
+    relative_to_source_root || Path.relative_to_cwd(filename)
+  end
 
   defp do_stacktrace([_ | _] = stacktrace, in_app_modules, config) do
     frames =
