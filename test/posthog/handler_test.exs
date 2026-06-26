@@ -66,8 +66,7 @@ defmodule PostHog.HandlerTest do
     handler_ref: ref,
     config: %{supervisor_name: supervisor_name}
   } do
-    expected_line = __ENV__.line + 1
-    Logger.info("Hello World")
+    expected_line = log_plain_message()
     LoggerHandlerKit.Assert.assert_logged(ref)
 
     assert [event] = all_captured(supervisor_name)
@@ -98,9 +97,13 @@ defmodule PostHog.HandlerTest do
            } = event
 
     assert filename == "test/posthog/handler_test.exs"
+    assert function == "PostHog.HandlerTest.log_plain_message/0"
+  end
 
-    assert function ==
-             "PostHog.HandlerTest.\"test adds synthetic stacktrace frame for plain logger messages\"/1"
+  defp log_plain_message do
+    expected_line = __ENV__.line + 1
+    Logger.info("Hello World")
+    expected_line
   end
 
   @tag config: [capture_level: :warning]
