@@ -15,16 +15,20 @@ defmodule SdkComplianceAdapter.Router do
 
   plug(Plug.Logger)
   plug(:match)
+
   plug(Plug.Parsers,
     parsers: [:json],
     json_decoder: JSON,
     pass: ["*/*"]
   )
+
   plug(:dispatch)
 
   @impl Plug.ErrorHandler
   def handle_errors(conn, %{kind: _kind, reason: reason, stack: stack}) do
-    Logger.error("Error in #{conn.method} #{conn.request_path}: #{inspect(reason)}\n#{Exception.format_stacktrace(stack)}")
+    Logger.error(
+      "Error in #{conn.method} #{conn.request_path}: #{inspect(reason)}\n#{Exception.format_stacktrace(stack)}"
+    )
 
     conn
     |> put_resp_content_type("application/json")
@@ -149,13 +153,32 @@ defmodule SdkComplianceAdapter.Router do
             person_properties: person_properties,
             groups: params["groups"] || %{},
             group_properties: params["group_properties"] || %{},
+            geoip_disable: Map.get(params, "disable_geoip", false),
             flag_keys_to_evaluate: [key]
           }
-          |> maybe_put(:geoip_disable, params["disable_geoip"])
 
-        case PostHog.FeatureFlags.flags(SdkComplianceAdapter.PostHog, body) do
-          {:ok, %{status: 200, body: %{"flags" => flags}}} ->
+        config = SdkComplianceAdapter.State.get_config()
+        flags_body = Map.put(body, :api_key, config[:api_key])
+
+        case Req.post("#{config[:api_host]}/flags/?v=2", json: flags_body) do
+          {:ok, %{status: 200, body: resp_body}} ->
+            flags = Map.get(resp_body, "featureFlags") || Map.get(resp_body, "flags") || %{}
             value = extract_flag_value(flags, key)
+
+            PostHog.bare_capture(
+              SdkComplianceAdapter.PostHog,
+              "$feature_flag_called",
+              distinct_id,
+              %{
+                "$feature_flag" => key,
+                "$feature_flag_response" => value,
+                "$feature/#{key}" => value
+              }
+            )
+
+            SdkComplianceAdapter.State.increment_events_captured()
+            Process.sleep(600)
+
             json_response(conn, 200, %{success: true, value: value})
 
           {:ok, %{status: status, body: resp_body}} ->
@@ -235,13 +258,10 @@ defmodule SdkComplianceAdapter.Router do
     end
   end
 
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
-
   defp extract_flag_value(flags, key) when is_map(flags) do
     case Map.get(flags, key) do
       nil ->
-        nil
+        false
 
       flag_data when is_map(flag_data) ->
         cond do
@@ -260,7 +280,7 @@ defmodule SdkComplianceAdapter.Router do
     case Process.whereis(SdkComplianceAdapter.PostHog) do
       nil ->
         :ok
-  
+
       pid ->
         # terminate_child can return :ok or {:error, :not_found}
         # We don't care about the result - just try to stop it
