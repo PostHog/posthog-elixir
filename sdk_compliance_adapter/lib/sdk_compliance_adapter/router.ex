@@ -177,7 +177,8 @@ defmodule SdkComplianceAdapter.Router do
             )
 
             SdkComplianceAdapter.State.increment_events_captured()
-            Process.sleep(600)
+            interval_ms = config[:max_batch_time_ms] || 100
+            Process.sleep(interval_ms + 500)
 
             json_response(conn, 200, %{success: true, value: value})
 
@@ -274,7 +275,7 @@ defmodule SdkComplianceAdapter.Router do
     end
   end
 
-  defp extract_flag_value(_flags, _key), do: nil
+  defp extract_flag_value(_flags, _key), do: false
 
   defp stop_posthog do
     case Process.whereis(SdkComplianceAdapter.PostHog) do
