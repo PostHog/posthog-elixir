@@ -185,26 +185,23 @@ defmodule PostHog.API.Client do
     |> request_with_compression_fallback()
   end
 
-  defp request_with_compression_fallback(req) do
-    Req.request(req)
-  rescue
-    exception ->
-      if compression_failure?(req, __STACKTRACE__) do
-        req
-        |> Req.merge(compress_body: false)
-        |> Req.request()
-      else
-        reraise exception, __STACKTRACE__
-      end
+  @doc false
+  def request_with_compression_fallback_for_test(req, request_fun) do
+    request_with_compression_fallback(req, request_fun)
   end
 
-  defp compression_failure?(req, stacktrace) do
-    Req.Request.fetch_option(req, :compress_body) == {:ok, true} &&
-      Enum.any?(stacktrace, fn
-        {Req.Steps, :compress_body, _, _} -> true
-        {:zlib, :gzip, _, _} -> true
-        {Req.Utils, :stream_gzip, _, _} -> true
-        _ -> false
-      end)
+  defp request_with_compression_fallback(req, request_fun \\ &Req.request/1) do
+    request_fun.(req)
+  rescue
+    exception ->
+      case Req.Request.fetch_option(req, :compress_body) do
+        {:ok, true} ->
+          req
+          |> Req.merge(compress_body: false)
+          |> request_fun.()
+
+        _ ->
+          reraise exception, __STACKTRACE__
+      end
   end
 end
