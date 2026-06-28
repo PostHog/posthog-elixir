@@ -9,15 +9,23 @@ defmodule PostHog.API.ClientTest do
     assert req.headers["user-agent"] == [Client.user_agent()]
   end
 
-  test "flags retry policy retries transport errors but not HTTP responses" do
-    assert Client.retry_flags_request?(%Req.Request{}, %Req.TransportError{reason: :timeout})
-    assert Client.retry_flags_request?(%Req.Request{}, %Req.HTTPError{reason: :closed})
-    refute Client.retry_flags_request?(%Req.Request{}, %Req.Response{status: 503})
+  for {case_name, response_or_exception, expected} <- [
+        {"transport timeout", %Req.TransportError{reason: :timeout}, true},
+        {"transport closed", %Req.TransportError{reason: :closed}, true},
+        {"http error", %Req.HTTPError{reason: :closed}, false},
+        {"http status response", %Req.Response{status: 503}, false}
+      ] do
+    test "flags retry policy handles #{case_name}" do
+      assert Client.retry_flags_request?(
+               %Req.Request{},
+               unquote(Macro.escape(response_or_exception))
+             ) == unquote(expected)
+    end
   end
 
-  test "flags retry delay starts at 300ms and doubles" do
-    assert Client.flags_retry_delay(0) == 300
-    assert Client.flags_retry_delay(1) == 600
-    assert Client.flags_retry_delay(2) == 1200
+  for {retry_count, expected_delay} <- [{0, 300}, {1, 600}, {2, 1200}] do
+    test "flags retry delay for retry count #{retry_count}" do
+      assert Client.flags_retry_delay(unquote(retry_count)) == unquote(expected_delay)
+    end
   end
 end

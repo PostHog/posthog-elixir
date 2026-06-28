@@ -154,7 +154,7 @@ defmodule PostHog.API.Client do
 
   def retry_flags_request?(_request, %Req.TransportError{}), do: true
 
-  def retry_flags_request?(_request, %Req.HTTPError{}), do: true
+  def retry_flags_request?(_request, %Req.HTTPError{}), do: false
 
   def retry_flags_request?(_request, _exception), do: false
 
