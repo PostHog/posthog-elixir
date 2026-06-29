@@ -9,32 +9,63 @@ defmodule PostHog.API.ClientTest do
     assert req.headers["user-agent"] == [Client.user_agent()]
   end
 
-  test "request fallback retries without compression when compressed request raises" do
-    req = Req.new(compress_body: true)
-    {:ok, calls} = Agent.start_link(fn -> [] end)
+  test "request fallback continues uncompressed when compression step raises" do
+    parent = self()
 
-    request_fun = fn req ->
-      Agent.update(calls, &[Req.Request.fetch_option(req, :compress_body) | &1])
+    req =
+      Req.new(
+        body: [123_456],
+        compress_body: true,
+        adapter: fn req ->
+          send(
+            parent,
+            {:request, Req.Request.fetch_option(req, :compress_body),
+             Req.Request.get_header(req, "content-encoding")}
+          )
 
-      case Req.Request.fetch_option(req, :compress_body) do
-        {:ok, true} -> raise RuntimeError, "gzip failed"
-        {:ok, false} -> {:ok, %{status: 200, body: %{}}}
-      end
-    end
+          {req, Req.Response.new(status: 200, body: %{})}
+        end
+      )
 
-    assert {:ok, %{status: 200}} =
-             Client.request_with_compression_fallback_for_test(req, request_fun)
-
-    assert Agent.get(calls, &Enum.reverse/1) == [{:ok, true}, {:ok, false}]
+    assert {:ok, %{status: 200}} = Client.request_with_compression_fallback_for_test(req)
+    assert_received {:request, {:ok, false}, []}
   end
 
-  test "request fallback reraises when compression is disabled" do
-    req = Req.new(compress_body: false)
+  test "request fallback does not catch adapter exceptions" do
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    req =
+      Req.new(
+        body: "ok",
+        compress_body: true,
+        adapter: fn _req ->
+          Agent.update(calls, &(&1 + 1))
+          raise RuntimeError, "request failed"
+        end
+      )
 
     assert_raise RuntimeError, "request failed", fn ->
-      Client.request_with_compression_fallback_for_test(req, fn _req ->
-        raise RuntimeError, "request failed"
-      end)
+      Client.request_with_compression_fallback_for_test(req)
     end
+
+    assert Agent.get(calls, & &1) == 1
+  end
+
+  test "request fallback preserves normal compression" do
+    parent = self()
+
+    req =
+      Req.new(
+        body: "hello",
+        compress_body: true,
+        adapter: fn req ->
+          send(parent, {:request, Req.Request.get_header(req, "content-encoding"), req.body})
+          {req, Req.Response.new(status: 200, body: %{})}
+        end
+      )
+
+    assert {:ok, %{status: 200}} = Client.request_with_compression_fallback_for_test(req)
+    assert_received {:request, ["gzip"], gzipped_body}
+    assert :zlib.gunzip(gzipped_body) == "hello"
   end
 end
