@@ -195,6 +195,27 @@ defmodule PostHog.API.Client do
           req
       end
     end)
+    |> request_with_compression_fallback()
+  end
+
+  defp request_with_compression_fallback(req) do
+    req
+    |> with_compression_fallback_step()
     |> Req.request()
+  end
+
+  defp with_compression_fallback_step(req) do
+    %{
+      req
+      | request_steps:
+          Keyword.replace(req.request_steps, :compress_body, &compress_body_with_fallback/1)
+    }
+  end
+
+  defp compress_body_with_fallback(req) do
+    Req.Steps.compress_body(req)
+  rescue
+    _exception ->
+      Req.merge(req, compress_body: false)
   end
 end
