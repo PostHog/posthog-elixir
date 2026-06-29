@@ -1,5 +1,11 @@
 # posthog
 
+## 2.10.2 — 2026-06-29
+
+### Patch changes
+
+- [45cba19](https://github.com/posthog/posthog-elixir/commit/45cba19805eac6a4210884ef0d877d9f2c344c3a) Fall back to uncompressed API requests when gzip compression fails — Thanks @marandaneto!
+
 ## 2.10.1 — 2026-06-25
 
 ### Patch changes
