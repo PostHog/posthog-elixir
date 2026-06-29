@@ -185,11 +185,6 @@ defmodule PostHog.API.Client do
     |> request_with_compression_fallback()
   end
 
-  @doc false
-  def request_with_compression_fallback_for_test(req) do
-    request_with_compression_fallback(req)
-  end
-
   defp request_with_compression_fallback(req) do
     req
     |> with_compression_fallback_step()

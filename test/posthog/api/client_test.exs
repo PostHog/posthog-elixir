@@ -27,7 +27,7 @@ defmodule PostHog.API.ClientTest do
         end
       )
 
-    assert {:ok, %{status: 200}} = Client.request_with_compression_fallback_for_test(req)
+    assert {:ok, %{status: 200}} = Client.request(req, :post, "/", [])
     assert_received {:request, {:ok, false}, []}
   end
 
@@ -45,7 +45,7 @@ defmodule PostHog.API.ClientTest do
       )
 
     assert_raise RuntimeError, "request failed", fn ->
-      Client.request_with_compression_fallback_for_test(req)
+      Client.request(req, :post, "/", [])
     end
 
     assert Agent.get(calls, & &1) == 1
@@ -64,7 +64,7 @@ defmodule PostHog.API.ClientTest do
         end
       )
 
-    assert {:ok, %{status: 200}} = Client.request_with_compression_fallback_for_test(req)
+    assert {:ok, %{status: 200}} = Client.request(req, :post, "/", [])
     assert_received {:request, ["gzip"], gzipped_body}
     assert :zlib.gunzip(gzipped_body) == "hello"
   end
