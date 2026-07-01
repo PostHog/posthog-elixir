@@ -39,22 +39,31 @@ jobs:
           reason="Push or unknown event: run full CI"
           changed_files="$(mktemp)"
 
+          is_safe_ci_skip_file() {
+            local file="$1"
+
+            case "$file" in
+              *.md|docs/*|.github/ISSUE_TEMPLATE/*|.github/PULL_REQUEST_TEMPLATE/*|.github/pull_request_template.md|.github/CODEOWNERS|CODEOWNERS|.github/dependabot.yml|.github/workflows/release.yml|.github/workflows/release.yaml|.github/workflows/publish.yml|.github/workflows/publish.yaml|.github/workflows/stale.yml|.github/workflows/stale.yaml|.github/workflows/lint-pr.yml|.github/workflows/lint-pr.yaml|.github/workflows/call-flags-project-board.yml|.github/workflows/call-flags-project-board.yaml|.github/workflows/changeset-hygiene.yml|.github/workflows/changeset-hygiene.yaml|.github/workflows/dependabot-changeset.yml|.github/workflows/dependabot-changeset.yaml|.github/workflows/validate-versioning.yml|.github/workflows/validate-versioning.yaml|.github/workflows/new-pr.yml|.github/workflows/new-pr.yaml|.github/workflows/generated-files-notice.yml|.github/workflows/generated-files-notice.yaml|.github/workflows/posthog-upgrade.yml|.github/workflows/posthog-upgrade.yaml|.github/workflows/posthog-watcher-*.yml|.github/workflows/posthog-watcher-*.yaml)
+                return 0
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          }
+
           if [[ "$EVENT_NAME" == "pull_request" && -n "${PR_NUMBER:-}" ]]; then
-            if gh api --paginate "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files" --jq '.[].filename' > "$changed_files"; then
+            if gh api --paginate "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files" --jq '.[] | .filename, (.previous_filename // empty)' > "$changed_files"; then
               if [[ -s "$changed_files" ]]; then
                 skip_heavy_ci=true
-                reason="Only non-impacting files changed"
+                reason="Only globally safe docs, metadata, or automation files changed"
 
                 while IFS= read -r file; do
-                  case "$file" in
-                    *.md|docs/**|.sampo/changesets/*.md|.github/ISSUE_TEMPLATE/**|.github/PULL_REQUEST_TEMPLATE/**|.github/pull_request_template.md|.github/workflows/release.yml|.github/workflows/stale.yml|.github/workflows/stale.yaml|.github/workflows/lint-pr.yml|.github/workflows/call-flags-project-board.yml)
-                      ;;
-                    *)
-                      skip_heavy_ci=false
-                      reason="Full CI required because ${file} may affect SDK, build, tests, package, or CI behavior"
-                      break
-                      ;;
-                  esac
+                  if ! is_safe_ci_skip_file "$file"; then
+                    skip_heavy_ci=false
+                    reason="Full CI required because ${file} is not in the global safe-to-skip set"
+                    break
+                  fi
                 done < "$changed_files"
               else
                 reason="No changed files found: run full CI"
@@ -123,7 +132,7 @@ jobs:
         if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci == 'true' }}
         run: |
           echo "${{ needs.detect-ci-impact.outputs.reason }}"
-          echo "No SDK/source/build-impacting files changed, so this required check is passing without Beam setup, dependencies, or tests." >> "$GITHUB_STEP_SUMMARY"
+          echo "Only globally safe docs, metadata, or automation files changed, so this required check is passing without Beam setup, dependencies, or tests." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up Elixir
         if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci != 'true' }}
@@ -164,7 +173,7 @@ jobs:
         if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci == 'true' }}
         run: |
           echo "${{ needs.detect-ci-impact.outputs.reason }}"
-          echo "No formatter-impacting files changed, so this required check is passing without Beam setup, dependencies, or format checks." >> "$GITHUB_STEP_SUMMARY"
+          echo "Only globally safe docs, metadata, or automation files changed, so this required check is passing without Beam setup, dependencies, or format checks." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up Elixir
         if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci != 'true' }}
@@ -205,7 +214,7 @@ jobs:
         if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci == 'true' }}
         run: |
           echo "${{ needs.detect-ci-impact.outputs.reason }}"
-          echo "No Credo-impacting files changed, so this required check is passing without Beam setup, dependencies, or static checks." >> "$GITHUB_STEP_SUMMARY"
+          echo "Only globally safe docs, metadata, or automation files changed, so this required check is passing without Beam setup, dependencies, or static checks." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up Elixir
         if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci != 'true' }}
@@ -246,7 +255,7 @@ jobs:
         if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci == 'true' }}
         run: |
           echo "${{ needs.detect-ci-impact.outputs.reason }}"
-          echo "No compile/public-API-impacting files changed, so this required check is passing without Beam setup, dependencies, or compile checks." >> "$GITHUB_STEP_SUMMARY"
+          echo "Only globally safe docs, metadata, or automation files changed, so this required check is passing without Beam setup, dependencies, or compile checks." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up Elixir
         if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci != 'true' }}
@@ -291,7 +300,7 @@ jobs:
         if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci == 'true' }}
         run: |
           echo "${{ needs.detect-ci-impact.outputs.reason }}"
-          echo "No package-impacting files changed, so this required check is passing without Beam setup or Hex package build." >> "$GITHUB_STEP_SUMMARY"
+          echo "Only globally safe docs, metadata, or automation files changed, so this required check is passing without Beam setup or Hex package build." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up Elixir
         if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci != 'true' }}

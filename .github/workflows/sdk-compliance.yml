@@ -7,33 +7,9 @@ permissions:
 
 on:
   pull_request:
-    paths:
-      - "lib/**"
-      - "test/**"
-      - "config/**"
-      - "mix.exs"
-      - "mix.lock"
-      - ".formatter.exs"
-      - ".credo.exs"
-      - ".tool-versions"
-      - "public_api.snapshot"
-      - "sdk_compliance_adapter/**"
-      - ".github/workflows/sdk-compliance.yml"
   push:
     branches:
       - main
-    paths:
-      - "lib/**"
-      - "test/**"
-      - "config/**"
-      - "mix.exs"
-      - "mix.lock"
-      - ".formatter.exs"
-      - ".credo.exs"
-      - ".tool-versions"
-      - "public_api.snapshot"
-      - "sdk_compliance_adapter/**"
-      - ".github/workflows/sdk-compliance.yml"
 
 jobs:
   compliance:
