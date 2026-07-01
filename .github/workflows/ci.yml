@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 env:
   ELIXIR_VERSION: "1.18.3"
@@ -17,9 +18,74 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  detect-ci-impact:
+    name: Detect CI impact
+    runs-on: ubuntu-latest
+    outputs:
+      skip_heavy_ci: ${{ steps.classify.outputs.skip_heavy_ci }}
+      reason: ${{ steps.classify.outputs.reason }}
+    steps:
+      - name: Classify changed files
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          skip_heavy_ci=false
+          reason="Push or unknown event: run full CI"
+          changed_files="$(mktemp)"
+
+          if [[ "$EVENT_NAME" == "pull_request" && -n "${PR_NUMBER:-}" ]]; then
+            if gh api --paginate "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files" --jq '.[].filename' > "$changed_files"; then
+              if [[ -s "$changed_files" ]]; then
+                skip_heavy_ci=true
+                reason="Only non-impacting files changed"
+
+                while IFS= read -r file; do
+                  case "$file" in
+                    *.md|docs/**|.sampo/changesets/*.md|.github/ISSUE_TEMPLATE/**|.github/PULL_REQUEST_TEMPLATE/**|.github/pull_request_template.md|.github/workflows/release.yml|.github/workflows/stale.yml|.github/workflows/stale.yaml|.github/workflows/lint-pr.yml|.github/workflows/call-flags-project-board.yml)
+                      ;;
+                    *)
+                      skip_heavy_ci=false
+                      reason="Full CI required because ${file} may affect SDK, build, tests, package, or CI behavior"
+                      break
+                      ;;
+                  esac
+                done < "$changed_files"
+              else
+                reason="No changed files found: run full CI"
+              fi
+            else
+              reason="Could not fetch PR files: run full CI"
+            fi
+          fi
+
+          echo "skip_heavy_ci=${skip_heavy_ci}" >> "$GITHUB_OUTPUT"
+          echo "reason=${reason}" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### CI impact detection"
+            echo ""
+            echo "- Skip heavy CI: \`${skip_heavy_ci}\`"
+            echo "- Reason: ${reason}"
+            echo ""
+            echo "Changed files:"
+            if [[ -s "$changed_files" ]]; then
+              sed 's/^/- `/' "$changed_files" | sed 's/$/`/'
+            else
+              echo "- No PR changed files listed"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
   test:
     name: Build and test
     runs-on: ubuntu-latest
+    needs: detect-ci-impact
+    if: ${{ always() }}
 
     # This is a complicated set of strategies, but Elixir has a complicated set of supported versions.
     # See https://hexdocs.pm/elixir/compatibility-and-deprecations.html
@@ -53,13 +119,21 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Skip heavy CI for non-impacting changes
+        if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci == 'true' }}
+        run: |
+          echo "${{ needs.detect-ci-impact.outputs.reason }}"
+          echo "No SDK/source/build-impacting files changed, so this required check is passing without Beam setup, dependencies, or tests." >> "$GITHUB_STEP_SUMMARY"
+
       - name: Set up Elixir
+        if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci != 'true' }}
         uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
         with:
           elixir-version: ${{ matrix.elixir }}
           otp-version: ${{ matrix.otp }}
 
       - name: Restore dependencies cache
+        if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci != 'true' }}
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: deps
@@ -71,24 +145,36 @@ jobs:
             ${{ runner.os }}-mix-
 
       - name: Install dependencies
+        if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci != 'true' }}
         run: mix deps.get
 
       - name: Run tests
+        if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci != 'true' }}
         run: mix test
 
   format:
     name: Format
     runs-on: ubuntu-latest
+    needs: detect-ci-impact
+    if: ${{ always() }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Skip heavy CI for non-impacting changes
+        if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci == 'true' }}
+        run: |
+          echo "${{ needs.detect-ci-impact.outputs.reason }}"
+          echo "No formatter-impacting files changed, so this required check is passing without Beam setup, dependencies, or format checks." >> "$GITHUB_STEP_SUMMARY"
+
       - name: Set up Elixir
+        if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci != 'true' }}
         uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
         with:
           elixir-version: ${{ env.ELIXIR_VERSION }}
           otp-version: ${{ env.OTP_VERSION }}
 
       - name: Restore dependencies cache
+        if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci != 'true' }}
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: deps
@@ -100,24 +186,36 @@ jobs:
             ${{ runner.os }}-mix-
 
       - name: Install dependencies
+        if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci != 'true' }}
         run: mix deps.get
 
       - name: Check formatting
+        if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci != 'true' }}
         run: mix format --check-formatted
 
   credo:
     name: Credo
     runs-on: ubuntu-latest
+    needs: detect-ci-impact
+    if: ${{ always() }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Skip heavy CI for non-impacting changes
+        if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci == 'true' }}
+        run: |
+          echo "${{ needs.detect-ci-impact.outputs.reason }}"
+          echo "No Credo-impacting files changed, so this required check is passing without Beam setup, dependencies, or static checks." >> "$GITHUB_STEP_SUMMARY"
+
       - name: Set up Elixir
+        if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci != 'true' }}
         uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
         with:
           elixir-version: ${{ env.ELIXIR_VERSION }}
           otp-version: ${{ env.OTP_VERSION }}
 
       - name: Restore dependencies cache
+        if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci != 'true' }}
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: deps
@@ -129,24 +227,36 @@ jobs:
             ${{ runner.os }}-mix-
 
       - name: Install dependencies
+        if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci != 'true' }}
         run: mix deps.get
 
       - name: Run static checks
+        if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci != 'true' }}
         run: mix credo --strict
 
   compile:
     name: Compile with warnings as errors
     runs-on: ubuntu-latest
+    needs: detect-ci-impact
+    if: ${{ always() }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Skip heavy CI for non-impacting changes
+        if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci == 'true' }}
+        run: |
+          echo "${{ needs.detect-ci-impact.outputs.reason }}"
+          echo "No compile/public-API-impacting files changed, so this required check is passing without Beam setup, dependencies, or compile checks." >> "$GITHUB_STEP_SUMMARY"
+
       - name: Set up Elixir
+        if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci != 'true' }}
         uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
         with:
           elixir-version: ${{ env.ELIXIR_VERSION }}
           otp-version: ${{ env.OTP_VERSION }}
 
       - name: Restore dependencies cache
+        if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci != 'true' }}
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: deps
@@ -158,25 +268,38 @@ jobs:
             ${{ runner.os }}-mix-
 
       - name: Install dependencies
+        if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci != 'true' }}
         run: mix deps.get
 
       - name: Compile with warnings as errors
+        if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci != 'true' }}
         run: mix compile --warnings-as-errors
 
       - name: Check public API snapshot
+        if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci != 'true' }}
         run: mix posthog.public_api --check
 
   package:
     name: Hex package build
     runs-on: ubuntu-latest
+    needs: detect-ci-impact
+    if: ${{ always() }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Skip heavy CI for non-impacting changes
+        if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci == 'true' }}
+        run: |
+          echo "${{ needs.detect-ci-impact.outputs.reason }}"
+          echo "No package-impacting files changed, so this required check is passing without Beam setup or Hex package build." >> "$GITHUB_STEP_SUMMARY"
+
       - name: Set up Elixir
+        if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci != 'true' }}
         uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
         with:
           elixir-version: ${{ env.ELIXIR_VERSION }}
           otp-version: ${{ env.OTP_VERSION }}
 
       - name: Build Hex package
+        if: ${{ needs.detect-ci-impact.outputs.skip_heavy_ci != 'true' }}
         run: mix hex.build
