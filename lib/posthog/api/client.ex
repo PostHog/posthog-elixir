@@ -143,6 +143,7 @@ defmodule PostHog.API.Client do
   # server-side; without it, flags gated to the server runtime are omitted
   # from /flags responses.
   @user_agent PostHog.Lib.user_agent()
+  @flags_retry_http_statuses [502, 504]
 
   @doc """
   The User-Agent header value sent with every API request.
@@ -150,6 +151,10 @@ defmodule PostHog.API.Client do
   def user_agent, do: @user_agent
 
   @doc false
+  def retry_flags_request?(_request, %Req.Response{status: status})
+      when status in @flags_retry_http_statuses,
+      do: true
+
   def retry_flags_request?(_request, %Req.Response{}), do: false
 
   def retry_flags_request?(_request, %Req.TransportError{}), do: true
