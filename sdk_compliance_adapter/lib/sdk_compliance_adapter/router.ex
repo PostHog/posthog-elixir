@@ -158,9 +158,9 @@ defmodule SdkComplianceAdapter.Router do
           }
 
         config = SdkComplianceAdapter.State.get_config()
-        flags_body = Map.put(body, :api_key, config[:api_key])
+        api_client = PostHog.config(SdkComplianceAdapter.PostHog).api_client
 
-        case Req.post("#{config[:api_host]}/flags/?v=2", json: flags_body) do
+        case PostHog.API.flags(api_client, body) do
           {:ok, %{status: 200, body: resp_body}} ->
             flags = Map.get(resp_body, "featureFlags") || Map.get(resp_body, "flags") || %{}
             value = extract_flag_value(flags, key)
