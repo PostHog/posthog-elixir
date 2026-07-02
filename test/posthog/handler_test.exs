@@ -25,7 +25,7 @@ defmodule PostHog.HandlerTest do
              properties: %{
                "$exception_list": [
                  %{
-                   type: "Logger.info",
+                   type: "Hello World",
                    value: "Hello World",
                    mechanism: %{handled: true, type: "generic"}
                  }
@@ -53,7 +53,7 @@ defmodule PostHog.HandlerTest do
                foo: "bar",
                "$exception_list": [
                  %{
-                   type: "Logger.info",
+                   type: "Hello World",
                    value: "Hello World",
                    mechanism: %{handled: true, type: "generic"}
                  }
@@ -75,7 +75,7 @@ defmodule PostHog.HandlerTest do
              properties: %{
                "$exception_list": [
                  %{
-                   type: "Logger.info",
+                   type: "Hello World",
                    value: "Hello World",
                    stacktrace: %{
                      type: "raw",
@@ -1533,7 +1533,7 @@ defmodule PostHog.HandlerTest do
                extra: "Foo",
                "$exception_list": [
                  %{
-                   type: "Logger.error",
+                   type: "Error with metadata",
                    value: "Error with metadata",
                    mechanism: %{handled: true}
                  }
@@ -1564,7 +1564,7 @@ defmodule PostHog.HandlerTest do
                  should: "work",
                  "$exception_list": [
                    %{
-                     type: "Logger.error",
+                     type: "Error with metadata",
                      value: "Error with metadata",
                      mechanism: %{handled: true}
                    }
@@ -1653,7 +1653,7 @@ defmodule PostHog.HandlerTest do
                foo: "bar",
                "$exception_list": [
                  %{
-                   type: "Logger.error",
+                   type: "Error with metadata",
                    value: "Error with metadata",
                    mechanism: %{handled: true, type: "generic"}
                  }
