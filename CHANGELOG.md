@@ -1,5 +1,11 @@
 # posthog
 
+## 2.10.3 — 2026-07-02
+
+### Patch changes
+
+- [742e3d8](https://github.com/posthog/posthog-elixir/commit/742e3d8cc4d6ba86d92e252a0380a0d08f13b43b) Add source location stacktrace frames for plain Logger messages. — Thanks @hpouillot!
+
 ## 2.10.2 — 2026-06-29
 
 ### Patch changes

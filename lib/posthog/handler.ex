@@ -203,7 +203,49 @@ defmodule PostHog.Handler do
        ),
        do: %{stacktrace: do_stacktrace(stacktrace, in_app_modules, config)}
 
+  defp stacktrace(
+         %{meta: %{mfa: {module, function, arity_or_args}, file: file, line: line}},
+         in_app_modules,
+         config
+       )
+       when is_binary(file) or is_list(file) do
+    filename =
+      file |> IO.chardata_to_string() |> normalize_source_filename(config.root_source_code_paths)
+
+    frame =
+      %{
+        platform: "custom",
+        lang: "elixir",
+        function: Exception.format_mfa(module, function, arity_or_args),
+        filename: filename,
+        lineno: line,
+        module: inspect(module),
+        in_app: module in in_app_modules,
+        resolved: true,
+        synthetic: true
+      }
+      |> maybe_add_source_context(filename, line, config)
+
+    %{stacktrace: %{type: "raw", frames: [frame]}}
+  end
+
   defp stacktrace(_event, _, _), do: %{}
+
+  defp normalize_source_filename(filename, root_paths) do
+    relative_to_source_root =
+      root_paths
+      |> Enum.map(&Path.expand/1)
+      |> Enum.sort_by(&String.length/1, :desc)
+      |> Enum.find_value(fn root ->
+        relative = Path.relative_to(filename, root)
+
+        if relative != filename do
+          relative
+        end
+      end)
+
+    relative_to_source_root || Path.relative_to_cwd(filename)
+  end
 
   defp do_stacktrace([_ | _] = stacktrace, in_app_modules, config) do
     frames =
