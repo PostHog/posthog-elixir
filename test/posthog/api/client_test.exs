@@ -9,6 +9,31 @@ defmodule PostHog.API.ClientTest do
     assert req.headers["user-agent"] == [Client.user_agent()]
   end
 
+  for {case_name, response_or_exception, expected} <- [
+        {"transport timeout", %Req.TransportError{reason: :timeout}, true},
+        {"transport closed", %Req.TransportError{reason: :closed}, true},
+        {"contract http status 502", %Req.Response{status: 502}, true},
+        {"contract http status 504", %Req.Response{status: 504}, true},
+        {"http error", %Req.HTTPError{reason: :closed}, false},
+        {"http status 408", %Req.Response{status: 408}, false},
+        {"http status 429", %Req.Response{status: 429}, false},
+        {"http status 500", %Req.Response{status: 500}, false},
+        {"http status 503", %Req.Response{status: 503}, false}
+      ] do
+    test "flags retry policy handles #{case_name}" do
+      assert Client.retry_flags_request?(
+               %Req.Request{},
+               unquote(Macro.escape(response_or_exception))
+             ) == unquote(expected)
+    end
+  end
+
+  for {retry_count, expected_delay} <- [{0, 300}, {1, 600}, {2, 1200}] do
+    test "flags retry delay for retry count #{retry_count}" do
+      assert Client.flags_retry_delay(unquote(retry_count)) == unquote(expected_delay)
+    end
+  end
+
   test "request fallback continues uncompressed when compression step raises" do
     parent = self()
 

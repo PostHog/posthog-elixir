@@ -32,6 +32,12 @@ defmodule PostHog.Config do
                             default: PostHog.API.Client,
                             doc: "API client to use"
                           ],
+                          feature_flags_request_max_retries: [
+                            type: :non_neg_integer,
+                            default: 1,
+                            doc:
+                              "Number of retries for /flags requests after network, transport, or timeout failures. Set to 0 to disable retries."
+                          ],
                           supervisor_name: [
                             type: :atom,
                             default: PostHog,
@@ -227,6 +233,7 @@ defmodule PostHog.Config do
           nil
         else
           config.api_client_module.client(config.api_key, config.api_host)
+          |> Map.put(:feature_flags_request_max_retries, config.feature_flags_request_max_retries)
         end
 
       system_global_properties =

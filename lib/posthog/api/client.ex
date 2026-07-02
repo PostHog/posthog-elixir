@@ -96,7 +96,7 @@ defmodule PostHog.API.Client do
   """
   @behaviour __MODULE__
 
-  defstruct [:client, :module]
+  defstruct [:client, :module, feature_flags_request_max_retries: 1]
 
   @typedoc """
   Wrapper returned by `c:client/2` and stored in `t:PostHog.Config.config/0`.
@@ -106,7 +106,8 @@ defmodule PostHog.API.Client do
   """
   @type t() :: %__MODULE__{
           client: client(),
-          module: atom()
+          module: atom(),
+          feature_flags_request_max_retries: non_neg_integer()
         }
 
   @typedoc """
@@ -142,11 +143,28 @@ defmodule PostHog.API.Client do
   # server-side; without it, flags gated to the server runtime are omitted
   # from /flags responses.
   @user_agent PostHog.Lib.user_agent()
+  @flags_retry_http_statuses [502, 504]
 
   @doc """
   The User-Agent header value sent with every API request.
   """
   def user_agent, do: @user_agent
+
+  @doc false
+  def retry_flags_request?(_request, %Req.Response{status: status})
+      when status in @flags_retry_http_statuses,
+      do: true
+
+  def retry_flags_request?(_request, %Req.Response{}), do: false
+
+  def retry_flags_request?(_request, %Req.TransportError{}), do: true
+
+  def retry_flags_request?(_request, %Req.HTTPError{}), do: false
+
+  def retry_flags_request?(_request, _exception), do: false
+
+  @doc false
+  def flags_retry_delay(retry_count), do: trunc(300 * :math.pow(2, retry_count))
 
   @impl __MODULE__
   def client(api_key, api_host) do
