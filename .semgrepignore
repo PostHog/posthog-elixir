@@ -1,0 +1,2 @@
+# The project-board reusable workflow is PostHog-owned, pinned by SHA, and requires inherited app secrets.
+.github/workflows/call-flags-project-board.yml
