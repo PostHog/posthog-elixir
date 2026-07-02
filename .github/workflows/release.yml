@@ -68,7 +68,7 @@ jobs:
     steps:
       - name: Notify Slack - Approved
         if: needs.notify-approval-needed.outputs.slack_ts != ''
-        uses: posthog/.github/.github/actions/slack-thread-reply@5fc4680761e8ac29a61b212756230eba0e276d8c
+        uses: posthog/.github/.github/actions/slack-thread-reply@cb0979b67dcd585828b61ac45927eef4da8f6287 # main
         with:
           slack_bot_token: ${{ secrets.SLACK_CLIENT_LIBRARIES_BOT_TOKEN }}
           slack_channel_id: ${{ vars.SLACK_APPROVALS_CLIENT_LIBRARIES_CHANNEL_ID }}
@@ -184,21 +184,29 @@ jobs:
       # Notify in case of a failure
       - name: Send failure event to PostHog
         if: ${{ failure() }}
-        uses: PostHog/posthog-github-action@58dea254b598fb5d469c0699c98af8288a7f7650 # v1.2.0
+        continue-on-error: true
+        uses: PostHog/posthog-github-action@9a6a19d360820ab4d95ecc4a5a7564062c895f84 # v1.3.0
         with:
           posthog-token: "${{ secrets.POSTHOG_PROJECT_API_KEY }}"
-          event: "posthog-elixir-github-release-workflow-failure"
+          event: "posthog-sdk-github-release-workflow-failure"
           properties: >-
             {
               "commitSha": "${{ github.sha }}",
               "jobStatus": "${{ job.status }}",
               "ref": "${{ github.ref }}",
-              "version": "${{ steps.sampo-release.outputs.new_version }}"
+              "repository": "${{ github.repository }}",
+              "sdk": "posthog-elixir",
+              "jobName": "release",
+              "packageName": "posthog-elixir",
+              "packageVersion": "${{ steps.sampo-release.outputs.new_version || 'unknown' }}",
+              "actionUrl": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "alertText": ":rotating_light: Failed to release posthog-elixir@${{ steps.sampo-release.outputs.new_version }} :rotating_light:",
+              "alertContext": "The release workflow failed before completion."
             }
 
       - name: Notify Slack - Failed
         if: ${{ failure() && needs.notify-approval-needed.outputs.slack_ts != '' }}
-        uses: posthog/.github/.github/actions/slack-thread-reply@5fc4680761e8ac29a61b212756230eba0e276d8c
+        uses: posthog/.github/.github/actions/slack-thread-reply@cb0979b67dcd585828b61ac45927eef4da8f6287 # main
         with:
           slack_bot_token: ${{ secrets.SLACK_CLIENT_LIBRARIES_BOT_TOKEN }}
           slack_channel_id: ${{ vars.SLACK_APPROVALS_CLIENT_LIBRARIES_CHANNEL_ID }}
@@ -216,7 +224,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Notify Slack - Released
-        uses: posthog/.github/.github/actions/slack-thread-reply@5fc4680761e8ac29a61b212756230eba0e276d8c
+        uses: posthog/.github/.github/actions/slack-thread-reply@cb0979b67dcd585828b61ac45927eef4da8f6287 # main
         with:
           slack_bot_token: ${{ secrets.SLACK_CLIENT_LIBRARIES_BOT_TOKEN }}
           slack_channel_id: ${{ vars.SLACK_APPROVALS_CLIENT_LIBRARIES_CHANNEL_ID }}
