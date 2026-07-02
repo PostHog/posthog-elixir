@@ -16,4 +16,4 @@ jobs:
             is_draft: ${{ github.event.pull_request.draft }}
         # The reusable workflow is pinned to a trusted PostHog/.github commit and needs
         # the project-board bot secrets from this repository.
-        secrets: inherit # nosemgrep: yaml.github-actions.security.secrets-inherit.secrets-inherit
+        secrets: inherit # nosemgrep: yaml.github-actions.security.secrets-inherit.secrets-inherit -- reusable workflow requires inherited secrets
