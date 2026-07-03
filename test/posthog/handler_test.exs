@@ -443,19 +443,19 @@ defmodule PostHog.HandlerTest do
                        frames: [
                          %{
                            in_app: false,
-                           filename: "lib/logger_handler_kit/act.ex",
-                           function: "anonymous fn/0 in LoggerHandlerKit.Act.task_error/1",
+                           filename: "lib/task/supervised.ex",
+                           function: "Task.Supervised.invoke_mfa/2",
                            lineno: _,
-                           module: "LoggerHandlerKit.Act",
+                           module: "Task.Supervised",
                            platform: "custom",
                            lang: "elixir"
                          },
                          %{
                            in_app: false,
-                           filename: "lib/task/supervised.ex",
-                           function: "Task.Supervised.invoke_mfa/2",
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function: "anonymous fn/0 in LoggerHandlerKit.Act.task_error/1",
                            lineno: _,
-                           module: "Task.Supervised",
+                           module: "LoggerHandlerKit.Act",
                            platform: "custom",
                            lang: "elixir"
                          }
@@ -482,19 +482,19 @@ defmodule PostHog.HandlerTest do
                        frames: [
                          %{
                            in_app: false,
-                           filename: "lib/logger_handler_kit/act.ex",
-                           function: "anonymous fn/0 in LoggerHandlerKit.Act.task_error/1",
+                           filename: "lib/task/supervised.ex",
+                           function: "Task.Supervised.invoke_mfa/2",
                            lineno: _,
-                           module: "LoggerHandlerKit.Act",
+                           module: "Task.Supervised",
                            platform: "custom",
                            lang: "elixir"
                          },
                          %{
                            in_app: false,
-                           filename: "lib/task/supervised.ex",
-                           function: "Task.Supervised.invoke_mfa/2",
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function: "anonymous fn/0 in LoggerHandlerKit.Act.task_error/1",
                            lineno: _,
-                           module: "Task.Supervised",
+                           module: "LoggerHandlerKit.Act",
                            platform: "custom",
                            lang: "elixir"
                          }
@@ -510,6 +510,12 @@ defmodule PostHog.HandlerTest do
                }
              } = event
     end
+
+    # Regression: frames follow canonical bottom-up order, so the first frame is
+    # the outermost entry point and the last frame is the crash site.
+    assert %{properties: %{"$exception_list": [%{stacktrace: %{frames: frames}} | _]}} = event
+    assert %{function: "Task.Supervised.invoke_mfa/2"} = List.first(frames)
+    assert %{function: "anonymous fn/0 in LoggerHandlerKit.Act.task_error/1"} = List.last(frames)
   end
 
   test "task error throw", %{handler_ref: ref, config: %{supervisor_name: supervisor_name}} do
@@ -532,19 +538,19 @@ defmodule PostHog.HandlerTest do
                        frames: [
                          %{
                            in_app: false,
-                           filename: "lib/logger_handler_kit/act.ex",
-                           function: "anonymous fn/0 in LoggerHandlerKit.Act.task_error/1",
+                           filename: "lib/task/supervised.ex",
+                           function: "Task.Supervised.invoke_mfa/2",
                            lineno: _,
-                           module: "LoggerHandlerKit.Act",
+                           module: "Task.Supervised",
                            platform: "custom",
                            lang: "elixir"
                          },
                          %{
                            in_app: false,
-                           filename: "lib/task/supervised.ex",
-                           function: "Task.Supervised.invoke_mfa/2",
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function: "anonymous fn/0 in LoggerHandlerKit.Act.task_error/1",
                            lineno: _,
-                           module: "Task.Supervised",
+                           module: "LoggerHandlerKit.Act",
                            platform: "custom",
                            lang: "elixir"
                          }
@@ -571,19 +577,19 @@ defmodule PostHog.HandlerTest do
                        frames: [
                          %{
                            in_app: false,
-                           filename: "lib/logger_handler_kit/act.ex",
-                           function: "anonymous fn/0 in LoggerHandlerKit.Act.task_error/1",
+                           filename: "lib/task/supervised.ex",
+                           function: "Task.Supervised.invoke_mfa/2",
                            lineno: _,
-                           module: "LoggerHandlerKit.Act",
+                           module: "Task.Supervised",
                            platform: "custom",
                            lang: "elixir"
                          },
                          %{
                            in_app: false,
-                           filename: "lib/task/supervised.ex",
-                           function: "Task.Supervised.invoke_mfa/2",
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function: "anonymous fn/0 in LoggerHandlerKit.Act.task_error/1",
                            lineno: _,
-                           module: "Task.Supervised",
+                           module: "LoggerHandlerKit.Act",
                            platform: "custom",
                            lang: "elixir"
                          }
@@ -621,19 +627,19 @@ defmodule PostHog.HandlerTest do
                        frames: [
                          %{
                            in_app: false,
-                           filename: "lib/logger_handler_kit/act.ex",
-                           function: "anonymous fn/0 in LoggerHandlerKit.Act.task_error/1",
+                           filename: "lib/task/supervised.ex",
+                           function: "Task.Supervised.invoke_mfa/2",
                            lineno: _,
-                           module: "LoggerHandlerKit.Act",
+                           module: "Task.Supervised",
                            platform: "custom",
                            lang: "elixir"
                          },
                          %{
                            in_app: false,
-                           filename: "lib/task/supervised.ex",
-                           function: "Task.Supervised.invoke_mfa/2",
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function: "anonymous fn/0 in LoggerHandlerKit.Act.task_error/1",
                            lineno: _,
-                           module: "Task.Supervised",
+                           module: "LoggerHandlerKit.Act",
                            platform: "custom",
                            lang: "elixir"
                          }
@@ -660,19 +666,19 @@ defmodule PostHog.HandlerTest do
                        frames: [
                          %{
                            in_app: false,
-                           filename: "lib/logger_handler_kit/act.ex",
-                           function: "anonymous fn/0 in LoggerHandlerKit.Act.task_error/1",
+                           filename: "lib/task/supervised.ex",
+                           function: "Task.Supervised.invoke_mfa/2",
                            lineno: _,
-                           module: "LoggerHandlerKit.Act",
+                           module: "Task.Supervised",
                            platform: "custom",
                            lang: "elixir"
                          },
                          %{
                            in_app: false,
-                           filename: "lib/task/supervised.ex",
-                           function: "Task.Supervised.invoke_mfa/2",
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function: "anonymous fn/0 in LoggerHandlerKit.Act.task_error/1",
                            lineno: _,
-                           module: "Task.Supervised",
+                           module: "LoggerHandlerKit.Act",
                            platform: "custom",
                            lang: "elixir"
                          }
@@ -712,20 +718,11 @@ defmodule PostHog.HandlerTest do
                        type: "raw",
                        frames: [
                          %{
-                           in_app: false,
-                           filename: "lib/logger_handler_kit/act.ex",
-                           function: "anonymous fn/0 in LoggerHandlerKit.Act.genserver_crash/1",
-                           lineno: _,
-                           module: "LoggerHandlerKit.Act",
-                           platform: "custom",
-                           lang: "elixir"
-                         },
-                         %{
-                           filename: "gen_server.erl",
-                           function: ":gen_server.try_handle_call/4",
+                           filename: "proc_lib.erl",
+                           function: ":proc_lib.init_p_do_apply/3",
                            in_app: false,
                            lineno: _,
-                           module: ":gen_server",
+                           module: ":proc_lib",
                            platform: "custom",
                            lang: "elixir"
                          },
@@ -739,11 +736,20 @@ defmodule PostHog.HandlerTest do
                            lang: "elixir"
                          },
                          %{
-                           filename: "proc_lib.erl",
-                           function: ":proc_lib.init_p_do_apply/3",
+                           filename: "gen_server.erl",
+                           function: ":gen_server.try_handle_call/4",
                            in_app: false,
                            lineno: _,
-                           module: ":proc_lib",
+                           module: ":gen_server",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           in_app: false,
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function: "anonymous fn/0 in LoggerHandlerKit.Act.genserver_crash/1",
+                           lineno: _,
+                           module: "LoggerHandlerKit.Act",
                            platform: "custom",
                            lang: "elixir"
                          }
@@ -771,20 +777,11 @@ defmodule PostHog.HandlerTest do
                        type: "raw",
                        frames: [
                          %{
-                           in_app: false,
-                           filename: "lib/logger_handler_kit/act.ex",
-                           function: "anonymous fn/0 in LoggerHandlerKit.Act.genserver_crash/1",
-                           lineno: _,
-                           module: "LoggerHandlerKit.Act",
-                           platform: "custom",
-                           lang: "elixir"
-                         },
-                         %{
-                           filename: "gen_server.erl",
-                           function: ":gen_server.try_handle_call/4",
+                           filename: "proc_lib.erl",
+                           function: ":proc_lib.init_p_do_apply/3",
                            in_app: false,
                            lineno: _,
-                           module: ":gen_server",
+                           module: ":proc_lib",
                            platform: "custom",
                            lang: "elixir"
                          },
@@ -798,11 +795,20 @@ defmodule PostHog.HandlerTest do
                            lang: "elixir"
                          },
                          %{
-                           filename: "proc_lib.erl",
-                           function: ":proc_lib.init_p_do_apply/3",
+                           filename: "gen_server.erl",
+                           function: ":gen_server.try_handle_call/4",
                            in_app: false,
                            lineno: _,
-                           module: ":proc_lib",
+                           module: ":gen_server",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           in_app: false,
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function: "anonymous fn/0 in LoggerHandlerKit.Act.genserver_crash/1",
+                           lineno: _,
+                           module: "LoggerHandlerKit.Act",
                            platform: "custom",
                            lang: "elixir"
                          }
@@ -839,22 +845,13 @@ defmodule PostHog.HandlerTest do
                        type: "raw",
                        frames: [
                          %{
+                           filename: "proc_lib.erl",
+                           function: ":proc_lib.init_p_do_apply/3",
                            in_app: false,
-                           filename: "lib/logger_handler_kit/act.ex",
-                           function: "anonymous fn/0 in LoggerHandlerKit.Act.genserver_crash/1",
                            lineno: _,
-                           module: "LoggerHandlerKit.Act",
+                           module: ":proc_lib",
                            platform: "custom",
                            lang: "elixir"
-                         },
-                         %{
-                           filename: "gen_server.erl",
-                           function: ":gen_server.try_handle_call/4",
-                           lineno: _,
-                           module: ":gen_server",
-                           platform: "custom",
-                           lang: "elixir",
-                           in_app: false
                          },
                          %{
                            filename: "gen_server.erl",
@@ -866,11 +863,20 @@ defmodule PostHog.HandlerTest do
                            in_app: false
                          },
                          %{
-                           filename: "proc_lib.erl",
-                           function: ":proc_lib.init_p_do_apply/3",
-                           in_app: false,
+                           filename: "gen_server.erl",
+                           function: ":gen_server.try_handle_call/4",
                            lineno: _,
-                           module: ":proc_lib",
+                           module: ":gen_server",
+                           platform: "custom",
+                           lang: "elixir",
+                           in_app: false
+                         },
+                         %{
+                           in_app: false,
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function: "anonymous fn/0 in LoggerHandlerKit.Act.genserver_crash/1",
+                           lineno: _,
+                           module: "LoggerHandlerKit.Act",
                            platform: "custom",
                            lang: "elixir"
                          }
@@ -898,22 +904,13 @@ defmodule PostHog.HandlerTest do
                        type: "raw",
                        frames: [
                          %{
+                           filename: "proc_lib.erl",
+                           function: ":proc_lib.init_p_do_apply/3",
                            in_app: false,
-                           filename: "lib/logger_handler_kit/act.ex",
-                           function: "anonymous fn/0 in LoggerHandlerKit.Act.genserver_crash/1",
                            lineno: _,
-                           module: "LoggerHandlerKit.Act",
+                           module: ":proc_lib",
                            platform: "custom",
                            lang: "elixir"
-                         },
-                         %{
-                           filename: "gen_server.erl",
-                           function: ":gen_server.try_handle_call/4",
-                           lineno: _,
-                           module: ":gen_server",
-                           platform: "custom",
-                           lang: "elixir",
-                           in_app: false
                          },
                          %{
                            filename: "gen_server.erl",
@@ -925,11 +922,20 @@ defmodule PostHog.HandlerTest do
                            in_app: false
                          },
                          %{
-                           filename: "proc_lib.erl",
-                           function: ":proc_lib.init_p_do_apply/3",
-                           in_app: false,
+                           filename: "gen_server.erl",
+                           function: ":gen_server.try_handle_call/4",
                            lineno: _,
-                           module: ":proc_lib",
+                           module: ":gen_server",
+                           platform: "custom",
+                           lang: "elixir",
+                           in_app: false
+                         },
+                         %{
+                           in_app: false,
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function: "anonymous fn/0 in LoggerHandlerKit.Act.genserver_crash/1",
+                           lineno: _,
+                           module: "LoggerHandlerKit.Act",
                            platform: "custom",
                            lang: "elixir"
                          }
@@ -1061,9 +1067,9 @@ defmodule PostHog.HandlerTest do
                      stacktrace: %{
                        frames: [
                          %{
-                           function: "anonymous fn/0 in LoggerHandlerKit.Act.gen_statem_crash/1",
-                           module: "LoggerHandlerKit.Act",
-                           filename: "lib/logger_handler_kit/act.ex",
+                           function: ":proc_lib.init_p_do_apply/3",
+                           module: ":proc_lib",
+                           filename: "proc_lib.erl",
                            in_app: false,
                            lineno: _,
                            platform: "custom",
@@ -1079,9 +1085,9 @@ defmodule PostHog.HandlerTest do
                            lang: "elixir"
                          },
                          %{
-                           function: ":proc_lib.init_p_do_apply/3",
-                           module: ":proc_lib",
-                           filename: "proc_lib.erl",
+                           function: "anonymous fn/0 in LoggerHandlerKit.Act.gen_statem_crash/1",
+                           module: "LoggerHandlerKit.Act",
+                           filename: "lib/logger_handler_kit/act.ex",
                            in_app: false,
                            lineno: _,
                            platform: "custom",
@@ -1119,9 +1125,9 @@ defmodule PostHog.HandlerTest do
                      stacktrace: %{
                        frames: [
                          %{
-                           function: "anonymous fn/0 in LoggerHandlerKit.Act.gen_statem_crash/1",
-                           module: "LoggerHandlerKit.Act",
-                           filename: "lib/logger_handler_kit/act.ex",
+                           function: ":proc_lib.init_p_do_apply/3",
+                           module: ":proc_lib",
+                           filename: "proc_lib.erl",
                            in_app: false,
                            lineno: _,
                            platform: "custom",
@@ -1137,9 +1143,9 @@ defmodule PostHog.HandlerTest do
                            lang: "elixir"
                          },
                          %{
-                           function: ":proc_lib.init_p_do_apply/3",
-                           module: ":proc_lib",
-                           filename: "proc_lib.erl",
+                           function: "anonymous fn/0 in LoggerHandlerKit.Act.gen_statem_crash/1",
+                           module: "LoggerHandlerKit.Act",
+                           filename: "lib/logger_handler_kit/act.ex",
                            in_app: false,
                            lineno: _,
                            platform: "custom",
@@ -1152,38 +1158,7 @@ defmodule PostHog.HandlerTest do
                    %{
                      mechanism: %{handled: true, type: "generic"},
                      stacktrace: %{
-                       frames: [
-                         %{
-                           function: ":gen.do_call/4",
-                           module: ":gen",
-                           filename: "gen.erl",
-                           in_app: false,
-                           lineno: _,
-                           platform: "custom",
-                           lang: "elixir"
-                         },
-                         %{
-                           function: ":gen_statem.call/3",
-                           module: ":gen_statem",
-                           filename: "gen_statem.erl",
-                           resolved: true,
-                           in_app: false,
-                           lineno: _,
-                           platform: "custom",
-                           lang: "elixir"
-                         },
-                         %{
-                           function: "LoggerHandlerKit.Act.gen_statem_crash/1",
-                           module: "LoggerHandlerKit.Act",
-                           filename: "lib/logger_handler_kit/act.ex",
-                           resolved: true,
-                           in_app: false,
-                           lineno: _,
-                           platform: "custom",
-                           lang: "elixir"
-                         }
-                         | _
-                       ],
+                       frames: [_ | _] = reporter_frames,
                        type: "raw"
                      },
                      type: ":gen_statem terminating",
@@ -1192,6 +1167,26 @@ defmodule PostHog.HandlerTest do
                  ]
                }
              } = event
+
+      # Canonical bottom-up order: the reporter's call chain ends at the crash
+      # site, so these frames are the last three (innermost last).
+      assert [
+               %{
+                 function: "LoggerHandlerKit.Act.gen_statem_crash/1",
+                 module: "LoggerHandlerKit.Act",
+                 filename: "lib/logger_handler_kit/act.ex"
+               },
+               %{
+                 function: ":gen_statem.call/3",
+                 module: ":gen_statem",
+                 filename: "gen_statem.erl"
+               },
+               %{
+                 function: ":gen.do_call/4",
+                 module: ":gen",
+                 filename: "gen.erl"
+               }
+             ] = Enum.take(reporter_frames, -3)
     end
   end
 
@@ -1296,21 +1291,11 @@ defmodule PostHog.HandlerTest do
                      stacktrace: %{
                        frames: [
                          %{
-                           filename: "lib/logger_handler_kit/act.ex",
-                           function:
-                             "anonymous fn/0 in LoggerHandlerKit.Act.genserver_init_crash/0",
+                           filename: "proc_lib.erl",
+                           function: ":proc_lib.init_p_do_apply/3",
                            in_app: false,
                            lineno: _,
-                           module: "LoggerHandlerKit.Act",
-                           platform: "custom",
-                           lang: "elixir"
-                         },
-                         %{
-                           filename: "gen_server.erl",
-                           function: ":gen_server.init_it/2",
-                           in_app: false,
-                           lineno: _,
-                           module: ":gen_server",
+                           module: ":proc_lib",
                            platform: "custom",
                            lang: "elixir"
                          },
@@ -1324,11 +1309,21 @@ defmodule PostHog.HandlerTest do
                            lang: "elixir"
                          },
                          %{
-                           filename: "proc_lib.erl",
-                           function: ":proc_lib.init_p_do_apply/3",
+                           filename: "gen_server.erl",
+                           function: ":gen_server.init_it/2",
                            in_app: false,
                            lineno: _,
-                           module: ":proc_lib",
+                           module: ":gen_server",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function:
+                             "anonymous fn/0 in LoggerHandlerKit.Act.genserver_init_crash/0",
+                           in_app: false,
+                           lineno: _,
+                           module: "LoggerHandlerKit.Act",
                            platform: "custom",
                            lang: "elixir"
                          }
@@ -1351,21 +1346,11 @@ defmodule PostHog.HandlerTest do
                      stacktrace: %{
                        frames: [
                          %{
-                           filename: "lib/logger_handler_kit/act.ex",
-                           function:
-                             "anonymous fn/0 in LoggerHandlerKit.Act.genserver_init_crash/0",
+                           filename: "proc_lib.erl",
+                           function: ":proc_lib.init_p_do_apply/3",
                            in_app: false,
                            lineno: _,
-                           module: "LoggerHandlerKit.Act",
-                           platform: "custom",
-                           lang: "elixir"
-                         },
-                         %{
-                           filename: "gen_server.erl",
-                           function: ":gen_server.init_it/2",
-                           in_app: false,
-                           lineno: _,
-                           module: ":gen_server",
+                           module: ":proc_lib",
                            platform: "custom",
                            lang: "elixir"
                          },
@@ -1379,11 +1364,21 @@ defmodule PostHog.HandlerTest do
                            lang: "elixir"
                          },
                          %{
-                           filename: "proc_lib.erl",
-                           function: ":proc_lib.init_p_do_apply/3",
+                           filename: "gen_server.erl",
+                           function: ":gen_server.init_it/2",
                            in_app: false,
                            lineno: _,
-                           module: ":proc_lib",
+                           module: ":gen_server",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function:
+                             "anonymous fn/0 in LoggerHandlerKit.Act.genserver_init_crash/0",
+                           in_app: false,
+                           lineno: _,
+                           module: "LoggerHandlerKit.Act",
                            platform: "custom",
                            lang: "elixir"
                          }
@@ -1424,20 +1419,20 @@ defmodule PostHog.HandlerTest do
                      stacktrace: %{
                        frames: [
                          %{
-                           filename: "lib/logger_handler_kit/act.ex",
-                           function: "anonymous fn/1 in LoggerHandlerKit.Act.proc_lib_crash/1",
-                           in_app: false,
-                           lineno: _,
-                           module: "LoggerHandlerKit.Act",
-                           platform: "custom",
-                           lang: "elixir"
-                         },
-                         %{
                            filename: "proc_lib.erl",
                            function: ":proc_lib.init_p/3",
                            in_app: false,
                            lineno: _,
                            module: ":proc_lib",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function: "anonymous fn/1 in LoggerHandlerKit.Act.proc_lib_crash/1",
+                           in_app: false,
+                           lineno: _,
+                           module: "LoggerHandlerKit.Act",
                            platform: "custom",
                            lang: "elixir"
                          }
@@ -1460,20 +1455,20 @@ defmodule PostHog.HandlerTest do
                      stacktrace: %{
                        frames: [
                          %{
-                           filename: "lib/logger_handler_kit/act.ex",
-                           function: "anonymous fn/1 in LoggerHandlerKit.Act.proc_lib_crash/1",
-                           in_app: false,
-                           lineno: _,
-                           module: "LoggerHandlerKit.Act",
-                           platform: "custom",
-                           lang: "elixir"
-                         },
-                         %{
                            filename: "proc_lib.erl",
                            function: ":proc_lib.init_p/3",
                            in_app: false,
                            lineno: _,
                            module: ":proc_lib",
+                           platform: "custom",
+                           lang: "elixir"
+                         },
+                         %{
+                           filename: "lib/logger_handler_kit/act.ex",
+                           function: "anonymous fn/1 in LoggerHandlerKit.Act.proc_lib_crash/1",
+                           in_app: false,
+                           lineno: _,
+                           module: "LoggerHandlerKit.Act",
                            platform: "custom",
                            lang: "elixir"
                          }
@@ -1747,24 +1742,24 @@ defmodule PostHog.HandlerTest do
                        "errors were found at the given arguments:\n\n  * 1st argument: invalid time unit\n",
                      stacktrace: %{
                        type: "raw",
-                       frames: [
-                         %{
-                           filename: "",
-                           function: ":erlang.system_time/1",
-                           in_app: false,
-                           lineno: nil,
-                           module: ":erlang",
-                           platform: "custom",
-                           lang: "elixir"
-                         }
-                         | _
-                       ]
+                       frames: [_ | _] = frames
                      },
                      mechanism: %{type: "generic", handled: false}
                    }
                  ]
                }
              } = event
+
+      # Crash site (innermost frame) is last in canonical bottom-up order.
+      assert %{
+               filename: "",
+               function: ":erlang.system_time/1",
+               in_app: false,
+               lineno: nil,
+               module: ":erlang",
+               platform: "custom",
+               lang: "elixir"
+             } = List.last(frames)
     else
       assert %{
                event: "$exception",
@@ -1776,18 +1771,7 @@ defmodule PostHog.HandlerTest do
                        "errors were found at the given arguments:\n\n  * 1st argument: invalid time unit\n",
                      stacktrace: %{
                        type: "raw",
-                       frames: [
-                         %{
-                           filename: "",
-                           function: ":erlang.system_time/1",
-                           in_app: false,
-                           lineno: nil,
-                           module: ":erlang",
-                           platform: "custom",
-                           lang: "elixir"
-                         }
-                         | _
-                       ]
+                       frames: [_ | _] = frames
                      },
                      mechanism: %{type: "generic", handled: false}
                    },
@@ -1798,6 +1782,17 @@ defmodule PostHog.HandlerTest do
                  ]
                }
              } = event
+
+      # Crash site (innermost frame) is last in canonical bottom-up order.
+      assert %{
+               filename: "",
+               function: ":erlang.system_time/1",
+               in_app: false,
+               lineno: nil,
+               module: ":erlang",
+               platform: "custom",
+               lang: "elixir"
+             } = List.last(frames)
     end
   end
 
@@ -1821,21 +1816,21 @@ defmodule PostHog.HandlerTest do
                        "no function clause matching in anonymous fn/1 in PostHog.HandlerTest.\"test anonymous function in stacktrace\"/1",
                      stacktrace: %{
                        type: "raw",
-                       frames: [
-                         %{
-                           function:
-                             "anonymous fn/1 in PostHog.HandlerTest.\"test anonymous function in stacktrace\"/1",
-                           platform: "custom",
-                           lang: "elixir"
-                         }
-                         | _
-                       ]
+                       frames: [_ | _] = frames
                      },
                      mechanism: %{type: "generic", handled: false}
                    }
                  ]
                }
              } = event
+
+      # Crash site (innermost frame) is last in canonical bottom-up order.
+      assert %{
+               function:
+                 "anonymous fn/1 in PostHog.HandlerTest.\"test anonymous function in stacktrace\"/1",
+               platform: "custom",
+               lang: "elixir"
+             } = List.last(frames)
     else
       assert %{
                event: "$exception",
@@ -1847,15 +1842,7 @@ defmodule PostHog.HandlerTest do
                        "no function clause matching in anonymous fn/1 in PostHog.HandlerTest.\"test anonymous function in stacktrace\"/1",
                      stacktrace: %{
                        type: "raw",
-                       frames: [
-                         %{
-                           function:
-                             "anonymous fn/1 in PostHog.HandlerTest.\"test anonymous function in stacktrace\"/1",
-                           platform: "custom",
-                           lang: "elixir"
-                         }
-                         | _
-                       ]
+                       frames: [_ | _] = frames
                      },
                      mechanism: %{type: "generic", handled: false}
                    },
@@ -1866,6 +1853,14 @@ defmodule PostHog.HandlerTest do
                  ]
                }
              } = event
+
+      # Crash site (innermost frame) is last in canonical bottom-up order.
+      assert %{
+               function:
+                 "anonymous fn/1 in PostHog.HandlerTest.\"test anonymous function in stacktrace\"/1",
+               platform: "custom",
+               lang: "elixir"
+             } = List.last(frames)
     end
   end
 
@@ -1889,12 +1884,12 @@ defmodule PostHog.HandlerTest do
                        type: "raw",
                        frames: [
                          %{
-                           in_app: true,
-                           module: "LoggerHandlerKit.Act"
-                         },
-                         %{
                            in_app: false,
                            module: "Task.Supervised"
+                         },
+                         %{
+                           in_app: true,
+                           module: "LoggerHandlerKit.Act"
                          }
                        ]
                      }
@@ -1912,12 +1907,12 @@ defmodule PostHog.HandlerTest do
                        type: "raw",
                        frames: [
                          %{
-                           in_app: true,
-                           module: "LoggerHandlerKit.Act"
-                         },
-                         %{
                            in_app: false,
                            module: "Task.Supervised"
+                         },
+                         %{
+                           in_app: true,
+                           module: "LoggerHandlerKit.Act"
                          }
                        ]
                      }

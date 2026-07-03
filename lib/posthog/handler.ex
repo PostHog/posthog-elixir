@@ -292,9 +292,12 @@ defmodule PostHog.Handler do
         |> maybe_add_source_context(filename, lineno, config)
       end
 
+    # `__STACKTRACE__` is innermost-first (crash site first). The canonical wire
+    # order is bottom-up: frames[0] is the outermost entry point and the last
+    # frame is the crash site. Reverse to match.
     %{
       type: "raw",
-      frames: frames
+      frames: Enum.reverse(frames)
     }
   end
 
