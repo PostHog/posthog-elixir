@@ -80,7 +80,7 @@ defmodule PostHog do
       properties: properties
     }
 
-    case run_before_send(Map.get(config, :before_send), event) do
+    case run_before_send(config.before_send, event) do
       nil -> :ok
       event -> PostHog.Sender.send(event, name)
     end

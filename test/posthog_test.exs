@@ -100,11 +100,17 @@ defmodule PostHogTest do
       refute Map.has_key?(properties, :secret)
     end
 
-    @tag config: [before_send: &__MODULE__.drop_before_send/1, supervisor_name: PostHog]
-    test "before_send can drop events" do
-      assert :ok = PostHog.bare_capture("case tested", "distinct_id")
+    for {name, callback} <- [
+          {"returns nil", &__MODULE__.drop_before_send/1},
+          {"returns invalid value", &__MODULE__.invalid_before_send/1},
+          {"raises", &__MODULE__.raise_before_send/1}
+        ] do
+      @tag config: [before_send: callback, supervisor_name: PostHog]
+      test "before_send drops events when callback #{name}" do
+        assert :ok = PostHog.bare_capture("case tested", "distinct_id")
 
-      assert [] = all_captured()
+        assert [] = all_captured()
+      end
     end
 
     @tag config: [supervisor_name: CustomPostHog]
@@ -295,6 +301,10 @@ defmodule PostHogTest do
   end
 
   def drop_before_send(_event), do: nil
+
+  def invalid_before_send(_event), do: :invalid
+
+  def raise_before_send(_event), do: raise("before_send failed")
 
   describe "set_event_context/2 + get_event_context/2" do
     test "default scope" do
