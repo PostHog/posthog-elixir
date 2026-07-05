@@ -60,6 +60,12 @@ defmodule PostHog.Config do
                             default: %{},
                             doc: "Map of properties that should be added to all events"
                           ],
+                          before_send: [
+                            type: {:or, [{:fun, 1}, nil]},
+                            default: nil,
+                            doc:
+                              "Callback invoked with the fully enriched event before it is queued. Return the event to send a modified version, or nil to drop it."
+                          ],
                           is_server: [
                             type: :boolean,
                             default: true,

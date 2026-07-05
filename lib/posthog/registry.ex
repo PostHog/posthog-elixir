@@ -21,6 +21,7 @@ defmodule PostHog.Registry do
       enabled: false,
       api_client: nil,
       global_properties: %{},
+      before_send: nil,
       test_mode: false
     }
   end

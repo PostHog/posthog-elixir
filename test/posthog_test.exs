@@ -86,6 +86,27 @@ defmodule PostHogTest do
       refute Map.has_key?(properties, :"$is_server")
     end
 
+    @tag config: [
+           global_properties: %{source: "global"},
+           before_send: &__MODULE__.modify_before_send/1,
+           supervisor_name: PostHog
+         ]
+    test "before_send can modify fully enriched events" do
+      PostHog.bare_capture("case tested", "distinct_id", %{secret: "remove"})
+
+      assert [%{properties: properties}] = all_captured()
+      assert properties[:before_send] == true
+      assert properties[:saw_fully_enriched_event] == true
+      refute Map.has_key?(properties, :secret)
+    end
+
+    @tag config: [before_send: &__MODULE__.drop_before_send/1, supervisor_name: PostHog]
+    test "before_send can drop events" do
+      assert :ok = PostHog.bare_capture("case tested", "distinct_id")
+
+      assert [] = all_captured()
+    end
+
     @tag config: [supervisor_name: CustomPostHog]
     test "simple call for custom supervisor" do
       PostHog.bare_capture(CustomPostHog, "case tested", "distinct_id")
@@ -259,6 +280,21 @@ defmodule PostHogTest do
       assert PostHog.get_event_context(MyPostHog, "$exception") == %{foo: "bar"}
     end
   end
+
+  def modify_before_send(event) do
+    saw_fully_enriched_event =
+      event.properties[:"$lib"] == "posthog-elixir" and
+        is_binary(event.properties[:"$lib_version"]) and
+        event.properties[:"$is_server"] == true and
+        event.properties[:source] == "global"
+
+    event
+    |> put_in([:properties, :before_send], true)
+    |> put_in([:properties, :saw_fully_enriched_event], saw_fully_enriched_event)
+    |> update_in([:properties], &Map.delete(&1, :secret))
+  end
+
+  def drop_before_send(_event), do: nil
 
   describe "set_event_context/2 + get_event_context/2" do
     test "default scope" do
