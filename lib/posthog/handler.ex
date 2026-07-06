@@ -12,6 +12,8 @@ defmodule PostHog.Handler do
   # credo:disable-for-next-line Credo.Check.Design.TagTODO
   # TODO: add @impl :logger_handler once we drop support for OTP < 27
   @doc false
+  def log(%{meta: %{posthog_skip_capture: true}}, _config), do: :ok
+
   def log(log_event, %{config: config}) do
     maybe_properties =
       cond do
