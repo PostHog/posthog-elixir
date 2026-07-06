@@ -303,7 +303,8 @@ defmodule PostHog.Config do
   defp log_blank_api_key(validated) do
     if blank_api_key?(validated) do
       Logger.warning(
-        "posthog api_key is empty after trimming whitespace; PostHog will start in disabled/no-op mode"
+        "posthog api_key is empty after trimming whitespace; PostHog will start in disabled/no-op mode",
+        posthog_skip_capture: true
       )
     end
   end
