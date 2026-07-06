@@ -107,8 +107,16 @@ defmodule PostHogTest do
       assert [] = all_captured()
     end
 
+    @tag config: [before_send: &__MODULE__.invalid_before_send/1, supervisor_name: PostHog]
+    test "before_send sends the original event when callback returns invalid value" do
+      assert :ok = PostHog.bare_capture("case tested", "distinct_id", %{original: true})
+
+      assert [%{event: "case tested", properties: properties}] = all_captured()
+      assert properties[:original] == true
+      refute properties[:before_send]
+    end
+
     for {name, callback} <- [
-          {"returns invalid value", &__MODULE__.invalid_before_send/1},
           {"raises", &__MODULE__.raise_before_send/1},
           {"throws", &__MODULE__.throw_before_send/1},
           {"exits", &__MODULE__.exit_before_send/1}

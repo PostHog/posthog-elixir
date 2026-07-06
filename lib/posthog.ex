@@ -100,11 +100,11 @@ defmodule PostHog do
 
       other ->
         Logger.error(
-          "PostHog before_send callback returned #{inspect(other)} instead of an event map or nil; dropping event",
+          "PostHog before_send callback returned #{inspect(other)} instead of an event map or nil; sending original event",
           @before_send_log_metadata
         )
 
-        nil
+        event
     end
   rescue
     exception ->
