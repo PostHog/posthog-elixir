@@ -3,8 +3,6 @@ defmodule PostHog do
   Main API for working with PostHog
   """
 
-  require Logger
-
   @typedoc "Name under which an instance of PostHog supervision tree is registered."
   @type supervisor_name() :: atom()
 
@@ -96,20 +94,12 @@ defmodule PostHog do
       %{} = event ->
         event
 
-      other ->
-        Logger.error(
-          "PostHog before_send callback returned #{inspect(other)} instead of an event map or nil; dropping event"
-        )
-
-        nil
+      _other ->
+        event
     end
   rescue
-    exception ->
-      Logger.error(
-        "PostHog before_send callback raised; dropping event: #{Exception.message(exception)}"
-      )
-
-      nil
+    _exception ->
+      event
   end
 
   @doc false
