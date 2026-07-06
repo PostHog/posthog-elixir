@@ -109,7 +109,9 @@ defmodule PostHogTest do
 
     for {name, callback} <- [
           {"returns invalid value", &__MODULE__.invalid_before_send/1},
-          {"raises", &__MODULE__.raise_before_send/1}
+          {"raises", &__MODULE__.raise_before_send/1},
+          {"throws", &__MODULE__.throw_before_send/1},
+          {"exits", &__MODULE__.exit_before_send/1}
         ] do
       @tag config: [before_send: callback, supervisor_name: PostHog]
       test "before_send sends the original event when callback #{name}" do
@@ -313,6 +315,10 @@ defmodule PostHogTest do
   def invalid_before_send(_event), do: :invalid
 
   def raise_before_send(_event), do: raise("before_send failed")
+
+  def throw_before_send(_event), do: throw(:before_send_failed)
+
+  def exit_before_send(_event), do: exit(:before_send_failed)
 
   describe "set_event_context/2 + get_event_context/2" do
     test "default scope" do

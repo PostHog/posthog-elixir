@@ -100,6 +100,9 @@ defmodule PostHog do
   rescue
     _exception ->
       event
+  catch
+    _kind, _reason ->
+      event
   end
 
   @doc false
