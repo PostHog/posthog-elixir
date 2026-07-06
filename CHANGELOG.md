@@ -1,5 +1,11 @@
 # posthog
 
+## 2.11.0 — 2026-07-06
+
+### Minor changes
+
+- [a014220](https://github.com/posthog/posthog-elixir/commit/a014220b9b8d006d7cfe514b14118f0b5b99964e) Add before_send callback support for filtering captured events — Thanks @marandaneto!
+
 ## 2.10.3 — 2026-07-02
 
 ### Patch changes
