@@ -3,6 +3,10 @@ defmodule PostHog do
   Main API for working with PostHog
   """
 
+  require Logger
+
+  @before_send_log_metadata [posthog_skip_capture: true]
+
   @typedoc "Name under which an instance of PostHog supervision tree is registered."
   @type supervisor_name() :: atom()
 
@@ -94,15 +98,30 @@ defmodule PostHog do
       %{} = event ->
         event
 
-      _other ->
-        event
+      other ->
+        Logger.error(
+          "PostHog before_send callback returned #{inspect(other)} instead of an event map or nil; dropping event",
+          @before_send_log_metadata
+        )
+
+        nil
     end
   rescue
-    _exception ->
-      event
+    exception ->
+      Logger.error(
+        "PostHog before_send callback raised; dropping event: #{Exception.message(exception)}",
+        @before_send_log_metadata
+      )
+
+      nil
   catch
-    _kind, _reason ->
-      event
+    kind, reason ->
+      Logger.error(
+        "PostHog before_send callback #{kind}; dropping event: #{inspect(reason)}",
+        @before_send_log_metadata
+      )
+
+      nil
   end
 
   @doc false

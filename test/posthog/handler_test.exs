@@ -120,6 +120,17 @@ defmodule PostHog.HandlerTest do
   end
 
   @tag config: [capture_level: :warning]
+  test "ignores logs marked to skip PostHog capture", %{
+    handler_ref: ref,
+    config: %{supervisor_name: supervisor_name}
+  } do
+    Logger.error("PostHog SDK diagnostic", posthog_skip_capture: true)
+    LoggerHandlerKit.Assert.assert_logged(ref)
+
+    assert [] = all_captured(supervisor_name)
+  end
+
+  @tag config: [capture_level: :warning]
   test "logs with crash reason always captured", %{
     handler_ref: ref,
     config: %{supervisor_name: supervisor_name}
