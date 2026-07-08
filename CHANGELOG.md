@@ -1,5 +1,11 @@
 # posthog
 
+## 2.11.1 — 2026-07-08
+
+### Patch changes
+
+- [d1b8ed9](https://github.com/posthog/posthog-elixir/commit/d1b8ed94545cef18facc9708dad063af3f965176) Require Req 0.6.1 or newer to avoid vulnerable 0.5.x and 0.6.0 releases. — Thanks @dustinbyrne!
+
 ## 2.11.0 — 2026-07-06
 
 ### Minor changes
