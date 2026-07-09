@@ -148,7 +148,14 @@ defmodule PostHog.Handler do
   # terms), which makes the message itself a poor grouping key: error tracking
   # would create a separate issue for every distinct message. Key the type on the
   # logging call site instead; the full message is still available in `value`.
-  defp do_type(%{level: level, msg: {:string, _}, meta: %{mfa: {module, function, arity}} = meta})
+  # Restricted to the :elixir domain (Logger calls): on OTP < 27 or Elixir < 1.19
+  # the translator flattens OTP/SASL reports into string messages whose mfa points
+  # inside OTP (e.g. :supervisor.restart/2), and those keep their report text.
+  defp do_type(%{
+         level: level,
+         msg: {:string, _},
+         meta: %{mfa: {module, function, arity}, domain: [:elixir | _]} = meta
+       })
        when not is_map_key(meta, :__posthog_crash_reporter__),
        do: "Logger #{level} (#{Exception.format_mfa(module, function, arity)})"
 

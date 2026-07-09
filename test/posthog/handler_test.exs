@@ -135,6 +135,33 @@ defmodule PostHog.HandlerTest do
     Logger.error("Failed to crawl #{url}")
   end
 
+  @tag handle_sasl_reports: true
+  test "translated OTP report strings keep their message-derived type", %{
+    handler_ref: ref,
+    config: %{supervisor_name: supervisor_name}
+  } do
+    # On OTP < 27 / Elixir < 1.19 the Logger translator flattens OTP/SASL reports
+    # into string messages whose mfa points inside OTP; those must not be
+    # re-typed to the (meaningless) OTP call site. Uses :logger.log/3 because the
+    # Elixir Logger API always prepends :elixir to the domain.
+    :logger.log(:error, "Child :task of Supervisor #PID<0.123.0> caused shutdown", %{
+      mfa: {:supervisor, :restart, 2},
+      domain: [:otp, :sasl]
+    })
+
+    LoggerHandlerKit.Assert.assert_logged(ref)
+
+    assert [event] = all_captured(supervisor_name)
+
+    assert %{
+             properties: %{
+               "$exception_list": [
+                 %{type: "Child :task of Supervisor #PID<0.123.0> caused shutdown"}
+               ]
+             }
+           } = event
+  end
+
   @tag config: [capture_level: :warning]
   test "ignores messages lower than capture_level", %{
     handler_ref: ref,
