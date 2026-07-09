@@ -25,7 +25,7 @@ defmodule PostHog.HandlerTest do
              properties: %{
                "$exception_list": [
                  %{
-                   type: "Hello World",
+                   type: "Logger info (" <> _,
                    value: "Hello World",
                    mechanism: %{handled: true, type: "generic"}
                  }
@@ -53,7 +53,7 @@ defmodule PostHog.HandlerTest do
                foo: "bar",
                "$exception_list": [
                  %{
-                   type: "Hello World",
+                   type: "Logger info (" <> _,
                    value: "Hello World",
                    mechanism: %{handled: true, type: "generic"}
                  }
@@ -75,7 +75,7 @@ defmodule PostHog.HandlerTest do
              properties: %{
                "$exception_list": [
                  %{
-                   type: "Hello World",
+                   type: "Logger info (PostHog.HandlerTest.log_plain_message/0)",
                    value: "Hello World",
                    stacktrace: %{
                      type: "raw",
@@ -106,6 +106,33 @@ defmodule PostHog.HandlerTest do
     expected_line = __ENV__.line + 1
     Logger.info("Hello World")
     expected_line
+  end
+
+  test "plain log message type groups by call site, not message content", %{
+    handler_ref: ref,
+    config: %{supervisor_name: supervisor_name}
+  } do
+    log_crawl_failure("https://a.example")
+    LoggerHandlerKit.Assert.assert_logged(ref)
+    log_crawl_failure("https://b.example")
+    LoggerHandlerKit.Assert.assert_logged(ref)
+
+    assert [
+             %{properties: %{"$exception_list": [exception_a]}},
+             %{properties: %{"$exception_list": [exception_b]}}
+           ] = all_captured(supervisor_name)
+
+    assert exception_a.type == "Logger error (PostHog.HandlerTest.log_crawl_failure/1)"
+    assert exception_b.type == exception_a.type
+
+    assert Enum.sort([exception_a.value, exception_b.value]) == [
+             "Failed to crawl https://a.example",
+             "Failed to crawl https://b.example"
+           ]
+  end
+
+  defp log_crawl_failure(url) do
+    Logger.error("Failed to crawl #{url}")
   end
 
   @tag config: [capture_level: :warning]
@@ -1544,7 +1571,7 @@ defmodule PostHog.HandlerTest do
                extra: "Foo",
                "$exception_list": [
                  %{
-                   type: "Error with metadata",
+                   type: "Logger error (" <> _,
                    value: "Error with metadata",
                    mechanism: %{handled: true}
                  }
@@ -1575,7 +1602,7 @@ defmodule PostHog.HandlerTest do
                  should: "work",
                  "$exception_list": [
                    %{
-                     type: "Error with metadata",
+                     type: "Logger error (" <> _,
                      value: "Error with metadata",
                      mechanism: %{handled: true}
                    }
@@ -1664,7 +1691,7 @@ defmodule PostHog.HandlerTest do
                foo: "bar",
                "$exception_list": [
                  %{
-                   type: "Error with metadata",
+                   type: "Logger error (" <> _,
                    value: "Error with metadata",
                    mechanism: %{handled: true, type: "generic"}
                  }
