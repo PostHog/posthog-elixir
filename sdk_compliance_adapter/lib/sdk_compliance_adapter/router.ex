@@ -172,6 +172,7 @@ defmodule SdkComplianceAdapter.Router do
               %{
                 "$feature_flag" => key,
                 "$feature_flag_response" => value,
+                "$feature_flag_has_experiment" => extract_has_experiment(flags, key),
                 "$feature/#{key}" => value
               }
             )
@@ -276,6 +277,20 @@ defmodule SdkComplianceAdapter.Router do
   end
 
   defp extract_flag_value(_flags, _key), do: false
+
+  # Reads has_experiment from the flag's v2 metadata. Legacy featureFlags
+  # entries are bare values without metadata, so they default to false.
+  defp extract_has_experiment(flags, key) when is_map(flags) do
+    case Map.get(flags, key) do
+      flag_data when is_map(flag_data) ->
+        get_in(flag_data, ["metadata", "has_experiment"]) == true
+
+      _ ->
+        false
+    end
+  end
+
+  defp extract_has_experiment(_flags, _key), do: false
 
   defp stop_posthog do
     case Process.whereis(SdkComplianceAdapter.PostHog) do
