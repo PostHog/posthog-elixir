@@ -1,5 +1,11 @@
 # posthog
 
+## 2.12.0 — 2026-07-15
+
+### Minor changes
+
+- [673ec2c](https://github.com/posthog/posthog-elixir/commit/673ec2c1ba6bcbe87d7c617920ac5504d9860344) Add a `$feature_flag_has_experiment` boolean property to `$feature_flag_called` events, sourced from the `has_experiment` field in the `/flags` response metadata. The property is only sent when the server explicitly reports the field; it is omitted when unknown (older deployments). — Thanks @haacked!
+
 ## 2.11.1 — 2026-07-08
 
 ### Patch changes
