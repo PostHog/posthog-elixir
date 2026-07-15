@@ -165,16 +165,22 @@ defmodule SdkComplianceAdapter.Router do
             flags = Map.get(resp_body, "featureFlags") || Map.get(resp_body, "flags") || %{}
             value = extract_flag_value(flags, key)
 
+            properties =
+              maybe_put(
+                %{
+                  "$feature_flag" => key,
+                  "$feature_flag_response" => value,
+                  "$feature/#{key}" => value
+                },
+                "$feature_flag_has_experiment",
+                extract_has_experiment(flags, key)
+              )
+
             PostHog.bare_capture(
               SdkComplianceAdapter.PostHog,
               "$feature_flag_called",
               distinct_id,
-              %{
-                "$feature_flag" => key,
-                "$feature_flag_response" => value,
-                "$feature_flag_has_experiment" => extract_has_experiment(flags, key),
-                "$feature/#{key}" => value
-              }
+              properties
             )
 
             SdkComplianceAdapter.State.increment_events_captured()
@@ -278,19 +284,26 @@ defmodule SdkComplianceAdapter.Router do
 
   defp extract_flag_value(_flags, _key), do: false
 
-  # Reads has_experiment from the flag's v2 metadata. Legacy featureFlags
-  # entries are bare values without metadata, so they default to false.
+  # Reads has_experiment from the flag's v2 metadata. Returns nil when the
+  # server did not report it (legacy featureFlags entries are bare values
+  # without metadata); the property is omitted in that case.
   defp extract_has_experiment(flags, key) when is_map(flags) do
     case Map.get(flags, key) do
       flag_data when is_map(flag_data) ->
-        get_in(flag_data, ["metadata", "has_experiment"]) == true
+        case get_in(flag_data, ["metadata", "has_experiment"]) do
+          value when is_boolean(value) -> value
+          _ -> nil
+        end
 
       _ ->
-        false
+        nil
     end
   end
 
-  defp extract_has_experiment(_flags, _key), do: false
+  defp extract_has_experiment(_flags, _key), do: nil
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp stop_posthog do
     case Process.whereis(SdkComplianceAdapter.PostHog) do

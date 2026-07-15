@@ -230,16 +230,20 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
       assert properties["$feature/variant-flag"] == "control"
     end
 
-    test "fires $feature_flag_has_experiment: false when the response omits has_experiment",
+    test "omits $feature_flag_has_experiment when the response omits has_experiment",
          %{snapshot: snapshot} do
       assert Evaluations.enabled?(snapshot, "boolean-flag")
 
-      assert [
-               %{
-                 event: "$feature_flag_called",
-                 properties: %{"$feature_flag_has_experiment": false}
-               }
-             ] = all_captured()
+      assert [%{event: "$feature_flag_called", properties: properties}] = all_captured()
+      refute Map.has_key?(properties, :"$feature_flag_has_experiment")
+    end
+
+    test "omits $feature_flag_has_experiment on flag_missing events", %{snapshot: snapshot} do
+      assert Evaluations.enabled?(snapshot, "unknown-flag") == false
+
+      assert [%{event: "$feature_flag_called", properties: properties}] = all_captured()
+      assert properties[:"$feature_flag_error"] == "flag_missing"
+      refute Map.has_key?(properties, :"$feature_flag_has_experiment")
     end
 
     test "dedupes repeated access for the same flag value", %{snapshot: snapshot} do

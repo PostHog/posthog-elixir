@@ -409,7 +409,7 @@ defmodule PostHog.FeatureFlagsTest do
              ] = all_captured()
     end
 
-    test "sets $feature_flag_has_experiment: false when the response omits has_experiment" do
+    test "omits $feature_flag_has_experiment when the response omits has_experiment" do
       expect(API.Mock, :request, fn _client, _method, _url, _opts ->
         {:ok,
          %{
@@ -427,12 +427,30 @@ defmodule PostHog.FeatureFlagsTest do
 
       assert {:ok, true} = FeatureFlags.check("myflag", "foo")
 
-      assert [
-               %{
-                 event: "$feature_flag_called",
-                 properties: %{"$feature_flag_has_experiment": false}
+      assert [%{event: "$feature_flag_called", properties: properties}] = all_captured()
+      refute Map.has_key?(properties, :"$feature_flag_has_experiment")
+    end
+
+    test "omits $feature_flag_has_experiment when the response reports a non-boolean value" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{
+               "myflag" => %{
+                 "enabled" => true,
+                 "metadata" => %{"id" => 42, "has_experiment" => "yes"}
                }
-             ] = all_captured()
+             }
+           }
+         }}
+      end)
+
+      assert {:ok, true} = FeatureFlags.check("myflag", "foo")
+
+      assert [%{event: "$feature_flag_called", properties: properties}] = all_captured()
+      refute Map.has_key?(properties, :"$feature_flag_has_experiment")
     end
 
     @tag config: [supervisor_name: MyPostHog]
