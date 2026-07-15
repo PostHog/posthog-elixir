@@ -30,7 +30,12 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
             "enabled" => true,
             "key" => "variant-flag",
             "variant" => "control",
-            "metadata" => %{"id" => 2, "version" => 5, "payload" => %{"copy" => "hi"}},
+            "metadata" => %{
+              "id" => 2,
+              "version" => 5,
+              "payload" => %{"copy" => "hi"},
+              "has_experiment" => true
+            },
             "reason" => %{"code" => "condition_match", "description" => "matched"}
           },
           "disabled-flag" => %{
@@ -221,7 +226,24 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
       assert properties[:"$feature_flag_request_id"] == "req-abc"
       assert properties[:"$feature_flag_evaluated_at"] == 1_700_000_000
       assert properties[:"$feature_flag_payload"] == %{"copy" => "hi"}
+      assert properties[:"$feature_flag_has_experiment"] == true
       assert properties["$feature/variant-flag"] == "control"
+    end
+
+    test "omits $feature_flag_has_experiment when the response omits has_experiment",
+         %{snapshot: snapshot} do
+      assert Evaluations.enabled?(snapshot, "boolean-flag")
+
+      assert [%{event: "$feature_flag_called", properties: properties}] = all_captured()
+      refute Map.has_key?(properties, :"$feature_flag_has_experiment")
+    end
+
+    test "omits $feature_flag_has_experiment on flag_missing events", %{snapshot: snapshot} do
+      assert Evaluations.enabled?(snapshot, "unknown-flag") == false
+
+      assert [%{event: "$feature_flag_called", properties: properties}] = all_captured()
+      assert properties[:"$feature_flag_error"] == "flag_missing"
+      refute Map.has_key?(properties, :"$feature_flag_has_experiment")
     end
 
     test "dedupes repeated access for the same flag value", %{snapshot: snapshot} do

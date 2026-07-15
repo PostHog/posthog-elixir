@@ -501,8 +501,18 @@ defmodule PostHog.FeatureFlags do
       reason: Map.get(flag_data, "reason"),
       request_id: Map.get(body, "requestId"),
       evaluated_at: Map.get(body, "evaluatedAt"),
+      has_experiment: parse_has_experiment(flag_data),
       errors_while_computing: Map.get(body, "errorsWhileComputingFlags") == true
     }
+  end
+
+  # `nil` means the server did not report the field (older deployments); the
+  # `$feature_flag_has_experiment` property is omitted in that case.
+  defp parse_has_experiment(flag_data) do
+    case get_in(flag_data, ["metadata", "has_experiment"]) do
+      value when is_boolean(value) -> value
+      _ -> nil
+    end
   end
 
   # PostHog's `/flags` returns payloads as JSON-encoded strings (the user
@@ -618,6 +628,7 @@ defmodule PostHog.FeatureFlags do
       |> maybe_put(:"$feature_flag_request_id", result.request_id)
       |> maybe_put(:"$feature_flag_evaluated_at", result.evaluated_at)
       |> maybe_put(:"$feature_flag_payload", result.payload)
+      |> maybe_put(:"$feature_flag_has_experiment", result.has_experiment)
       |> maybe_put(:"$feature_flag_error", errors)
 
     if PostHog.FeatureFlags.CalledCache.first_seen?(name, distinct_id, result.key, value) do

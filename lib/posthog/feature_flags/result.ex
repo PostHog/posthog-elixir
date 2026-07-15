@@ -13,6 +13,10 @@ defmodule PostHog.FeatureFlags.Result do
   - `reason` - Reason map describing why this evaluation produced its value
   - `request_id` - Request ID returned by the `/flags` endpoint (useful for experiment exposure tracking)
   - `evaluated_at` - Server-side evaluation timestamp from the response
+  - `has_experiment` - Whether the flag is linked to an experiment. `nil` when
+    the server does not report the field (older deployments). Forwarded as
+    `$feature_flag_has_experiment` on `$feature_flag_called` events only when
+    the server reported it.
   - `errors_while_computing` - Whether the response signaled
     `errorsWhileComputingFlags`; values for some flags may be incomplete or
     stale. Forwarded as `$feature_flag_error: "errors_while_computing_flags"`
@@ -66,6 +70,7 @@ defmodule PostHog.FeatureFlags.Result do
           reason: map() | nil,
           request_id: String.t() | nil,
           evaluated_at: integer() | nil,
+          has_experiment: boolean() | nil,
           errors_while_computing: boolean()
         }
 
@@ -80,6 +85,7 @@ defmodule PostHog.FeatureFlags.Result do
     :reason,
     :request_id,
     :evaluated_at,
+    :has_experiment,
     errors_while_computing: false
   ]
 

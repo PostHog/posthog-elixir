@@ -25,6 +25,7 @@ defmodule PostHog.FeatureFlags.ResultTest do
       assert result.enabled == false
       assert result.variant == nil
       assert result.payload == nil
+      assert result.has_experiment == nil
     end
   end
 
