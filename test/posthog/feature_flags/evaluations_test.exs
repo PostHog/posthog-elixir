@@ -613,4 +613,73 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
       assert all_captured() == []
     end
   end
+
+  describe "minimal flag called events gate" do
+    setup do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{
+               "plain-flag" => %{
+                 "enabled" => true,
+                 "metadata" => %{"id" => 1, "version" => 2, "has_experiment" => false}
+               },
+               "experiment-flag" => %{
+                 "enabled" => true,
+                 "variant" => "control",
+                 "metadata" => %{"id" => 2, "version" => 5, "has_experiment" => true}
+               }
+             },
+             "requestId" => "req-abc",
+             "evaluatedAt" => 1_700_000_000,
+             "minimalFlagCalledEvents" => true
+           }
+         }}
+      end)
+
+      {:ok, snapshot} = FeatureFlags.evaluate_flags("foo")
+      %{snapshot: snapshot}
+    end
+
+    test "events fired from the snapshot respect the gate per flag", %{snapshot: snapshot} do
+      assert Evaluations.enabled?(snapshot, "plain-flag") == true
+      assert Evaluations.get_flag(snapshot, "experiment-flag") == "control"
+
+      events = all_captured()
+      assert length(events) == 2
+
+      assert %{event: "$feature_flag_called", distinct_id: "foo", properties: minimal} =
+               Enum.find(events, &(&1.properties[:"$feature_flag"] == "plain-flag"))
+
+      assert %{event: "$feature_flag_called", distinct_id: "foo", properties: full} =
+               Enum.find(events, &(&1.properties[:"$feature_flag"] == "experiment-flag"))
+
+      assert minimal == %{
+               "$feature_flag": "plain-flag",
+               "$feature_flag_response": true,
+               "$feature_flag_has_experiment": false,
+               "$feature_flag_id": 1,
+               "$feature_flag_version": 2,
+               "$feature_flag_request_id": "req-abc",
+               "$feature_flag_evaluated_at": 1_700_000_000,
+               "$lib": "posthog-elixir",
+               "$lib_version": PostHog.Lib.version(),
+               "$is_server": true
+             }
+
+      assert full["$feature/experiment-flag"] == "control"
+      assert full[:"$feature_flag_has_experiment"] == true
+      assert full[:"$is_server"] == true
+    end
+
+    test "missing flags fall back to the full event shape", %{snapshot: snapshot} do
+      assert Evaluations.enabled?(snapshot, "unknown-flag") == false
+
+      assert [%{event: "$feature_flag_called", properties: properties}] = all_captured()
+      assert properties[:"$feature_flag_error"] == "flag_missing"
+      assert properties[:"$is_server"] == true
+    end
+  end
 end

@@ -68,11 +68,17 @@ defmodule PostHog do
   @spec bare_capture(supervisor_name(), event(), distinct_id(), properties()) :: :ok
   def bare_capture(name \\ __MODULE__, event, distinct_id, properties \\ %{}) do
     config = PostHog.Registry.config(name)
+    capture_prepared(config, event, distinct_id, Map.merge(properties, config.global_properties))
+  end
 
-    properties =
-      properties
-      |> Map.merge(config.global_properties)
-      |> LoggerJSON.Formatter.RedactorEncoder.encode([])
+  # Captures an event whose properties are already final: no context or global
+  # properties are merged in. Used for minimal $feature_flag_called events,
+  # whose allowlisted shape must not be re-enriched. Takes an already-fetched
+  # config to avoid a second registry lookup on the capture hot path.
+  @doc false
+  @spec capture_prepared(PostHog.Config.config(), event(), distinct_id(), properties()) :: :ok
+  def capture_prepared(config, event, distinct_id, properties) do
+    properties = LoggerJSON.Formatter.RedactorEncoder.encode(properties, [])
 
     event = %{
       event: event,
@@ -84,7 +90,7 @@ defmodule PostHog do
 
     case run_before_send(config.before_send, event) do
       nil -> :ok
-      event -> PostHog.Sender.send(event, name)
+      event -> PostHog.Sender.send(event, config.supervisor_name)
     end
   end
 

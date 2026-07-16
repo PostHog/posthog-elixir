@@ -21,6 +21,11 @@ defmodule PostHog.FeatureFlags.Result do
     `errorsWhileComputingFlags`; values for some flags may be incomplete or
     stale. Forwarded as `$feature_flag_error: "errors_while_computing_flags"`
     on `$feature_flag_called` events.
+  - `minimal_flag_called_events` - Whether the response signaled the top-level
+    `minimalFlagCalledEvents` gate. When `true` and `has_experiment` is
+    explicitly `false`, `$feature_flag_called` events for this flag are sent
+    with a minimal, allowlisted property shape. `false` whenever the server
+    did not report the gate.
 
   The metadata fields are populated when the `/flags` response includes them
   and are forwarded as `$feature_flag_id`, `$feature_flag_version`, `$feature_flag_reason`,
@@ -71,7 +76,8 @@ defmodule PostHog.FeatureFlags.Result do
           request_id: String.t() | nil,
           evaluated_at: integer() | nil,
           has_experiment: boolean() | nil,
-          errors_while_computing: boolean()
+          errors_while_computing: boolean(),
+          minimal_flag_called_events: boolean()
         }
 
   @enforce_keys [:key, :enabled]
@@ -86,7 +92,8 @@ defmodule PostHog.FeatureFlags.Result do
     :request_id,
     :evaluated_at,
     :has_experiment,
-    errors_while_computing: false
+    errors_while_computing: false,
+    minimal_flag_called_events: false
   ]
 
   @doc """
