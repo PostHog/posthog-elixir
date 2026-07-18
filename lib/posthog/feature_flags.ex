@@ -684,8 +684,8 @@ defmodule PostHog.FeatureFlags do
     config = PostHog.config(name)
 
     # before_send still runs after this projection and may re-inflate the
-    # event — the accepted customer escape hatch; the SDK itself must not
-    # enrich the event after the allowlist.
+    # event. That's the accepted customer escape hatch; the SDK itself must
+    # not enrich the event after the allowlist.
     minimal_properties =
       name
       |> PostHog.get_event_context("$feature_flag_called")
