@@ -98,8 +98,15 @@ defmodule PostHog.Handler do
     defp exceptions(%{meta: %{crash_reason: _}} = log_event, config) do
       initial_exception = exception(log_event, config)
 
+      # Mark the copy so `do_type/1` keeps the message-derived type here: this
+      # entry names the issue, and the attached crash usually explains it better
+      # than the logging call site would.
       reporter_exception =
-        log_event |> Map.update!(:meta, &Map.delete(&1, :crash_reason)) |> exception(config)
+        log_event
+        |> Map.update!(:meta, fn meta ->
+          meta |> Map.delete(:crash_reason) |> Map.put(:__posthog_crash_reporter__, true)
+        end)
+        |> exception(config)
 
       [reporter_exception, initial_exception]
     end
@@ -136,6 +143,21 @@ defmodule PostHog.Handler do
 
   defp do_type(%{meta: %{crash_reason: {reason, _}}}),
     do: Exception.format_banner(:exit, reason)
+
+  # Plain log messages usually interpolate dynamic values (ids, URLs, inspected
+  # terms), which makes the message itself a poor grouping key: error tracking
+  # would create a separate issue for every distinct message. Key the type on the
+  # logging call site instead; the full message is still available in `value`.
+  # Restricted to the :elixir domain (Logger calls): on OTP < 27 or Elixir < 1.19
+  # the translator flattens OTP/SASL reports into string messages whose mfa points
+  # inside OTP (e.g. :supervisor.restart/2), and those keep their report text.
+  defp do_type(%{
+         level: level,
+         msg: {:string, _},
+         meta: %{mfa: {module, function, arity}, domain: [:elixir | _]} = meta
+       })
+       when not is_map_key(meta, :__posthog_crash_reporter__),
+       do: "Logger #{level} (#{Exception.format_mfa(module, function, arity)})"
 
   defp do_type(%{msg: {:string, chardata}}), do: IO.chardata_to_string(chardata)
 
