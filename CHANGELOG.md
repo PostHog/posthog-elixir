@@ -1,5 +1,11 @@
 # posthog
 
+## 2.12.1 — 2026-07-22
+
+### Patch changes
+
+- [dbe91ba](https://github.com/posthog/posthog-elixir/commit/dbe91ba52ed6cb7d2ae7923643afa0e1a35d196a) Group captured log messages by logging call site instead of message content. Plain log messages often interpolate dynamic values (ids, URLs, inspected terms), and using the message as the exception type created a separate error tracking issue for every distinct message. The exception type is now `Logger <level> (<Module.function/arity>)` when call-site metadata is available; the full message remains in the exception value. — Thanks @cat-ph!
+
 ## 2.12.0 — 2026-07-15
 
 ### Minor changes
