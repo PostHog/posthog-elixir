@@ -502,7 +502,8 @@ defmodule PostHog.FeatureFlags do
       request_id: Map.get(body, "requestId"),
       evaluated_at: Map.get(body, "evaluatedAt"),
       has_experiment: parse_has_experiment(flag_data),
-      errors_while_computing: Map.get(body, "errorsWhileComputingFlags") == true
+      errors_while_computing: Map.get(body, "errorsWhileComputingFlags") == true,
+      minimal_flag_called_events: Map.get(body, "minimalFlagCalledEvents") == true
     }
   end
 
@@ -632,7 +633,7 @@ defmodule PostHog.FeatureFlags do
       |> maybe_put(:"$feature_flag_error", errors)
 
     if PostHog.FeatureFlags.CalledCache.first_seen?(name, distinct_id, result.key, value) do
-      PostHog.capture(name, "$feature_flag_called", properties)
+      capture_called_event(name, distinct_id, result, properties)
     end
 
     if flag_missing? do
@@ -640,6 +641,59 @@ defmodule PostHog.FeatureFlags do
     else
       PostHog.set_context(name, %{"$feature/#{result.key}" => value})
     end
+  end
+
+  # Strict allowlist for minimal $feature_flag_called events, per the
+  # cross-SDK contract. Both atom and string forms are kept because context
+  # and global properties may use either key type.
+  @minimal_event_property_atoms [
+    :"$feature_flag",
+    :"$feature_flag_response",
+    :"$feature_flag_has_experiment",
+    :"$feature_flag_id",
+    :"$feature_flag_version",
+    :"$feature_flag_reason",
+    :"$feature_flag_request_id",
+    :"$feature_flag_evaluated_at",
+    :"$feature_flag_error",
+    :"$groups",
+    :"$process_person_profile",
+    :"$lib",
+    :"$lib_version",
+    :"$is_server"
+  ]
+  @minimal_event_properties @minimal_event_property_atoms ++
+                              Enum.map(@minimal_event_property_atoms, &Atom.to_string/1)
+
+  # Sends the minimal allowlisted event only when the server gate is on and
+  # the flag is known not to be linked to an experiment. Any missing signal
+  # (gate absent, has_experiment unknown) falls back to the full legacy event.
+  defp capture_called_event(name, distinct_id, %__MODULE__.Result{} = result, properties) do
+    if result.minimal_flag_called_events and result.has_experiment == false do
+      capture_minimal_called_event(name, distinct_id, properties)
+    else
+      PostHog.capture(name, "$feature_flag_called", properties)
+    end
+  end
+
+  # Assembles properties the same way capture/3 and bare_capture/4 would
+  # (context first, then global properties), then keeps only the allowlisted
+  # ones so the minimal shape stays predictable regardless of context tags or
+  # customer global properties.
+  defp capture_minimal_called_event(name, distinct_id, properties) do
+    config = PostHog.config(name)
+
+    # before_send still runs after this projection and may re-inflate the
+    # event. That's the accepted customer escape hatch; the SDK itself must
+    # not enrich the event after the allowlist.
+    minimal_properties =
+      name
+      |> PostHog.get_event_context("$feature_flag_called")
+      |> Map.merge(properties)
+      |> Map.merge(config.global_properties)
+      |> Map.take(@minimal_event_properties)
+
+    PostHog.capture_prepared(config, "$feature_flag_called", distinct_id, minimal_properties)
   end
 
   defp build_error_codes(%__MODULE__.Result{errors_while_computing: true}, extra),

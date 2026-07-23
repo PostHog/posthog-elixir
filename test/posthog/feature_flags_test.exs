@@ -465,6 +465,145 @@ defmodule PostHog.FeatureFlagsTest do
     end
   end
 
+  describe "minimal $feature_flag_called events" do
+    defp minimal_gated_response(overrides) do
+      flag =
+        Map.merge(
+          %{
+            "enabled" => true,
+            "variant" => "variant1",
+            "metadata" => %{
+              "id" => 42,
+              "version" => 7,
+              "payload" => ~s({"copy": "hi"}),
+              "has_experiment" => false
+            },
+            "reason" => %{"code" => "condition_match"}
+          },
+          Map.get(overrides, "flag", %{})
+        )
+
+      body =
+        Map.merge(
+          %{
+            "flags" => %{"myflag" => flag},
+            "requestId" => "req-xyz",
+            "evaluatedAt" => 1_700_000_000,
+            "minimalFlagCalledEvents" => true
+          },
+          Map.delete(overrides, "flag")
+        )
+
+      {:ok, %{status: 200, body: body}}
+    end
+
+    @tag config: [supervisor_name: PostHog, global_properties: %{team: "growth"}]
+    test "sends exactly the allowlisted properties when gated and the flag has no experiment" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        minimal_gated_response(%{"errorsWhileComputingFlags" => true})
+      end)
+
+      PostHog.set_context(%{
+        some_tag: "ctx",
+        "$feature/other-flag": true,
+        "$groups": %{company: "acme"},
+        "$process_person_profile": false
+      })
+
+      assert {:ok, "variant1"} = FeatureFlags.check("myflag", "foo")
+
+      assert [%{event: "$feature_flag_called", distinct_id: "foo", properties: properties}] =
+               all_captured()
+
+      assert properties == %{
+               "$feature_flag": "myflag",
+               "$feature_flag_response": "variant1",
+               "$feature_flag_has_experiment": false,
+               "$feature_flag_id": 42,
+               "$feature_flag_version": 7,
+               "$feature_flag_reason": %{"code" => "condition_match"},
+               "$feature_flag_request_id": "req-xyz",
+               "$feature_flag_evaluated_at": 1_700_000_000,
+               "$feature_flag_error": "errors_while_computing_flags",
+               "$groups": %{company: "acme"},
+               "$process_person_profile": false,
+               "$lib": "posthog-elixir",
+               "$lib_version": PostHog.Lib.version(),
+               "$is_server": true
+             }
+    end
+
+    test "keeps string-keyed allowlisted context properties on minimal events" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        minimal_gated_response(%{})
+      end)
+
+      PostHog.set_context(%{
+        "some_tag" => "ctx",
+        "$groups" => %{"company" => "acme"},
+        "$process_person_profile" => false
+      })
+
+      assert {:ok, "variant1"} = FeatureFlags.check("myflag", "foo")
+
+      assert [%{event: "$feature_flag_called", properties: properties}] = all_captured()
+      assert properties["$groups"] == %{"company" => "acme"}
+      assert properties["$process_person_profile"] == false
+      refute Map.has_key?(properties, "some_tag")
+      refute Map.has_key?(properties, "$feature/myflag")
+    end
+
+    test "sends the full event when gated but the flag has an experiment" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        minimal_gated_response(%{"flag" => %{"metadata" => %{"has_experiment" => true}}})
+      end)
+
+      PostHog.set_context(%{some_tag: "ctx"})
+
+      assert {:ok, "variant1"} = FeatureFlags.check("myflag", "foo")
+
+      assert [%{event: "$feature_flag_called", properties: properties}] = all_captured()
+      assert properties["$feature/myflag"] == "variant1"
+      assert properties[:"$feature_flag_has_experiment"] == true
+      assert properties[:some_tag] == "ctx"
+      assert properties[:"$is_server"] == true
+    end
+
+    test "sends the full event when the gate is absent, false, or unparseable" do
+      for {gate_overrides, distinct_id} <- [
+            {%{"minimalFlagCalledEvents" => nil}, "user-absent"},
+            {%{"minimalFlagCalledEvents" => false}, "user-false"},
+            {%{"minimalFlagCalledEvents" => "yes"}, "user-unparseable"}
+          ] do
+        expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+          minimal_gated_response(gate_overrides)
+        end)
+
+        assert {:ok, "variant1"} = FeatureFlags.check("myflag", distinct_id)
+      end
+
+      events = all_captured()
+      assert length(events) == 3
+
+      for %{event: "$feature_flag_called", properties: properties} <- events do
+        assert properties["$feature/myflag"] == "variant1"
+        assert properties[:"$is_server"] == true
+      end
+    end
+
+    test "sends the full event when gated but has_experiment is missing" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        minimal_gated_response(%{"flag" => %{"metadata" => %{"id" => 42, "version" => 7}}})
+      end)
+
+      assert {:ok, "variant1"} = FeatureFlags.check("myflag", "foo")
+
+      assert [%{event: "$feature_flag_called", properties: properties}] = all_captured()
+      assert properties["$feature/myflag"] == "variant1"
+      refute Map.has_key?(properties, :"$feature_flag_has_experiment")
+    end
+  end
+
   describe "get_feature_flag_result/4" do
     test "returns Result struct for boolean flag" do
       expect(API.Mock, :request, fn _client, method, url, opts ->
