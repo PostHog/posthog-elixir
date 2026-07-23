@@ -1,5 +1,11 @@
 # posthog
 
+## 2.13.0 — 2026-07-23
+
+### Minor changes
+
+- [d66f174](https://github.com/posthog/posthog-elixir/commit/d66f174c9dc7402a118dd5e88fa8b72d2a7471fe) Emit error tracking stack frames in canonical bottom-up order: `frames[0]` is the outermost entry point and the last frame is the crash site. This aligns the Elixir SDK with the cross-SDK stack frame ordering standard. — Thanks @cat-ph!
+
 ## 2.12.1 — 2026-07-22
 
 ### Patch changes
