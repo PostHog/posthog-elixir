@@ -533,6 +533,38 @@ defmodule PostHog.FeatureFlagsTest do
              }
     end
 
+    test "keeps the session ID set by the Plug integration and strips the rest of the request context" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        minimal_gated_response(%{})
+      end)
+
+      :get
+      |> Plug.Test.conn("https://posthog.com/foo?bar=10")
+      |> Plug.Conn.put_req_header("x-posthog-session-id", "session-123")
+      |> Plug.Conn.put_req_header("user-agent", "Mozilla/5.0")
+      |> PostHog.Integrations.Plug.call(nil)
+
+      assert {:ok, "variant1"} = FeatureFlags.check("myflag", "foo")
+
+      assert [%{event: "$feature_flag_called", distinct_id: "foo", properties: properties}] =
+               all_captured()
+
+      assert properties == %{
+               "$feature_flag": "myflag",
+               "$feature_flag_response": "variant1",
+               "$feature_flag_has_experiment": false,
+               "$feature_flag_id": 42,
+               "$feature_flag_version": 7,
+               "$feature_flag_reason": %{"code" => "condition_match"},
+               "$feature_flag_request_id": "req-xyz",
+               "$feature_flag_evaluated_at": 1_700_000_000,
+               "$session_id": "session-123",
+               "$lib": "posthog-elixir",
+               "$lib_version": PostHog.Lib.version(),
+               "$is_server": true
+             }
+    end
+
     test "keeps string-keyed allowlisted context properties on minimal events" do
       expect(API.Mock, :request, fn _client, _method, _url, _opts ->
         minimal_gated_response(%{})

@@ -658,6 +658,7 @@ defmodule PostHog.FeatureFlags do
     :"$feature_flag_error",
     :"$groups",
     :"$process_person_profile",
+    :"$session_id",
     :"$lib",
     :"$lib_version",
     :"$is_server"
