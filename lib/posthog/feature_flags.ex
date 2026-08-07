@@ -471,10 +471,7 @@ defmodule PostHog.FeatureFlags do
       case body do
         %{"flags" => %{^flag_name => flag_data}} ->
           flag_result = build_result(flag_name, flag_data, body)
-
-          if send_event do
-            log_feature_flag_usage(name, distinct_id, flag_result)
-          end
+          maybe_log_feature_flag_usage(send_event, name, distinct_id, flag_result)
 
           {:ok, flag_result, body}
 
@@ -483,6 +480,12 @@ defmodule PostHog.FeatureFlags do
       end
     else
       {:error, reason} -> {:error, reason, nil}
+    end
+  end
+
+  defp maybe_log_feature_flag_usage(send_event, name, distinct_id, flag_result) do
+    if send_event do
+      log_feature_flag_usage(name, distinct_id, flag_result)
     end
   end
 
