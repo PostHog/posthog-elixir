@@ -16,11 +16,8 @@ defmodule PostHog.Integrations.LLMAnalytics.ReqTest do
 
     %{
       req:
-        Req.new()
-        |> PostHog.Integrations.LLMAnalytics.Req.attach(
-          plug: {Req.Test, @mock_module},
-          posthog_supervisor: @supervisor_name
-        )
+        Req.new(plug: {Req.Test, @mock_module})
+        |> PostHog.Integrations.LLMAnalytics.Req.attach(posthog_supervisor: @supervisor_name)
     }
   end
 
