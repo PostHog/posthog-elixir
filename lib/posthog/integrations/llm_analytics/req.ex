@@ -380,7 +380,9 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
 
   defp atom_or_string_key(key) do
     fn :get, data, next ->
-      if value = Access.get(data, key) || Access.get(data, Atom.to_string(key)) do
+      value = Access.get(data, key) || Access.get(data, Atom.to_string(key))
+
+      if value do
         next.(value)
       else
         nil
