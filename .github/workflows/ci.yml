@@ -60,7 +60,7 @@ jobs:
           otp-version: ${{ matrix.otp }}
 
       - name: Restore dependencies cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: deps
           key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}-${{ matrix.elixir }}-${{ matrix.otp }}
@@ -89,7 +89,7 @@ jobs:
           otp-version: ${{ env.OTP_VERSION }}
 
       - name: Restore dependencies cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: deps
           key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}
@@ -118,7 +118,7 @@ jobs:
           otp-version: ${{ env.OTP_VERSION }}
 
       - name: Restore dependencies cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: deps
           key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}
@@ -147,7 +147,7 @@ jobs:
           otp-version: ${{ env.OTP_VERSION }}
 
       - name: Restore dependencies cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: deps
           key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}
