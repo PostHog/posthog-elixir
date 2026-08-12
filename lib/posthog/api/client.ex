@@ -218,9 +218,19 @@ defmodule PostHog.API.Client do
   end
 
   defp compress_body_with_fallback(req) do
+    req =
+      if req.options[:compress_body] do
+        # Req re-encodes the body on retries but keeps headers from the prior attempt.
+        Req.Request.delete_header(req, "content-encoding")
+      else
+        req
+      end
+
     Req.Steps.compress_body(req)
   rescue
     _exception ->
-      Req.merge(req, compress_body: false)
+      req
+      |> Req.Request.delete_header("content-encoding")
+      |> Req.merge(compress_body: false)
   end
 end

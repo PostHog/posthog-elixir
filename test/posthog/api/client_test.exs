@@ -56,6 +56,30 @@ defmodule PostHog.API.ClientTest do
     assert_received {:request, {:ok, false}, []}
   end
 
+  test "request retries keep the compressed body reusable" do
+    parent = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    req =
+      Req.new(
+        base_url: "https://example.com",
+        retry: :transient,
+        retry_delay: fn _ -> 0 end,
+        max_retries: 1,
+        compress_body: true,
+        adapter: fn req ->
+          attempt = Agent.get_and_update(calls, fn calls -> {calls + 1, calls + 1} end)
+          send(parent, {:request, Req.Request.get_header(req, "content-encoding"), req.body})
+          {req, Req.Response.new(status: if(attempt == 1, do: 503, else: 200), body: %{})}
+        end
+      )
+
+    assert {:ok, %{status: 200}} = Client.request(req, :post, "/", json: %{event: "test"})
+    assert_received {:request, ["gzip"], first_body}
+    assert_received {:request, ["gzip"], second_body}
+    assert :zlib.gunzip(first_body) == :zlib.gunzip(second_body)
+  end
+
   test "request fallback does not catch adapter exceptions" do
     {:ok, calls} = Agent.start_link(fn -> 0 end)
 
