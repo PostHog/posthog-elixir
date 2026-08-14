@@ -189,6 +189,34 @@ defmodule PostHogTest do
       Jason.encode!(properties)
     end
 
+    test "generates a UTC timestamp without changing DateTime properties" do
+      local_datetime = %DateTime{
+        year: 2024,
+        month: 1,
+        day: 2,
+        hour: 3,
+        minute: 4,
+        second: 5,
+        microsecond: {678_000, 3},
+        time_zone: "Asia/Kathmandu",
+        zone_abbr: "+0545",
+        utc_offset: 20_700,
+        std_offset: 0
+      }
+
+      PostHog.bare_capture("timestamp test", "distinct_id", %{occurred_at: local_datetime})
+
+      assert [%{timestamp: timestamp, properties: %{occurred_at: ^local_datetime}} = event] =
+               all_captured()
+
+      assert String.ends_with?(timestamp, "Z")
+      assert {:ok, _datetime, 0} = DateTime.from_iso8601(timestamp)
+
+      wire_event = event |> Jason.encode!() |> Jason.decode!()
+      assert wire_event["timestamp"] == timestamp
+      assert wire_event["properties"]["occurred_at"] == "2024-01-02T03:04:05.678+05:45"
+    end
+
     test "uuid is valid v7" do
       PostHog.bare_capture("uuid test", "distinct_id")
 
