@@ -1,0 +1,31 @@
+{
+  "api_key": "phc_snapshot",
+  "batch": [
+    {
+      "distinct_id": "user-2",
+      "event": "second-event",
+      "properties": {
+        "sequence": 2
+      },
+      "timestamp": "2024-01-02T03:04:05.678Z",
+      "uuid": "018cc820-db2e-7abc-8def-0123456789ac"
+    },
+    {
+      "distinct_id": "user-1",
+      "event": "first-event",
+      "properties": {
+        "collision": "atom-key-wins-after-jason-decode",
+        "nested": {
+          "items": [
+            1,
+            {
+              "position": 2
+            }
+          ]
+        }
+      },
+      "timestamp": "2024-01-02T03:04:05.678Z",
+      "uuid": "018cc820-db2e-7abc-8def-0123456789ab"
+    }
+  ]
+}

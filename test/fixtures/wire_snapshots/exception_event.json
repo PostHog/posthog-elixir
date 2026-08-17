@@ -1,0 +1,44 @@
+{
+  "distinct_id": "exception-user",
+  "event": "$exception",
+  "properties": {
+    "$current_url": "https://app.example.test/checkout?page=2",
+    "$exception_list": [
+      {
+        "mechanism": {
+          "handled": true,
+          "type": "generic"
+        },
+        "stacktrace": {
+          "frames": [
+            {
+              "filename": "lib/snapshot_app/checkout.ex",
+              "function": "SnapshotApp.Checkout.authorize/1",
+              "in_app": true,
+              "lang": "elixir",
+              "lineno": 42,
+              "module": "SnapshotApp.Checkout",
+              "platform": "custom",
+              "resolved": true,
+              "synthetic": true
+            }
+          ],
+          "type": "raw"
+        },
+        "type": "Logger error (SnapshotApp.Checkout.authorize/1)",
+        "value": "Card authorization failed"
+      }
+    ],
+    "$host": "app.example.test",
+    "$ip": "127.0.0.1",
+    "$is_server": true,
+    "$lib": "posthog-elixir",
+    "$lib_version": "0.0.0-test",
+    "$pathname": "/checkout",
+    "$request_method": "POST",
+    "$user_agent": "Snapshot Browser/1.0",
+    "distinct_id": "exception-user"
+  },
+  "timestamp": "2024-01-02T03:04:05.678Z",
+  "uuid": "018cc820-db2e-7abc-8def-0123456789ab"
+}

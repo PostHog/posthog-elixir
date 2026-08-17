@@ -1,0 +1,42 @@
+{
+  "body": {
+    "api_key": "phc_snapshot",
+    "disable_geoip": true,
+    "distinct_id": "flags-user",
+    "flag_keys_to_evaluate": [
+      "checkout-v2",
+      "billing-copy"
+    ],
+    "group_properties": {
+      "organization": {
+        "region": "eu"
+      }
+    },
+    "groups": {
+      "organization": "org-42"
+    },
+    "person_properties": {
+      "plan": "enterprise",
+      "roles": [
+        "admin",
+        "author"
+      ]
+    }
+  },
+  "headers": {
+    "accept": [
+      "application/json"
+    ],
+    "content-encoding": [
+      "gzip"
+    ],
+    "content-type": [
+      "application/json"
+    ],
+    "user-agent": [
+      "posthog-elixir/0.0.0-test"
+    ]
+  },
+  "method": "POST",
+  "url": "https://snapshot.posthog.test/flags?v=2"
+}
