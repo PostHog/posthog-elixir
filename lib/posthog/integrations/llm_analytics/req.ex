@@ -306,15 +306,9 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
          "tools" => tools,
          "temperature" => temperature
        }) do
-    %{
-      "$ai_output_choices": output,
-      "$ai_input_tokens": input_tokens,
-      "$ai_output_tokens": output_tokens,
-      "$ai_model": model,
-      "$ai_tools": tools,
-      "$ai_temperature": temperature,
-      "$ai_is_error": false
-    }
+    model
+    |> successful_response_properties(output, input_tokens, output_tokens)
+    |> Map.merge(%{"$ai_tools": tools, "$ai_temperature": temperature})
   end
 
   # OpenAI Chat Completions
@@ -323,13 +317,7 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
          "choices" => output,
          "usage" => %{"completion_tokens" => output_tokens, "prompt_tokens" => input_tokens}
        }) do
-    %{
-      "$ai_output_choices": output,
-      "$ai_input_tokens": input_tokens,
-      "$ai_output_tokens": output_tokens,
-      "$ai_model": model,
-      "$ai_is_error": false
-    }
+    successful_response_properties(model, output, input_tokens, output_tokens)
   end
 
   # Gemini generateContent
@@ -345,13 +333,12 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
     reasoning_tokens = usage["thoughtsTokenCount"] || 0
     tool_use_tokens = usage["toolUsePromptTokenCount"] || 0
 
-    %{
-      "$ai_output_choices": output,
-      "$ai_input_tokens": input_tokens,
-      "$ai_output_tokens": candidates_tokens + reasoning_tokens + tool_use_tokens,
-      "$ai_model": model,
-      "$ai_is_error": false
-    }
+    successful_response_properties(
+      model,
+      output,
+      input_tokens,
+      candidates_tokens + reasoning_tokens + tool_use_tokens
+    )
   end
 
   # Anthropic Create Message
@@ -360,13 +347,7 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
          "content" => output,
          "usage" => %{"output_tokens" => output_tokens, "input_tokens" => input_tokens}
        }) do
-    %{
-      "$ai_output_choices": output,
-      "$ai_input_tokens": input_tokens,
-      "$ai_output_tokens": output_tokens,
-      "$ai_model": model,
-      "$ai_is_error": false
-    }
+    successful_response_properties(model, output, input_tokens, output_tokens)
   end
 
   defp response_properties(%{"error" => error}) do
@@ -377,6 +358,16 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
   end
 
   defp response_properties(_), do: %{}
+
+  defp successful_response_properties(model, output, input_tokens, output_tokens) do
+    %{
+      "$ai_output_choices": output,
+      "$ai_input_tokens": input_tokens,
+      "$ai_output_tokens": output_tokens,
+      "$ai_model": model,
+      "$ai_is_error": false
+    }
+  end
 
   defp atom_or_string_key(key) do
     fn :get, data, next ->
