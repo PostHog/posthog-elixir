@@ -38,6 +38,45 @@ defmodule PostHog.Config do
                             doc:
                               "Number of retries for /flags requests after network, transport, or timeout failures. Set to 0 to disable retries."
                           ],
+                          secret_key: [
+                            type: {:or, [:string, nil]},
+                            default: nil,
+                            doc: """
+                            A privileged project secret (`phs_`) or appropriately scoped personal API key (`phx_`)
+                            used only to load definitions for local feature flag evaluation. Local evaluation is inert
+                            and starts no poller when this value is absent or blank.
+                            """
+                          ],
+                          enable_local_evaluation: [
+                            type: :boolean,
+                            default: true,
+                            doc:
+                              "Enable local feature flag evaluation when a non-empty `secret_key` is configured."
+                          ],
+                          feature_flags_poll_interval_ms: [
+                            type: :pos_integer,
+                            default: 30_000,
+                            doc:
+                              "Interval in milliseconds between local feature flag definition refreshes."
+                          ],
+                          flag_definition_cache_provider: [
+                            type: {:or, [{:tuple, [:atom, :any]}, nil]},
+                            default: nil,
+                            doc:
+                              "Optional `{module, state}` implementing `PostHog.FeatureFlags.FlagDefinitionCacheProvider`."
+                          ],
+                          flag_definition_cache_provider_timeout_ms: [
+                            type: :pos_integer,
+                            default: 5_000,
+                            doc:
+                              "Maximum time in milliseconds allowed for each definition cache provider callback."
+                          ],
+                          flag_definition_request_timeout_ms: [
+                            type: :pos_integer,
+                            default: 10_000,
+                            doc:
+                              "Maximum time in milliseconds allowed for a local feature flag definition request."
+                          ],
                           supervisor_name: [
                             type: :atom,
                             default: PostHog,
@@ -219,7 +258,7 @@ defmodule PostHog.Config do
 
   ## Remarks
 
-  String `:api_key` and `:api_host` values are trimmed before validation. A blank
+  String `:api_key`, `:secret_key`, and `:api_host` values are trimmed before validation. A blank
   `:api_host` falls back to the default PostHog US ingestion host.
   """
   @spec validate(options()) ::
@@ -275,6 +314,13 @@ defmodule PostHog.Config do
       end
     end)
     |> then(fn normalized_options ->
+      if Keyword.has_key?(normalized_options, :secret_key) do
+        Keyword.update!(normalized_options, :secret_key, &normalize_secret_key/1)
+      else
+        normalized_options
+      end
+    end)
+    |> then(fn normalized_options ->
       if Keyword.has_key?(normalized_options, :api_host) do
         Keyword.update!(normalized_options, :api_host, &normalize_api_host/1)
       else
@@ -286,6 +332,15 @@ defmodule PostHog.Config do
   defp normalize_api_key(api_key) when is_binary(api_key), do: String.trim(api_key)
   defp normalize_api_key(nil), do: ""
   defp normalize_api_key(api_key), do: api_key
+
+  defp normalize_secret_key(secret_key) when is_binary(secret_key) do
+    case String.trim(secret_key) do
+      "" -> nil
+      value -> value
+    end
+  end
+
+  defp normalize_secret_key(secret_key), do: secret_key
 
   defp normalize_api_host(api_host) when is_binary(api_host) do
     api_host

@@ -13,4 +13,17 @@ defmodule PostHog.API do
       max_retries: client.feature_flags_request_max_retries
     )
   end
+
+  def flag_definitions(%__MODULE__.Client{} = client, project_api_key, secret_key, etag) do
+    headers =
+      [{"authorization", "Bearer #{secret_key}"}]
+      |> then(fn headers ->
+        if is_binary(etag), do: [{"if-none-match", etag} | headers], else: headers
+      end)
+
+    client.module.request(client.client, :get, "/flags/definitions",
+      params: %{token: project_api_key, send_cohorts: true},
+      headers: headers
+    )
+  end
 end

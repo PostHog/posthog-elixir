@@ -8,6 +8,15 @@ defmodule PostHog.API.Stub do
   end
 
   @impl PostHog.API.Client
+  def request(_client, :get, "/flags/definitions", _opts) do
+    {:ok,
+     %{
+       status: 200,
+       headers: %{},
+       body: %{"flags" => [], "group_type_mapping" => %{}, "cohorts" => %{}}
+     }}
+  end
+
   def request(_client, :post, "/batch", _opts) do
     {:ok, %{status: 200, body: %{"status" => "Ok"}}}
   end

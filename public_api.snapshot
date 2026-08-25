@@ -148,6 +148,13 @@ PostHog.FeatureFlags.Evaluations
   macros:
     (none)
 
+PostHog.FeatureFlags.FlagDefinitionCacheProvider
+  module_doc: documented
+  functions:
+    (none)
+  macros:
+    (none)
+
 PostHog.FeatureFlags.Result
   module_doc: documented
   functions:

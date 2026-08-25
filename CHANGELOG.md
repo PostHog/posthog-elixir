@@ -1,5 +1,11 @@
 # posthog
 
+## Unreleased
+
+### Minor changes
+
+- Add privileged, polled local feature flag evaluation with safe remote fallback, ETag definition loading, person/group/cohort/dependency matching, deterministic variants and payloads, and an optional bounded shared definition cache provider. Configure it with `secret_key`; existing installations without a secret remain remote-only.
+
 ## 2.14.2 — 2026-08-25
 
 ### Patch changes

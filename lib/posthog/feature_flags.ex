@@ -90,7 +90,7 @@ defmodule PostHog.FeatureFlags do
   @spec flags_for(PostHog.supervisor_name(), PostHog.distinct_id() | map() | nil) ::
           {:ok, map()} | {:error, Exception.t()}
   def flags_for(name \\ PostHog, distinct_id_or_body \\ nil) do
-    with {:ok, body} <- body_for_flags(distinct_id_or_body),
+    with {:ok, body} <- body_for_flags(name, distinct_id_or_body),
          {:ok, %{body: %{"flags" => flags}}} <- flags(name, body) do
       {:ok, flags}
     end
@@ -105,9 +105,13 @@ defmodule PostHog.FeatureFlags do
   @doc """
   Evaluates feature flags for a `distinct_id` and returns a snapshot.
 
-  Returns `{:ok, %PostHog.FeatureFlags.Evaluations{}}` on success. The snapshot
-  represents a single `/flags` call and lets you branch on multiple flags and
-  enrich captured events from the same fetch — see
+  Returns `{:ok, %PostHog.FeatureFlags.Evaluations{}}` on success. Definitions
+  are evaluated locally first when privileged local evaluation is configured;
+  unresolved flags are filled by at most one `/flags` call. If that fallback
+  fails after some flags resolved locally, the successful local subset is
+  returned as a partial snapshot; if nothing resolved, a safe empty snapshot
+  is returned. The snapshot lets you branch on multiple flags and enrich
+  captured events — see
   `PostHog.FeatureFlags.Evaluations` for the full snapshot API and
   `set_in_context/2` for the recommended capture-enrichment flow.
 
@@ -124,8 +128,12 @@ defmodule PostHog.FeatureFlags do
   - `:person_properties`
   - `:group_properties`
   - `:disable_geoip`
+  - `:device_id` - alternate bucketing identifier for device-bucketed flags
 
-  Plus one snapshot-specific option:
+  Plus these snapshot-specific options:
+
+  - `:only_evaluate_locally` - when true, never calls `/flags`; unresolved
+    flags are omitted from the snapshot.
 
   - `:flag_keys` - list of flag keys. A non-empty list is forwarded to the
     request as `flag_keys_to_evaluate` so the server returns only those flags.
@@ -133,7 +141,9 @@ defmodule PostHog.FeatureFlags do
     omitted or `nil` value evaluates all flags through the normal request path.
     This scopes the network response, distinct from
     `PostHog.FeatureFlags.Evaluations.only/2` which filters an already-fetched
-    snapshot in memory.
+    snapshot in memory. Clean remote omissions for explicitly requested keys
+    are retained in a bounded per-instance set until definitions refresh, so
+    repeated and concurrent missing-key probes avoid duplicate requests.
 
   ## Examples
 
@@ -157,20 +167,12 @@ defmodule PostHog.FeatureFlags do
   @spec evaluate_flags(PostHog.supervisor_name(), PostHog.distinct_id() | map() | nil) ::
           {:ok, __MODULE__.Evaluations.t()} | {:error, Exception.t()}
   def evaluate_flags(name \\ PostHog, distinct_id_or_body \\ nil) do
-    case body_for_flags(distinct_id_or_body) do
+    case body_for_flags(name, distinct_id_or_body) do
       {:ok, %{distinct_id: distinct_id, flag_keys: []}} ->
-        {:ok, __MODULE__.Evaluations.new(name, distinct_id, %{"flags" => %{}})}
+        {:ok, __MODULE__.Evaluations.from_results(name, distinct_id, %{}, %{})}
 
       {:ok, %{distinct_id: distinct_id} = body} ->
-        body = translate_flag_keys(body)
-
-        case flags(name, body) do
-          {:ok, %{body: response_body}} ->
-            {:ok, __MODULE__.Evaluations.new(name, distinct_id, response_body)}
-
-          {:error, _} = error ->
-            error
-        end
+        evaluate_snapshot(name, distinct_id, body)
 
       {:error, _} ->
         # Standardize on returning an empty snapshot when distinct_id can't be
@@ -179,6 +181,223 @@ defmodule PostHog.FeatureFlags do
         # events leak with an empty distinct_id.
         {:ok, __MODULE__.Evaluations.empty(name)}
     end
+  end
+
+  defp evaluate_snapshot(name, distinct_id, body) do
+    only_local? = Map.get(body, :only_evaluate_locally, false) == true
+    requested_keys = Map.get(body, :flag_keys)
+    loader_state = local_evaluation_state(name, requested_keys || [])
+
+    case loader_state.definitions do
+      nil ->
+        if only_local? do
+          snapshot_from_results(name, distinct_id, %{})
+        else
+          remote_snapshot(name, distinct_id, body, %{}, requested_keys, nil, [])
+        end
+
+      _definitions ->
+        evaluate_loaded_snapshot(
+          name,
+          distinct_id,
+          body,
+          requested_keys,
+          loader_state,
+          true
+        )
+    end
+  end
+
+  defp evaluate_loaded_snapshot(
+         name,
+         distinct_id,
+         body,
+         requested_keys,
+         loader_state,
+         coordinate_missing?
+       ) do
+    definitions = loader_state.definitions
+    keys = requested_keys || Map.keys(definitions.flags_by_key)
+    local = __MODULE__.LocalEvaluator.evaluate(definitions, body, keys)
+    known_missing = if is_list(requested_keys), do: loader_state.known_missing, else: MapSet.new()
+    unresolved = MapSet.difference(local.unresolved, known_missing)
+    only_local? = Map.get(body, :only_evaluate_locally, false) == true
+
+    cond do
+      MapSet.size(unresolved) == 0 or only_local? ->
+        snapshot_from_results(name, distinct_id, local.results)
+
+      coordinate_missing? and is_list(requested_keys) ->
+        coordinate_missing_probe(
+          name,
+          distinct_id,
+          body,
+          requested_keys,
+          loader_state,
+          local,
+          unresolved
+        )
+
+      true ->
+        remote_loaded_snapshot(name, distinct_id, body, requested_keys, loader_state, local)
+    end
+  end
+
+  defp coordinate_missing_probe(
+         name,
+         distinct_id,
+         body,
+         requested_keys,
+         loader_state,
+         local,
+         unresolved
+       ) do
+    absent = absent_definition_keys(requested_keys, loader_state.definitions)
+    probe_keys = absent |> MapSet.intersection(unresolved) |> MapSet.to_list()
+
+    if probe_keys == [] do
+      remote_snapshot(
+        name,
+        distinct_id,
+        body,
+        local.results,
+        requested_keys,
+        loader_state.generation,
+        []
+      )
+    else
+      with_missing_probe_locks(name, probe_keys, fn ->
+        evaluate_after_missing_probe_lock(name, distinct_id, body, requested_keys)
+      end)
+    end
+  end
+
+  defp evaluate_after_missing_probe_lock(name, distinct_id, body, requested_keys) do
+    fresh_state = local_evaluation_state(name, requested_keys)
+
+    if is_nil(fresh_state.definitions) do
+      remote_snapshot(name, distinct_id, body, %{}, requested_keys, nil, [])
+    else
+      evaluate_loaded_snapshot(name, distinct_id, body, requested_keys, fresh_state, false)
+    end
+  end
+
+  defp remote_loaded_snapshot(name, distinct_id, body, requested_keys, loader_state, local) do
+    absent =
+      if is_list(requested_keys) do
+        requested_keys
+        |> absent_definition_keys(loader_state.definitions)
+        |> MapSet.to_list()
+      else
+        []
+      end
+
+    remote_snapshot(
+      name,
+      distinct_id,
+      body,
+      local.results,
+      requested_keys,
+      loader_state.generation,
+      absent
+    )
+  end
+
+  defp absent_definition_keys(requested_keys, definitions) do
+    requested_keys
+    |> MapSet.new()
+    |> MapSet.difference(MapSet.new(Map.keys(definitions.flags_by_key)))
+  end
+
+  defp remote_snapshot(
+         name,
+         distinct_id,
+         body,
+         local_results,
+         requested_keys,
+         generation,
+         negative_candidates
+       ) do
+    remote_body =
+      body
+      |> Map.delete(:only_evaluate_locally)
+      |> translate_flag_keys()
+
+    case flags(name, remote_body) do
+      {:ok, %{body: %{"flags" => remote_flags} = response_body}} when is_map(remote_flags) ->
+        scoped_remote_flags = maybe_scope_remote_results(remote_flags, requested_keys)
+
+        update_negative_knowledge(
+          name,
+          generation,
+          negative_candidates,
+          Map.keys(scoped_remote_flags),
+          clean_remote_response?(response_body)
+        )
+
+        remote_results =
+          Map.new(scoped_remote_flags, fn {key, flag_data} ->
+            {key, build_result(key, flag_data, response_body)}
+          end)
+
+        merged = Map.merge(remote_results, local_results)
+        {:ok, __MODULE__.Evaluations.from_results(name, distinct_id, merged, response_body)}
+
+      {:error, _reason} ->
+        snapshot_from_results(name, distinct_id, local_results)
+    end
+  end
+
+  defp snapshot_from_results(name, distinct_id, results),
+    do: {:ok, __MODULE__.Evaluations.from_results(name, distinct_id, results, %{})}
+
+  defp clean_remote_response?(body) do
+    Map.get(body, "errorsWhileComputingFlags") != true and
+      Map.get(body, "quotaLimited") in [nil, false, []]
+  end
+
+  defp update_negative_knowledge(_name, nil, _requested, _returned, _clean?), do: :ok
+
+  defp update_negative_knowledge(name, generation, requested, returned, clean?) do
+    __MODULE__.DefinitionLoader.update_negative_knowledge(
+      name,
+      generation,
+      requested,
+      returned,
+      clean?
+    )
+  catch
+    :exit, _reason -> :ok
+  end
+
+  defp maybe_scope_remote_results(results, keys) when is_list(keys), do: Map.take(results, keys)
+  defp maybe_scope_remote_results(results, _keys), do: results
+
+  defp local_evaluation_state(name, keys) do
+    registry = PostHog.Registry.registry_name(name)
+
+    if Process.whereis(registry) &&
+         GenServer.whereis(PostHog.Registry.via(name, __MODULE__.DefinitionLoader)) do
+      __MODULE__.DefinitionLoader.evaluation_state(name, keys)
+    else
+      %{definitions: nil, generation: nil, known_missing: MapSet.new()}
+    end
+  catch
+    :exit, _reason -> %{definitions: nil, generation: nil, known_missing: MapSet.new()}
+  end
+
+  defp with_missing_probe_locks(name, keys, callback) do
+    keys
+    |> Enum.uniq()
+    |> Enum.sort()
+    |> acquire_missing_probe_locks(name, callback)
+  end
+
+  defp acquire_missing_probe_locks([], _name, callback), do: callback.()
+
+  defp acquire_missing_probe_locks([key | rest], name, callback) do
+    lock = {{__MODULE__, :missing_probe, name, key}, self()}
+    :global.trans(lock, fn -> acquire_missing_probe_locks(rest, name, callback) end)
   end
 
   @doc """
@@ -475,20 +694,58 @@ defmodule PostHog.FeatureFlags do
   defp evaluate_flag(name, flag_name, distinct_id_or_body, opts) do
     send_event = Keyword.get(opts, :send_event, true)
 
-    with {:ok, %{distinct_id: distinct_id} = body} <- body_for_flags(distinct_id_or_body),
-         {:ok, %{body: body}} <- flags(name, body) do
-      case body do
-        %{"flags" => %{^flag_name => flag_data}} ->
-          flag_result = build_result(flag_name, flag_data, body)
-          maybe_log_feature_flag_usage(send_event, name, distinct_id, flag_result)
+    case body_for_flags(name, distinct_id_or_body) do
+      {:ok, %{distinct_id: distinct_id} = body} ->
+        case evaluate_single_flag(name, flag_name, body) do
+          {:ok, %__MODULE__.Result{} = result, response_body} ->
+            maybe_log_feature_flag_usage(send_event, name, distinct_id, result)
+            {:ok, result, response_body}
 
-          {:ok, flag_result, body}
+          {:ok, nil, response_body} ->
+            {:ok, nil, response_body}
 
-        %{"flags" => _} ->
-          {:ok, nil, body}
+          {:error, reason} ->
+            {:error, reason, nil}
+        end
+
+      {:error, reason} ->
+        {:error, reason, nil}
+    end
+  end
+
+  defp evaluate_single_flag(name, flag_name, body) do
+    local =
+      case local_evaluation_state(name, [flag_name]).definitions do
+        %{flags_by_key: %{^flag_name => _flag}} = definitions ->
+          __MODULE__.LocalEvaluator.evaluate(definitions, body, [flag_name])
+
+        _definitions ->
+          %{results: %{}, unresolved: MapSet.new([flag_name])}
       end
+
+    case Map.fetch(local.results, flag_name) do
+      {:ok, result} ->
+        {:ok, result, %{}}
+
+      :error ->
+        evaluate_single_flag_remotely(name, flag_name, body)
+    end
+  end
+
+  defp evaluate_single_flag_remotely(name, flag_name, body) do
+    if Map.get(body, :only_evaluate_locally, false) == true do
+      {:ok, nil, %{}}
     else
-      {:error, reason} -> {:error, reason, nil}
+      case flags(name, Map.delete(body, :only_evaluate_locally)) do
+        {:ok, %{body: %{"flags" => %{^flag_name => flag_data}} = response_body}} ->
+          {:ok, build_result(flag_name, flag_data, response_body), response_body}
+
+        {:ok, %{body: %{"flags" => _} = response_body}} ->
+          {:ok, nil, response_body}
+
+        {:error, _reason} = error ->
+          error
+      end
     end
   end
 
@@ -718,26 +975,46 @@ defmodule PostHog.FeatureFlags do
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
-  defp body_for_flags(distinct_id_or_body) do
+  defp body_for_flags(name, distinct_id_or_body) do
+    context = PostHog.get_context(name)
+
     case distinct_id_or_body do
       %{distinct_id: _distinct_id} = body ->
         {:ok, body}
 
+      %{} = body ->
+        case context do
+          %{distinct_id: distinct_id} -> {:ok, Map.put(body, :distinct_id, distinct_id)}
+          _context -> missing_distinct_id()
+        end
+
       nil ->
-        case PostHog.get_context() do
+        case context do
           %{distinct_id: distinct_id} ->
-            {:ok, %{distinct_id: distinct_id}}
+            {:ok,
+             context
+             |> Map.take([
+               :distinct_id,
+               :groups,
+               :person_properties,
+               :group_properties,
+               :device_id
+             ])
+             |> Map.put(:distinct_id, distinct_id)}
 
           _context ->
-            {:error,
-             %PostHog.Error{
-               message:
-                 "distinct_id is required but wasn't explicitly provided or found in the context"
-             }}
+            missing_distinct_id()
         end
 
       distinct_id when is_binary(distinct_id) ->
         {:ok, %{distinct_id: distinct_id}}
     end
+  end
+
+  defp missing_distinct_id do
+    {:error,
+     %PostHog.Error{
+       message: "distinct_id is required but wasn't explicitly provided or found in the context"
+     }}
   end
 end
