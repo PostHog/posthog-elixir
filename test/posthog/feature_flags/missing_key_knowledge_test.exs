@@ -89,15 +89,15 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     assert_receive :remote_probe
   end
 
-  test "remote-only and locally unresolved total failures return safe empty snapshots without accessor retries" do
+  test "remote-only and locally unresolved total failures preserve the error contract" do
     expect(PostHog.API.Mock, :request, fn :stub_client, :post, "/flags", _opts ->
       {:error, %RuntimeError{message: "offline"}}
     end)
 
     start_instance(__MODULE__.RemoteOnly, secret_key: nil)
-    assert {:ok, remote_only} = scoped(__MODULE__.RemoteOnly, ["missing"])
-    refute Evaluations.enabled?(remote_only, "missing")
-    assert Evaluations.get_flag(remote_only, "missing") == nil
+
+    assert {:error, %RuntimeError{message: "offline"}} =
+             scoped(__MODULE__.RemoteOnly, ["missing"])
 
     {:ok, counter} = Agent.start_link(fn -> 0 end)
 
@@ -109,10 +109,8 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     end)
 
     start_instance(__MODULE__.Failure)
-    assert {:ok, failed} = scoped(__MODULE__.Failure, ["missing"])
-    assert Evaluations.keys(failed) == []
-    refute Evaluations.enabled?(failed, "missing")
-    assert {:ok, _retry} = scoped(__MODULE__.Failure, ["missing"])
+    assert {:error, %RuntimeError{message: "offline"}} = scoped(__MODULE__.Failure, ["missing"])
+    assert {:error, %RuntimeError{message: "offline"}} = scoped(__MODULE__.Failure, ["missing"])
   end
 
   test "dirty omissions do not suppress retries and returned keys remain context specific" do

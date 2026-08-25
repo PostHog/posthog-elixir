@@ -151,6 +151,39 @@ defmodule PostHog.FeatureFlags.LocalEvaluationIntegrationTest do
     assert Evaluations.keys(snapshot) == ["local"]
   end
 
+  test "malformed remote fallback preserves a partial local snapshot" do
+    unknown = flag("unknown", [%{"key" => "x", "operator" => "future", "value" => 1}])
+
+    expect(PostHog.API.Mock, :request, 2, fn
+      :stub_client, :get, "/flags/definitions", _opts ->
+        {:ok, %{status: 200, body: envelope([flag("local"), unknown]), headers: %{}}}
+
+      :stub_client, :post, "/flags", _opts ->
+        {:ok, %{status: 200, body: %{"flags" => ["malformed"]}}}
+    end)
+
+    start_instance(__MODULE__.MalformedFallback)
+    assert {:ok, snapshot} = FeatureFlags.evaluate_flags(__MODULE__.MalformedFallback, "user")
+    assert Evaluations.keys(snapshot) == ["local"]
+  end
+
+  test "malformed remote fallback returns an error when nothing resolved locally" do
+    unknown = flag("unknown", [%{"key" => "x", "operator" => "future", "value" => 1}])
+
+    expect(PostHog.API.Mock, :request, 2, fn
+      :stub_client, :get, "/flags/definitions", _opts ->
+        {:ok, %{status: 200, body: envelope([unknown]), headers: %{}}}
+
+      :stub_client, :post, "/flags", _opts ->
+        {:ok, %{status: 200, body: %{"flags" => ["malformed"]}}}
+    end)
+
+    start_instance(__MODULE__.MalformedOnly)
+
+    assert {:error, %RuntimeError{message: "invalid response from PostHog /flags endpoint"}} =
+             FeatureFlags.evaluate_flags(__MODULE__.MalformedOnly, "user")
+  end
+
   test "group absence makes only that flag fall back and requested missing keys are remotely scoped" do
     group = put_in(flag("group"), ["filters", "aggregation_group_type_index"], 0)
     caller = self()

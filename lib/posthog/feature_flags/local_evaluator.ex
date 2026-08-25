@@ -56,15 +56,44 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   end
 
   defp normalize_context(context) do
+    distinct_id = context_value(context, :distinct_id)
+    groups = context_value(context, :groups) || %{}
+
+    person_properties =
+      context
+      |> context_value(:person_properties)
+      |> Kernel.||(%{})
+      |> put_default_property("distinct_id", distinct_id)
+
+    group_properties =
+      Enum.reduce(groups, context_value(context, :group_properties) || %{}, fn
+        {group_type, group_key}, properties when is_map(properties) ->
+          group_type = to_string(group_type)
+          focused = map_value(properties, group_type) || %{}
+          Map.put(properties, group_type, put_default_property(focused, "$group_key", group_key))
+
+        _group, properties ->
+          properties
+      end)
+
     %{
-      distinct_id: context_value(context, :distinct_id),
-      groups: context_value(context, :groups) || %{},
-      person_properties: context_value(context, :person_properties) || %{},
-      group_properties: context_value(context, :group_properties) || %{},
+      distinct_id: distinct_id,
+      groups: groups,
+      person_properties: person_properties,
+      group_properties: group_properties,
       device_id: context_value(context, :device_id),
       now: context_value(context, :now) || DateTime.utc_now()
     }
   end
+
+  defp put_default_property(properties, key, value) when is_map(properties) do
+    case map_fetch(properties, key) do
+      :error -> Map.put(properties, key, value)
+      {:ok, _existing} -> properties
+    end
+  end
+
+  defp put_default_property(_properties, key, value), do: %{key => value}
 
   defp context_value(context, key),
     do: Map.get(context, key, Map.get(context, Atom.to_string(key)))

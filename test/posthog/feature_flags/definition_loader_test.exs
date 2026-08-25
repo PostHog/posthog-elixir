@@ -99,6 +99,39 @@ defmodule PostHog.FeatureFlags.DefinitionLoaderTest do
     refute Map.has_key?(PostHog.config(__MODULE__.Wire), :secret_key)
   end
 
+  test "cached definitions remain readable while a refresh is in flight" do
+    owner = self()
+
+    PostHog.API.Mock
+    |> stub_with(PostHog.API.Stub)
+    |> expect(:request, fn :stub_client, :get, "/flags/definitions", _opts ->
+      {:ok, %{status: 200, body: envelope("stale"), headers: %{}}}
+    end)
+    |> expect(:request, fn :stub_client, :get, "/flags/definitions", _opts ->
+      send(owner, {:refresh_started, self()})
+      receive(do: (:release_refresh -> :ok))
+      {:ok, %{status: 503, body: %{}, headers: %{}}}
+    end)
+
+    start_supervised!({PostHog.Supervisor, config(__MODULE__.ConcurrentRead)})
+    refresh = Task.async(fn -> DefinitionLoader.refresh(__MODULE__.ConcurrentRead) end)
+    assert_receive {:refresh_started, refresh_worker}
+
+    read = Task.async(fn -> DefinitionLoader.evaluation_state(__MODULE__.ConcurrentRead, []) end)
+
+    case Task.yield(read, 100) do
+      {:ok, state} ->
+        assert state.definitions.flags_by_key["stale"]
+
+      nil ->
+        send(refresh_worker, :release_refresh)
+        flunk("cached definitions were blocked by the in-flight refresh")
+    end
+
+    send(refresh_worker, :release_refresh)
+    assert :ok = Task.await(refresh)
+  end
+
   test "valid empty definitions are ready and transient or malformed refreshes preserve stale data" do
     stub_with(PostHog.API.Mock, PostHog.API.Stub)
 

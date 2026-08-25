@@ -238,7 +238,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
     end
   end
 
-  test "explicit nil values only allow maintained is_not semantics" do
+  test "explicit nil values preserve is_set and is_not semantics" do
     no_match_operators = [
       "exact",
       "icontains",
@@ -276,6 +276,12 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
 
     assert evaluate(flag("is-not", [is_not]), %{person_properties: %{prop: nil}}).results[
              "is-not"
+           ].enabled
+
+    is_set = %{"key" => "prop", "operator" => "is_set", "value" => nil}
+
+    assert evaluate(flag("is-set", [is_set]), %{person_properties: %{prop: nil}}).results[
+             "is-set"
            ].enabled
 
     absent = %{"key" => "prop", "operator" => "is_not_set", "value" => nil}
@@ -317,6 +323,40 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
 
     assert result.results["good"].enabled
     assert MapSet.member?(result.unresolved, "missing")
+  end
+
+  test "built-in identity properties are available without caller property maps" do
+    person_property = %{
+      "key" => "distinct_id",
+      "operator" => "exact",
+      "value" => "person-1"
+    }
+
+    assert evaluate(flag("person", [person_property]), %{distinct_id: "person-1"}).results[
+             "person"
+           ].enabled
+
+    refute evaluate(flag("person", [person_property]), %{
+             distinct_id: "person-1",
+             person_properties: %{distinct_id: "override"}
+           }).results["person"].enabled
+
+    group =
+      flag("group", [%{"key" => "$group_key", "operator" => "exact", "value" => "org-1"}])
+      |> put_in(["filters", "aggregation_group_type_index"], 0)
+
+    definitions = snapshot([group], %{group_type_mapping: %{"0" => "organization"}})
+
+    assert LocalEvaluator.evaluate(definitions, %{
+             distinct_id: "person-1",
+             groups: %{organization: "org-1"}
+           }).results["group"].enabled
+
+    refute LocalEvaluator.evaluate(definitions, %{
+             distinct_id: "person-1",
+             groups: %{organization: "org-1"},
+             group_properties: %{organization: %{"$group_key" => "override"}}
+           }).results["group"].enabled
   end
 
   test "group and mixed targeting use group properties and group keys" do

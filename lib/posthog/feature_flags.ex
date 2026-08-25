@@ -109,8 +109,9 @@ defmodule PostHog.FeatureFlags do
   are evaluated locally first when privileged local evaluation is configured;
   unresolved flags are filled by at most one `/flags` call. If that fallback
   fails after some flags resolved locally, the successful local subset is
-  returned as a partial snapshot; if nothing resolved, a safe empty snapshot
-  is returned. The snapshot lets you branch on multiple flags and enrich
+  returned as a partial snapshot. If nothing resolved, the remote error is
+  returned to preserve the existing `{:error, reason}` contract. The snapshot
+  lets you branch on multiple flags and enrich
   captured events — see
   `PostHog.FeatureFlags.Evaluations` for the full snapshot API and
   `set_in_context/2` for the recommended capture-enrichment flow.
@@ -343,10 +344,25 @@ defmodule PostHog.FeatureFlags do
         merged = Map.merge(remote_results, local_results)
         {:ok, __MODULE__.Evaluations.from_results(name, distinct_id, merged, response_body)}
 
-      {:error, _reason} ->
-        snapshot_from_results(name, distinct_id, local_results)
+      {:ok, _malformed_response} ->
+        remote_failure_result(
+          name,
+          distinct_id,
+          local_results,
+          {:error, %RuntimeError{message: "invalid response from PostHog /flags endpoint"}}
+        )
+
+      {:error, _reason} = error ->
+        remote_failure_result(name, distinct_id, local_results, error)
     end
   end
+
+  defp remote_failure_result(_name, _distinct_id, local_results, error)
+       when map_size(local_results) == 0,
+       do: error
+
+  defp remote_failure_result(name, distinct_id, local_results, _error),
+    do: snapshot_from_results(name, distinct_id, local_results)
 
   defp snapshot_from_results(name, distinct_id, results),
     do: {:ok, __MODULE__.Evaluations.from_results(name, distinct_id, results, %{})}

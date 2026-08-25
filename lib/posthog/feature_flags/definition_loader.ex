@@ -54,17 +54,24 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
   end
 
   @spec definitions(PostHog.supervisor_name()) :: snapshot() | nil
-  def definitions(name \\ PostHog), do: GenServer.call(via(name), :definitions)
+  def definitions(name \\ PostHog), do: readable_evaluation_state(name).definitions
 
   @spec ready?(PostHog.supervisor_name()) :: boolean()
-  def ready?(name \\ PostHog), do: GenServer.call(via(name), :ready?)
+  def ready?(name \\ PostHog), do: not is_nil(definitions(name))
 
   @spec refresh(PostHog.supervisor_name()) :: :ok
   def refresh(name \\ PostHog), do: GenServer.call(via(name), :refresh, :infinity)
 
   @doc false
-  def evaluation_state(name, keys),
-    do: GenServer.call(via(name), {:evaluation_state, keys})
+  def evaluation_state(name, keys) do
+    state = readable_evaluation_state(name)
+
+    %{
+      definitions: state.definitions,
+      generation: state.generation,
+      known_missing: keys |> MapSet.new() |> MapSet.intersection(state.negative_keys)
+    }
+  end
 
   @doc false
   def update_negative_knowledge(name, generation, requested_keys, returned_keys, clean?) do
@@ -72,6 +79,43 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
       via(name),
       {:update_negative_knowledge, generation, requested_keys, returned_keys, clean?}
     )
+  end
+
+  defp readable_evaluation_state(name) do
+    state = cached_evaluation_state(name)
+
+    if state.initial_load_complete? do
+      state
+    else
+      try do
+        GenServer.call(via(name), :cached_evaluation_state, :infinity)
+      catch
+        :exit, _reason -> state
+      end
+    end
+  end
+
+  defp cached_evaluation_state(name) do
+    registry = PostHog.Registry.registry_name(name)
+
+    case Registry.lookup(registry, __MODULE__) do
+      [{_pid, %{definitions: _definitions} = state}] ->
+        state
+
+      _other ->
+        empty_evaluation_state()
+    end
+  rescue
+    ArgumentError -> empty_evaluation_state()
+  end
+
+  defp empty_evaluation_state do
+    %{
+      definitions: nil,
+      generation: nil,
+      negative_keys: MapSet.new(),
+      initial_load_complete?: true
+    }
   end
 
   defp via(name), do: PostHog.Registry.via(name, __MODULE__)
@@ -91,41 +135,35 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
       timer_ref: nil,
       timer_generation: 0,
       quota_backoff_ms: nil,
+      initial_load_complete?: false,
       config: config
     }
 
-    {:ok, state, {:continue, :initial_load}}
+    {:ok, publish_evaluation_state(state), {:continue, :initial_load}}
   end
 
   @impl GenServer
-  def handle_continue(:initial_load, state), do: {:noreply, refresh_and_schedule(state)}
+  def handle_continue(:initial_load, state) do
+    state = state |> refresh_and_schedule() |> Map.put(:initial_load_complete?, true)
+    {:noreply, publish_evaluation_state(state)}
+  end
 
   @impl GenServer
+  def handle_call(:cached_evaluation_state, _from, state),
+    do: {:reply, evaluation_state_from(state), state}
+
   def handle_call(:definitions, _from, state), do: {:reply, state.definitions, state}
   def handle_call(:ready?, _from, state), do: {:reply, not is_nil(state.definitions), state}
   def handle_call(:refresh, _from, state), do: {:reply, :ok, refresh_and_schedule(state)}
-
-  def handle_call({:evaluation_state, keys}, _from, state) do
-    known_missing =
-      keys
-      |> MapSet.new()
-      |> MapSet.intersection(state.negative_keys)
-
-    reply = %{
-      definitions: state.definitions,
-      generation: state.definition_generation,
-      known_missing: known_missing
-    }
-
-    {:reply, reply, state}
-  end
 
   def handle_call(
         {:update_negative_knowledge, generation, requested, returned, clean?},
         _from,
         %{definition_generation: generation} = state
       ) do
-    state = update_retained_missing(state, requested, returned, clean?)
+    state =
+      state |> update_retained_missing(requested, returned, clean?) |> publish_evaluation_state()
+
     {:reply, :ok, state}
   end
 
@@ -177,7 +215,27 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
           state
       end
 
-    schedule_refresh(state)
+    state
+    |> schedule_refresh()
+    |> publish_evaluation_state()
+  end
+
+  defp publish_evaluation_state(state) do
+    registry = PostHog.Registry.registry_name(state.config.supervisor_name)
+
+    cached = evaluation_state_from(state)
+
+    Registry.update_value(registry, __MODULE__, fn _old -> cached end)
+    state
+  end
+
+  defp evaluation_state_from(state) do
+    %{
+      definitions: state.definitions,
+      generation: state.definition_generation,
+      negative_keys: state.negative_keys,
+      initial_load_complete?: state.initial_load_complete?
+    }
   end
 
   defp invalidate_timer(state) do
