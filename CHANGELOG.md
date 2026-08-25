@@ -1,5 +1,11 @@
 # posthog
 
+## 2.14.2 — 2026-08-25
+
+### Patch changes
+
+- [7e14b2a](https://github.com/posthog/posthog-elixir/commit/7e14b2a7d12ac7b9b210a1125bd05d8147366fa3) Return an empty feature flag snapshot without evaluation when feature flag keys are explicitly empty. — Thanks @marandaneto!
+
 ## 2.14.1 — 2026-08-12
 
 ### Patch changes
