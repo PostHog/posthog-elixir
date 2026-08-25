@@ -615,6 +615,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
     end
   end
 
+  defp apply_operator("is_set", nil, _filter, _now), do: :no_match
   defp apply_operator("is_set", _property, _filter, _now), do: :match
   defp apply_operator("is_not_set", _property, _filter, _now), do: :no_match
 

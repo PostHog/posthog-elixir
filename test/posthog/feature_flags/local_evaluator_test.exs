@@ -238,7 +238,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
     end
   end
 
-  test "explicit nil values preserve is_set and is_not semantics" do
+  test "explicit nil values follow operator-specific semantics" do
     no_match_operators = [
       "exact",
       "icontains",
@@ -280,9 +280,15 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
 
     is_set = %{"key" => "prop", "operator" => "is_set", "value" => nil}
 
-    assert evaluate(flag("is-set", [is_set]), %{person_properties: %{prop: nil}}).results[
+    refute evaluate(flag("is-set", [is_set]), %{person_properties: %{prop: nil}}).results[
              "is-set"
            ].enabled
+
+    for value <- [false, 0, "", [], %{}] do
+      assert evaluate(flag("is-set", [is_set]), %{person_properties: %{prop: value}}).results[
+               "is-set"
+             ].enabled
+    end
 
     absent = %{"key" => "prop", "operator" => "is_not_set", "value" => nil}
     assert MapSet.member?(evaluate(flag("absent", [absent])).unresolved, "absent")
