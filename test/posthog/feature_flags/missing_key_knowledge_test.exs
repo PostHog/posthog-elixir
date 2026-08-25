@@ -320,6 +320,35 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
              DefinitionLoader.evaluation_state(__MODULE__.Restart, ["missing"]).known_missing
   end
 
+  test "oversized missing-key scopes preserve the remote scope without retaining omissions" do
+    owner = self()
+    keys = for index <- 0..1_000, do: "key-#{index}"
+
+    expect(PostHog.API.Mock, :request, 3, fn :stub_client, method, path, opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          send(owner, {:oversized_scope, opts[:json].flag_keys_to_evaluate})
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    start_instance(__MODULE__.Oversized)
+
+    assert {:ok, first} = scoped(__MODULE__.Oversized, keys)
+    assert Evaluations.keys(first) == []
+    assert_receive {:oversized_scope, ^keys}
+
+    assert DefinitionLoader.evaluation_state(__MODULE__.Oversized, keys).known_missing ==
+             MapSet.new()
+
+    assert {:ok, second} = scoped(__MODULE__.Oversized, keys)
+    assert Evaluations.keys(second) == []
+    assert_receive {:oversized_scope, ^keys}
+  end
+
   test "negative knowledge is bounded, returned keys are removed, and stale generations are discarded" do
     expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
       {:ok, %{status: 200, body: envelope(), headers: %{}}}

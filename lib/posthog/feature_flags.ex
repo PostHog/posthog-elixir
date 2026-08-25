@@ -3,6 +3,8 @@ defmodule PostHog.FeatureFlags do
   Convenience functions to work with Feature Flags API
   """
 
+  @missing_probe_coordination_limit 1_000
+
   @doc """
   Make request to [`/flags`](https://posthog.com/docs/api/flags) API.
 
@@ -304,7 +306,7 @@ defmodule PostHog.FeatureFlags do
     absent = absent_definition_keys(requested_keys, loader_state.definitions)
     probe_keys = absent |> MapSet.intersection(unresolved) |> MapSet.to_list()
 
-    if probe_keys == [] do
+    if probe_keys == [] or length(probe_keys) > @missing_probe_coordination_limit do
       remote_snapshot(
         name,
         distinct_id,

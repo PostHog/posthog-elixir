@@ -584,10 +584,11 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
           |> MapSet.difference(returned)
           |> MapSet.to_list()
           |> Enum.sort()
+          |> Enum.take(-@negative_knowledge_capacity)
 
-        Enum.reduce(omissions, {order, keys}, fn key, {order, keys} ->
-          {Enum.reject(order, &(&1 == key)) ++ [key], MapSet.put(keys, key)}
-        end)
+        omission_keys = MapSet.new(omissions)
+        order = Enum.reject(order, &MapSet.member?(omission_keys, &1)) ++ omissions
+        {order, MapSet.union(keys, omission_keys)}
       else
         {order, keys}
       end
