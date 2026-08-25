@@ -83,6 +83,27 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
       assert all_captured() == []
     end
 
+    test "returns an empty snapshot without a /flags request for an empty flag key list" do
+      deny(API.Mock, :request, 4)
+
+      assert {:ok, %Evaluations{distinct_id: "foo", flags: %{}} = snapshot} =
+               FeatureFlags.evaluate_flags(%{distinct_id: "foo", flag_keys: []})
+
+      assert Evaluations.keys(snapshot) == []
+    end
+
+    test "evaluates all flags through the normal request path when flag_keys is nil" do
+      expect(API.Mock, :request, 1, fn _client, :post, "/flags", opts ->
+        assert opts[:json] == %{distinct_id: "foo"}
+        {:ok, stub_flags_response()}
+      end)
+
+      assert {:ok, snapshot} =
+               FeatureFlags.evaluate_flags(%{distinct_id: "foo", flag_keys: nil})
+
+      assert Evaluations.keys(snapshot) == ["boolean-flag", "disabled-flag", "variant-flag"]
+    end
+
     test "translates :flag_keys into flag_keys_to_evaluate in the request body" do
       expect(API.Mock, :request, fn _client, :post, "/flags", opts ->
         assert opts[:json] == %{
@@ -125,7 +146,7 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
     end
 
     test "returns an empty snapshot when distinct_id cannot be resolved" do
-      assert {:ok, %Evaluations{distinct_id: "", flags: %{}}} =
+      assert {:ok, %Evaluations{supervisor_name: PostHog, distinct_id: "", flags: %{}}} =
                FeatureFlags.evaluate_flags(nil)
 
       assert all_captured() == []
@@ -599,7 +620,7 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
 
   describe "empty snapshot fallback" do
     test "evaluate_flags(nil) returns an empty snapshot, not an error" do
-      assert {:ok, %Evaluations{distinct_id: "", flags: %{}}} =
+      assert {:ok, %Evaluations{supervisor_name: PostHog, distinct_id: "", flags: %{}}} =
                FeatureFlags.evaluate_flags(nil)
     end
 

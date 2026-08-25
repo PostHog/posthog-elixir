@@ -97,6 +97,8 @@ defmodule PostHog.FeatureFlags do
   end
 
   @doc false
+  def evaluate_flags(nil), do: evaluate_flags(PostHog, nil)
+
   def evaluate_flags(distinct_id_or_body) when not is_atom(distinct_id_or_body),
     do: evaluate_flags(PostHog, distinct_id_or_body)
 
@@ -125,9 +127,11 @@ defmodule PostHog.FeatureFlags do
 
   Plus one snapshot-specific option:
 
-  - `:flag_keys` - list of flag keys. Forwarded to the request as
-    `flag_keys_to_evaluate` so the server returns only those flags. This
-    scopes the network response, distinct from
+  - `:flag_keys` - list of flag keys. A non-empty list is forwarded to the
+    request as `flag_keys_to_evaluate` so the server returns only those flags.
+    An empty list returns an empty snapshot without making a request. An
+    omitted or `nil` value evaluates all flags through the normal request path.
+    This scopes the network response, distinct from
     `PostHog.FeatureFlags.Evaluations.only/2` which filters an already-fetched
     snapshot in memory.
 
@@ -154,6 +158,9 @@ defmodule PostHog.FeatureFlags do
           {:ok, __MODULE__.Evaluations.t()} | {:error, Exception.t()}
   def evaluate_flags(name \\ PostHog, distinct_id_or_body \\ nil) do
     case body_for_flags(distinct_id_or_body) do
+      {:ok, %{distinct_id: distinct_id, flag_keys: []}} ->
+        {:ok, __MODULE__.Evaluations.new(name, distinct_id, %{"flags" => %{}})}
+
       {:ok, %{distinct_id: distinct_id} = body} ->
         body = translate_flag_keys(body)
 
@@ -232,6 +239,8 @@ defmodule PostHog.FeatureFlags do
   def set_in_context(name, %__MODULE__.Evaluations{} = snapshot) when is_atom(name) do
     PostHog.set_context(name, __MODULE__.Evaluations.event_properties(snapshot))
   end
+
+  defp translate_flag_keys(%{flag_keys: nil} = body), do: Map.delete(body, :flag_keys)
 
   defp translate_flag_keys(%{flag_keys: flag_keys} = body) when is_list(flag_keys) do
     body
