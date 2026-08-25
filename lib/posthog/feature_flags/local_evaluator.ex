@@ -615,7 +615,6 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
     end
   end
 
-  defp apply_operator("is_set", nil, _filter, _now), do: :no_match
   defp apply_operator("is_set", _property, _filter, _now), do: :match
   defp apply_operator("is_not_set", _property, _filter, _now), do: :no_match
 
@@ -754,7 +753,8 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
       id: value(flag, "id"),
       version: value(flag, "version"),
       has_experiment: boolean_or_nil(value(flag, "has_experiment")),
-      minimal_flag_called_events: definitions.minimal_flag_called_events
+      minimal_flag_called_events: definitions.minimal_flag_called_events,
+      locally_evaluated: true
     }
   end
 

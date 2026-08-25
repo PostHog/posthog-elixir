@@ -78,6 +78,30 @@ defmodule PostHog.FeatureFlags.LocalEvaluationIntegrationTest do
     assert event.event == "$feature_flag_called"
     assert event.properties[:"$feature_flag_id"] == 11
     assert event.properties[:"$feature_flag_version"] == 3
+    assert event.properties[:locally_evaluated] == true
+  end
+
+  test "empty unscoped definitions fall back remotely unless local-only was requested" do
+    expect(PostHog.API.Mock, :request, 2, fn
+      :stub_client, :get, "/flags/definitions", _opts ->
+        {:ok, %{status: 200, body: envelope([]), headers: %{}}}
+
+      :stub_client, :post, "/flags", _opts ->
+        {:ok, %{status: 200, body: %{"flags" => %{"remote" => %{"enabled" => true}}}}}
+    end)
+
+    start_instance(__MODULE__.EmptyDefinitions)
+
+    assert {:ok, remote} = FeatureFlags.evaluate_flags(__MODULE__.EmptyDefinitions, "user")
+    assert remote.flags["remote"].enabled
+
+    assert {:ok, local_only} =
+             FeatureFlags.evaluate_flags(__MODULE__.EmptyDefinitions, %{
+               distinct_id: "user",
+               only_evaluate_locally: true
+             })
+
+    assert Evaluations.keys(local_only) == []
   end
 
   test "unknown and missing properties fall back once and local results win merge conflicts" do
@@ -167,6 +191,31 @@ defmodule PostHog.FeatureFlags.LocalEvaluationIntegrationTest do
     assert Evaluations.keys(snapshot) == ["local"]
   end
 
+  test "malformed remote entries are skipped while valid local and remote results survive" do
+    unknown = flag("unknown", [%{"key" => "x", "operator" => "future", "value" => 1}])
+
+    expect(PostHog.API.Mock, :request, 2, fn
+      :stub_client, :get, "/flags/definitions", _opts ->
+        {:ok, %{status: 200, body: envelope([flag("local"), unknown]), headers: %{}}}
+
+      :stub_client, :post, "/flags", _opts ->
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{
+               "remote" => %{"enabled" => true},
+               "broken" => nil
+             }
+           }
+         }}
+    end)
+
+    start_instance(__MODULE__.MalformedEntryPartial)
+    assert {:ok, snapshot} = FeatureFlags.evaluate_flags(__MODULE__.MalformedEntryPartial, "user")
+    assert Evaluations.keys(snapshot) == ["local", "remote"]
+  end
+
   test "malformed remote fallback returns an error when nothing resolved locally" do
     unknown = flag("unknown", [%{"key" => "x", "operator" => "future", "value" => 1}])
 
@@ -175,7 +224,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluationIntegrationTest do
         {:ok, %{status: 200, body: envelope([unknown]), headers: %{}}}
 
       :stub_client, :post, "/flags", _opts ->
-        {:ok, %{status: 200, body: %{"flags" => ["malformed"]}}}
+        {:ok, %{status: 200, body: %{"flags" => %{"unknown" => nil}}}}
     end)
 
     start_instance(__MODULE__.MalformedOnly)

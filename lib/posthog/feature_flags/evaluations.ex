@@ -59,6 +59,8 @@ defmodule PostHog.FeatureFlags.Evaluations do
     was performed for. `""` for the empty fallback returned when no
     `distinct_id` could be resolved; events are short-circuited in that case.
   - `:flags` - map of flag key to `t:PostHog.FeatureFlags.Result.t/0`.
+  - `:groups` - normalized group type/key context used for evaluation and
+    `$feature_flag_called` deduplication.
   - `:request_id` - request ID returned when remote fallback was used.
   - `:evaluated_at` - server-side evaluation timestamp when remote fallback was used.
   - `:errors_while_computing` - whether the response signaled
@@ -71,6 +73,7 @@ defmodule PostHog.FeatureFlags.Evaluations do
           supervisor_name: PostHog.supervisor_name(),
           distinct_id: PostHog.distinct_id(),
           flags: %{String.t() => Result.t()},
+          groups: %{String.t() => String.t()},
           request_id: String.t() | nil,
           evaluated_at: integer() | nil,
           errors_while_computing: boolean(),
@@ -85,6 +88,7 @@ defmodule PostHog.FeatureFlags.Evaluations do
     :accessed_pid,
     :request_id,
     :evaluated_at,
+    groups: %{},
     errors_while_computing: false
   ]
 
@@ -104,6 +108,7 @@ defmodule PostHog.FeatureFlags.Evaluations do
       request_id: Map.get(body, "requestId"),
       evaluated_at: Map.get(body, "evaluatedAt"),
       errors_while_computing: Map.get(body, "errorsWhileComputingFlags") == true,
+      groups: normalize_groups(Map.get(body, :groups, Map.get(body, "groups", %{}))),
       accessed_pid: start_accessed_agent()
     }
   end
@@ -126,6 +131,7 @@ defmodule PostHog.FeatureFlags.Evaluations do
       errors_while_computing:
         Map.get(metadata, :errors_while_computing, Map.get(metadata, "errorsWhileComputingFlags")) ==
           true,
+      groups: normalize_groups(Map.get(metadata, :groups, Map.get(metadata, "groups", %{}))),
       accessed_pid: start_accessed_agent()
     }
   end
@@ -299,10 +305,18 @@ defmodule PostHog.FeatureFlags.Evaluations do
   defp log(%__MODULE__{distinct_id: ""}, _result, _extra_errors), do: :ok
 
   defp log(
-         %__MODULE__{supervisor_name: name, distinct_id: distinct_id},
+         %__MODULE__{supervisor_name: name, distinct_id: distinct_id, groups: groups},
          %Result{} = result,
          extra_errors
        ) do
-    PostHog.FeatureFlags.log_feature_flag_usage(name, distinct_id, result, extra_errors)
+    PostHog.FeatureFlags.log_feature_flag_usage(name, distinct_id, result, extra_errors, groups)
   end
+
+  defp normalize_groups(groups) when is_map(groups) do
+    Map.new(groups, fn {group_type, group_key} ->
+      {to_string(group_type), to_string(group_key)}
+    end)
+  end
+
+  defp normalize_groups(_groups), do: %{}
 end

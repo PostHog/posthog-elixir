@@ -240,6 +240,59 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     Task.await(mixed)
   end
 
+  test "a delayed omission cannot reinstall knowledge cleared by newer positive evidence" do
+    owner = self()
+    {:ok, a_requests} = Agent.start_link(fn -> 0 end)
+
+    expect(PostHog.API.Mock, :request, 5, fn :stub_client, method, path, opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          case opts[:json].flag_keys_to_evaluate do
+            ["a"] ->
+              Agent.update(a_requests, &(&1 + 1))
+              {:ok, %{status: 200, body: %{"flags" => %{}}}}
+
+            ["a", "b"] ->
+              send(owner, {:delayed_omission, self()})
+              receive do: (:release_delayed_omission -> :ok)
+              {:ok, %{status: 200, body: %{"flags" => %{}}}}
+
+            ["a", "c"] ->
+              {:ok, %{status: 200, body: %{"flags" => %{"a" => %{"enabled" => true}}}}}
+          end
+      end
+    end)
+
+    start_instance(__MODULE__.Ordering)
+
+    assert {:ok, _snapshot} = scoped(__MODULE__.Ordering, ["a"])
+
+    assert MapSet.member?(
+             DefinitionLoader.evaluation_state(__MODULE__.Ordering, ["a"]).known_missing,
+             "a"
+           )
+
+    delayed = Task.async(fn -> scoped(__MODULE__.Ordering, ["a", "b"], "delayed") end)
+    assert_receive {:delayed_omission, delayed_worker}
+
+    assert {:ok, positive} = scoped(__MODULE__.Ordering, ["a", "c"], "positive")
+    assert positive.flags["a"].enabled
+
+    send(delayed_worker, :release_delayed_omission)
+    assert {:ok, _snapshot} = Task.await(delayed)
+
+    refute MapSet.member?(
+             DefinitionLoader.evaluation_state(__MODULE__.Ordering, ["a"]).known_missing,
+             "a"
+           )
+
+    assert {:ok, _snapshot} = scoped(__MODULE__.Ordering, ["a"], "after")
+    assert Agent.get(a_requests, & &1) == 2
+  end
+
   test "loader restarts use a new generation incarnation" do
     expect(PostHog.API.Mock, :request, 2, fn :stub_client, :get, "/flags/definitions", _opts ->
       {:ok, %{status: 200, body: envelope(), headers: %{}}}

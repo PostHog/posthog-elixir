@@ -33,7 +33,13 @@ defmodule PostHog.FeatureFlags.CalledCache do
   @spec first_seen?(PostHog.supervisor_name(), PostHog.distinct_id(), String.t(), any()) ::
           boolean()
   def first_seen?(supervisor_name, distinct_id, flag_key, value) do
-    key = {to_string(distinct_id), flag_key, value}
+    first_seen?(supervisor_name, distinct_id, flag_key, value, %{})
+  end
+
+  @spec first_seen?(PostHog.supervisor_name(), PostHog.distinct_id(), String.t(), any(), map()) ::
+          boolean()
+  def first_seen?(supervisor_name, distinct_id, flag_key, value, groups) do
+    key = {to_string(distinct_id), flag_key, value, normalize_groups(groups)}
     table = table_name(supervisor_name)
 
     case :ets.insert_new(table, {key}) do
@@ -75,6 +81,14 @@ defmodule PostHog.FeatureFlags.CalledCache do
       _ -> false
     end
   end
+
+  defp normalize_groups(groups) when is_map(groups) do
+    groups
+    |> Enum.map(fn {group_type, group_key} -> {to_string(group_type), to_string(group_key)} end)
+    |> Enum.sort()
+  end
+
+  defp normalize_groups(_groups), do: []
 
   defp table_name(supervisor_name), do: Module.concat(supervisor_name, CalledCacheTable)
 end

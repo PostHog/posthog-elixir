@@ -17,7 +17,7 @@ defmodule PostHog.FeatureFlags.CalledCacheTest do
 
   test "flushes the cache when it reaches the maximum size", %{config: config} do
     supervisor_name = config.supervisor_name
-    seed_key = {"seed-user", "flag", true}
+    seed_key = {"seed-user", "flag", true, []}
     table = table(supervisor_name)
 
     full_cache =

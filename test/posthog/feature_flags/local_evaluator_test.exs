@@ -238,7 +238,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
     end
   end
 
-  test "explicit nil values follow operator-specific semantics" do
+  test "is_set uses property presence while other operators handle nil values" do
     no_match_operators = [
       "exact",
       "icontains",
@@ -280,7 +280,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
 
     is_set = %{"key" => "prop", "operator" => "is_set", "value" => nil}
 
-    refute evaluate(flag("is-set", [is_set]), %{person_properties: %{prop: nil}}).results[
+    assert evaluate(flag("is-set", [is_set]), %{person_properties: %{prop: nil}}).results[
              "is-set"
            ].enabled
 
