@@ -25,8 +25,141 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
       do: concat(["#PostHog.FeatureFlags.DefinitionLoader.Config<redacted>"])
   end
 
+  defmodule NegativeKnowledge do
+    @moduledoc false
+    use GenServer
+
+    @capacity 1_000
+
+    def child_spec(opts) do
+      name = Keyword.fetch!(opts, :supervisor_name)
+
+      %{
+        id: __MODULE__,
+        start: {__MODULE__, :start_link, [name]}
+      }
+    end
+
+    def start_link(name), do: GenServer.start_link(__MODULE__, name, name: via(name))
+
+    def reset(name, generation),
+      do: GenServer.call(via(name), {:reset, generation}, :infinity)
+
+    def update(name, generation, requested, returned, clean?),
+      do:
+        GenServer.call(
+          via(name),
+          {:update, generation, requested, returned, clean?},
+          :infinity
+        )
+
+    def known(name, generation, keys) do
+      state = cached(name)
+
+      if state.generation == generation do
+        keys |> MapSet.new() |> MapSet.intersection(state.keys)
+      else
+        MapSet.new()
+      end
+    end
+
+    @impl GenServer
+    def init(name) do
+      state = %{name: name, generation: current_generation(name), keys: MapSet.new(), order: []}
+      {:ok, publish(state)}
+    end
+
+    @impl GenServer
+    def handle_call({:reset, generation}, _from, state) do
+      state = %{state | generation: generation, keys: MapSet.new(), order: []}
+      {:reply, :ok, publish(state)}
+    end
+
+    def handle_call(
+          {:update, generation, requested, returned, clean?},
+          _from,
+          %{generation: generation} = state
+        ) do
+      state =
+        state
+        |> Map.put(:generation, generation)
+        |> update_retained_missing(requested, returned, clean?)
+        |> publish()
+
+      {:reply, :ok, state}
+    end
+
+    def handle_call({:update, _generation, _requested, _returned, _clean?}, _from, state),
+      do: {:reply, :ok, state}
+
+    defp cached(name) do
+      registry = PostHog.Registry.registry_name(name)
+
+      case Registry.lookup(registry, __MODULE__) do
+        [{_pid, %{generation: _generation} = state}] -> state
+        _other -> empty()
+      end
+    rescue
+      ArgumentError -> empty()
+    end
+
+    defp current_generation(name) do
+      registry = PostHog.Registry.registry_name(name)
+
+      case Registry.lookup(registry, PostHog.FeatureFlags.DefinitionLoader) do
+        [{_pid, %{generation: generation}}] -> generation
+        _other -> nil
+      end
+    rescue
+      ArgumentError -> nil
+    end
+
+    defp empty, do: %{generation: nil, keys: MapSet.new()}
+
+    defp publish(state) do
+      registry = PostHog.Registry.registry_name(state.name)
+      cached = Map.take(state, [:generation, :keys])
+      Registry.update_value(registry, __MODULE__, fn _old -> cached end)
+      state
+    end
+
+    defp update_retained_missing(state, requested, returned, clean?) do
+      returned = MapSet.new(returned)
+
+      order = Enum.reject(state.order, &MapSet.member?(returned, &1))
+      keys = MapSet.difference(state.keys, returned)
+
+      {order, keys} =
+        if clean? do
+          omissions =
+            requested
+            |> MapSet.new()
+            |> MapSet.difference(returned)
+            |> MapSet.to_list()
+            |> Enum.sort()
+            |> Enum.take(-@capacity)
+
+          omission_keys = MapSet.new(omissions)
+          order = Enum.reject(order, &MapSet.member?(omission_keys, &1)) ++ omissions
+          {order, MapSet.union(keys, omission_keys)}
+        else
+          {order, keys}
+        end
+
+      overflow = max(length(order) - @capacity, 0)
+      retained_order = Enum.drop(order, overflow)
+
+      %{
+        state
+        | order: retained_order,
+          keys: MapSet.intersection(keys, MapSet.new(retained_order))
+      }
+    end
+
+    defp via(name), do: PostHog.Registry.via(name, __MODULE__)
+  end
+
   @max_quota_backoff_ms 60_000
-  @negative_knowledge_capacity 1_000
 
   @type snapshot :: %{
           flags: [map()],
@@ -69,16 +202,13 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
     %{
       definitions: state.definitions,
       generation: state.generation,
-      known_missing: keys |> MapSet.new() |> MapSet.intersection(state.negative_keys)
+      known_missing: NegativeKnowledge.known(name, state.generation, keys)
     }
   end
 
   @doc false
   def update_negative_knowledge(name, generation, requested_keys, returned_keys, clean?) do
-    GenServer.cast(
-      via(name),
-      {:update_negative_knowledge, generation, requested_keys, returned_keys, clean?}
-    )
+    NegativeKnowledge.update(name, generation, requested_keys, returned_keys, clean?)
   end
 
   defp readable_evaluation_state(name) do
@@ -113,7 +243,6 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
     %{
       definitions: nil,
       generation: nil,
-      negative_keys: MapSet.new(),
       initial_load_complete?: true
     }
   end
@@ -128,8 +257,6 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
     state = %{
       definitions: nil,
       definition_generation: {make_ref(), 0},
-      negative_keys: MapSet.new(),
-      negative_order: [],
       etag: nil,
       loaded_at: nil,
       timer_ref: nil,
@@ -139,6 +266,7 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
       config: config
     }
 
+    :ok = NegativeKnowledge.reset(config.supervisor_name, state.definition_generation)
     {:ok, publish_evaluation_state(state), {:continue, :initial_load}}
   end
 
@@ -155,23 +283,6 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
   def handle_call(:definitions, _from, state), do: {:reply, state.definitions, state}
   def handle_call(:ready?, _from, state), do: {:reply, not is_nil(state.definitions), state}
   def handle_call(:refresh, _from, state), do: {:reply, :ok, refresh_and_schedule(state)}
-
-  @impl GenServer
-  def handle_cast(
-        {:update_negative_knowledge, generation, requested, returned, clean?},
-        %{definition_generation: generation} = state
-      ) do
-    state =
-      state |> update_retained_missing(requested, returned, clean?) |> publish_evaluation_state()
-
-    {:noreply, state}
-  end
-
-  def handle_cast(
-        {:update_negative_knowledge, _generation, _requested, _returned, _clean?},
-        state
-      ),
-      do: {:noreply, state}
 
   @impl GenServer
   def handle_info({:refresh, generation}, %{timer_generation: generation} = state),
@@ -232,7 +343,6 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
     %{
       definitions: state.definitions,
       generation: state.definition_generation,
-      negative_keys: state.negative_keys,
       initial_load_complete?: state.initial_load_complete?
     }
   end
@@ -388,12 +498,13 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
   end
 
   defp successful_definition_refresh(state, snapshot) do
+    generation = next_definition_generation(state.definition_generation)
+    :ok = NegativeKnowledge.reset(state.config.supervisor_name, generation)
+
     %{
       state
       | definitions: snapshot,
-        definition_generation: next_definition_generation(state.definition_generation),
-        negative_keys: MapSet.new(),
-        negative_order: [],
+        definition_generation: generation,
         loaded_at: DateTime.utc_now(),
         quota_backoff_ms: nil
     }
@@ -568,39 +679,6 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
   defp provider_reason(:malformed), do: "malformed data"
   defp provider_reason({:unexpected_return, _value}), do: "unexpected return"
   defp provider_reason(_reason), do: "error"
-
-  defp update_retained_missing(state, requested, returned, clean?) do
-    returned = MapSet.new(returned)
-
-    order = Enum.reject(state.negative_order, &MapSet.member?(returned, &1))
-    keys = MapSet.difference(state.negative_keys, returned)
-
-    {order, keys} =
-      if clean? do
-        omissions =
-          requested
-          |> MapSet.new()
-          |> MapSet.difference(returned)
-          |> MapSet.to_list()
-          |> Enum.sort()
-          |> Enum.take(-@negative_knowledge_capacity)
-
-        omission_keys = MapSet.new(omissions)
-        order = Enum.reject(order, &MapSet.member?(omission_keys, &1)) ++ omissions
-        {order, MapSet.union(keys, omission_keys)}
-      else
-        {order, keys}
-      end
-
-    overflow = max(length(order) - @negative_knowledge_capacity, 0)
-    retained_order = Enum.drop(order, overflow)
-
-    %{
-      state
-      | negative_order: retained_order,
-        negative_keys: MapSet.intersection(keys, MapSet.new(retained_order))
-    }
-  end
 
   defp private_config(config) do
     struct!(Config, %{

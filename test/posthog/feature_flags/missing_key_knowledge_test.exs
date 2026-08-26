@@ -119,7 +119,7 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     assert {:error, %RuntimeError{message: "offline"}} = scoped(__MODULE__.Failure, ["missing"])
   end
 
-  test "fallback does not wait for negative bookkeeping behind a stalled refresh" do
+  test "fallback publishes negative knowledge before releasing a probe during refresh" do
     owner = self()
     {:ok, definition_calls} = Agent.start_link(fn -> 0 end)
 
@@ -133,7 +133,7 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
             1 ->
               send(owner, {:refresh_started, self()})
               receive do: (:release_refresh -> :ok)
-              {:ok, %{status: 304, body: nil, headers: %{}}}
+              {:ok, %{status: 503, body: nil, headers: %{}}}
           end
 
         {:post, "/flags"} ->
@@ -146,14 +146,14 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     assert_receive {:refresh_started, refresh_worker}
 
     fallback = Task.async(fn -> scoped(__MODULE__.NonBlocking, ["missing"]) end)
-    fallback_result = Task.yield(fallback, 500)
+    assert {:ok, {:ok, snapshot}} = Task.yield(fallback, 500)
+    assert Evaluations.keys(snapshot) == []
+
+    assert {:ok, repeated} = scoped(__MODULE__.NonBlocking, ["missing"], "second")
+    assert Evaluations.keys(repeated) == []
 
     send(refresh_worker, :release_refresh)
     assert :ok = Task.await(refresh)
-
-    if is_nil(fallback_result), do: Task.await(fallback)
-    assert {:ok, {:ok, snapshot}} = fallback_result
-    assert Evaluations.keys(snapshot) == []
   end
 
   test "dirty omissions do not suppress retries and returned keys remain context specific" do

@@ -77,7 +77,11 @@ defmodule PostHog.Supervisor do
          callers
        )
        when is_binary(secret_key) and secret_key != "" do
-    [{PostHog.FeatureFlags.DefinitionLoader, config: config, callers: callers}]
+    [
+      {PostHog.FeatureFlags.DefinitionLoader.NegativeKnowledge,
+       supervisor_name: config.supervisor_name},
+      {PostHog.FeatureFlags.DefinitionLoader, config: config, callers: callers}
+    ]
   end
 
   defp definition_loader(_config, _callers), do: []
