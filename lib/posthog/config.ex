@@ -1,6 +1,28 @@
 defmodule PostHog.Config do
   require Logger
 
+  defmodule Secret do
+    @moduledoc false
+    @enforce_keys [:value]
+    defstruct [:value]
+
+    @type t :: %__MODULE__{value: String.t()}
+
+    @doc false
+    @spec new(String.t()) :: t()
+    def new(value) when is_binary(value), do: %__MODULE__{value: value}
+
+    @doc false
+    @spec reveal(t()) :: String.t()
+    def reveal(%__MODULE__{value: value}), do: value
+  end
+
+  defimpl Inspect, for: Secret do
+    import Inspect.Algebra
+
+    def inspect(_secret, _opts), do: concat(["#PostHog.Config.Secret<redacted>"])
+  end
+
   @default_api_host "https://us.i.posthog.com"
 
   @shared_schema [
@@ -292,6 +314,10 @@ defmodule PostHog.Config do
 
       final_config =
         config
+        |> Map.update!(:secret_key, fn
+          nil -> nil
+          secret_key -> Secret.new(secret_key)
+        end)
         |> Map.put(:api_client, client)
         |> Map.put(:enabled, not api_key_blank?)
         |> Map.put(

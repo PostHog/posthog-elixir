@@ -72,7 +72,7 @@ defmodule PostHog.Supervisor do
          %{
            enabled: true,
            enable_local_evaluation: true,
-           secret_key: secret_key
+           secret_key: %PostHog.Config.Secret{value: secret_key}
          } = config,
          callers
        )

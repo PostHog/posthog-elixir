@@ -10,7 +10,7 @@ defmodule PostHog.FeatureFlags.Result do
   - `payload` - The JSON payload configured for this flag/variant (nil if not set)
   - `id` - Numeric flag ID from the PostHog backend (when available)
   - `version` - Flag version from the PostHog backend (when available)
-  - `reason` - Reason map describing why this evaluation produced its value
+  - `reason` - Reason describing why this evaluation produced its value
   - `request_id` - Request ID returned by the `/flags` endpoint (useful for experiment exposure tracking)
   - `evaluated_at` - Server-side evaluation timestamp from the response
   - `has_experiment` - Whether the flag is linked to an experiment. `nil` when
@@ -74,7 +74,7 @@ defmodule PostHog.FeatureFlags.Result do
           payload: json(),
           id: integer() | nil,
           version: integer() | nil,
-          reason: map() | nil,
+          reason: map() | String.t() | nil,
           request_id: String.t() | nil,
           evaluated_at: integer() | nil,
           has_experiment: boolean() | nil,

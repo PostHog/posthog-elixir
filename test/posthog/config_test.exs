@@ -37,7 +37,10 @@ defmodule PostHog.ConfigTest do
                api_client_module: PostHog.API.Mock
              )
 
-    assert config.secret_key == "secret-key"
+    assert %PostHog.Config.Secret{} = config.secret_key
+    assert PostHog.Config.Secret.reveal(config.secret_key) == "secret-key"
+    refute inspect(config) =~ "secret-key"
+    assert inspect(config) =~ "#PostHog.Config.Secret<redacted>"
     assert config.enable_local_evaluation
     assert config.feature_flags_poll_interval_ms == 30_000
     assert config.flag_definition_cache_provider == nil

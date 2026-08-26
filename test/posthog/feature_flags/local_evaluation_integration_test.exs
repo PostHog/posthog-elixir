@@ -69,6 +69,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluationIntegrationTest do
     assert PostHog.Test.all_captured(__MODULE__.Local) == []
     assert Evaluations.keys(snapshot) == ["boolean", "variant"]
     assert snapshot.flags["boolean"].enabled
+    assert snapshot.flags["boolean"].reason == "Evaluated locally"
     assert snapshot.flags["variant"].variant == "test"
     assert Evaluations.get_flag_payload(snapshot, "variant") == %{"answer" => 42}
 
@@ -78,6 +79,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluationIntegrationTest do
     assert event.event == "$feature_flag_called"
     assert event.properties[:"$feature_flag_id"] == 11
     assert event.properties[:"$feature_flag_version"] == 3
+    assert event.properties[:"$feature_flag_reason"] == "Evaluated locally"
     assert event.properties[:locally_evaluated] == true
   end
 

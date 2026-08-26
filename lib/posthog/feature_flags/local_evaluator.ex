@@ -754,6 +754,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
       version: value(flag, "version"),
       has_experiment: boolean_or_nil(value(flag, "has_experiment")),
       minimal_flag_called_events: definitions.minimal_flag_called_events,
+      reason: "Evaluated locally",
       locally_evaluated: true
     }
   end

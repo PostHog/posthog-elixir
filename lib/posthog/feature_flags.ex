@@ -519,6 +519,10 @@ defmodule PostHog.FeatureFlags do
 
   defp acquire_missing_probe_locks([key | rest], name, callback) do
     lock = {{__MODULE__, :missing_probe, name, key}, self()}
+
+    # The lock intentionally spans the remote probe. Overlapping evaluations must
+    # wait for its existence result before deciding whether another fallback is
+    # needed; sorted keys keep multi-key probes from deadlocking each other.
     :global.trans(lock, fn -> acquire_missing_probe_locks(rest, name, callback) end)
   end
 

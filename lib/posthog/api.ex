@@ -14,9 +14,14 @@ defmodule PostHog.API do
     )
   end
 
-  def flag_definitions(%__MODULE__.Client{} = client, project_api_key, secret_key, etag) do
+  def flag_definitions(
+        %__MODULE__.Client{} = client,
+        project_api_key,
+        %PostHog.Config.Secret{} = secret_key,
+        etag
+      ) do
     headers =
-      [{"authorization", "Bearer #{secret_key}"}]
+      [{"authorization", "Bearer #{PostHog.Config.Secret.reveal(secret_key)}"}]
       |> then(fn headers ->
         if is_binary(etag), do: [{"if-none-match", etag} | headers], else: headers
       end)

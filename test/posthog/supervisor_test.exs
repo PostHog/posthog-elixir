@@ -5,6 +5,26 @@ defmodule PostHog.SupervisorTest do
 
   @supervisor_name __MODULE__
 
+  test "child specifications and startup failures redact the definition secret" do
+    secret = "phs_super-secret"
+
+    config =
+      PostHog.Config.validate!(
+        api_key: "project-key",
+        secret_key: secret,
+        supervisor_name: __MODULE__.Redacted,
+        enable_local_evaluation: false
+      )
+
+    child_spec = PostHog.Supervisor.child_spec(config)
+    rendered_spec = inspect(child_spec, limit: :infinity)
+    rendered_failure = Exception.format_exit({:failed_to_start_child, child_spec})
+
+    refute rendered_spec =~ secret
+    refute rendered_failure =~ secret
+    assert rendered_spec =~ "#PostHog.Config.Secret<redacted>"
+  end
+
   test "disabled config starts without senders and captures as no-op" do
     {config, _log} =
       with_log(fn ->
