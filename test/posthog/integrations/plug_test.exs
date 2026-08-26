@@ -236,7 +236,7 @@ defmodule PostHog.Integrations.PlugTest do
                    %{
                      type: "RuntimeError",
                      value: "oops",
-                     mechanism: %{handled: false, type: "generic"},
+                     mechanism: %{type: "onuncaughtexception"},
                      stacktrace: %{type: "raw", frames: _frames}
                    }
                  ]
@@ -251,14 +251,14 @@ defmodule PostHog.Integrations.PlugTest do
                  "$lib_version": _,
                  "$exception_list": [
                    %{
-                     mechanism: %{handled: true, type: "generic"},
+                     mechanism: %{},
                      type: "** (RuntimeError) oops",
                      value: "** (RuntimeError) oops\n" <> _
                    },
                    %{
                      type: "RuntimeError",
                      value: "oops",
-                     mechanism: %{handled: false, type: "generic"},
+                     mechanism: %{type: "chained", source: "context"},
                      stacktrace: %{type: "raw", frames: _frames}
                    }
                  ]
@@ -291,7 +291,7 @@ defmodule PostHog.Integrations.PlugTest do
                    %{
                      type: "** (throw) \"catch!\"",
                      value: "\"catch!\"",
-                     mechanism: %{handled: false, type: "generic"},
+                     mechanism: %{type: "onuncaughtexception"},
                      stacktrace: %{type: "raw", frames: _frames}
                    }
                  ]
@@ -306,14 +306,14 @@ defmodule PostHog.Integrations.PlugTest do
                  "$lib_version": _,
                  "$exception_list": [
                    %{
-                     mechanism: %{handled: true, type: "generic"},
+                     mechanism: %{},
                      type: "** (throw) \"catch!\"",
                      value: "** (throw) \"catch!\"\n" <> _
                    },
                    %{
                      type: "** (throw) \"catch!\"",
                      value: "\"catch!\"",
-                     mechanism: %{handled: false, type: "generic"},
+                     mechanism: %{type: "chained", source: "context"},
                      stacktrace: %{type: "raw", frames: _frames}
                    }
                  ]
@@ -346,7 +346,7 @@ defmodule PostHog.Integrations.PlugTest do
                    %{
                      type: "** (exit) \"i quit\"",
                      value: "\"i quit\"",
-                     mechanism: %{handled: false, type: "generic"}
+                     mechanism: %{type: "onuncaughtexception"}
                    }
                  ]
                } = properties
@@ -360,14 +360,14 @@ defmodule PostHog.Integrations.PlugTest do
                  "$lib_version": _,
                  "$exception_list": [
                    %{
-                     mechanism: %{handled: true, type: "generic"},
+                     mechanism: %{},
                      type: "** (exit) \"i quit\"",
                      value: "** (exit) \"i quit\"\n" <> _
                    },
                    %{
                      type: "** (exit) \"i quit\"",
                      value: "\"i quit\"",
-                     mechanism: %{handled: false, type: "generic"}
+                     mechanism: %{type: "chained", source: "context"}
                    }
                  ]
                } = properties
@@ -400,7 +400,7 @@ defmodule PostHog.Integrations.PlugTest do
                    %{
                      type: "RuntimeError",
                      value: "oops",
-                     mechanism: %{handled: false, type: "generic"},
+                     mechanism: %{type: "onuncaughtexception"},
                      stacktrace: %{type: "raw", frames: _frames}
                    }
                  ]
@@ -417,13 +417,13 @@ defmodule PostHog.Integrations.PlugTest do
                    %{
                      type: "RuntimeError",
                      value: "oops",
-                     mechanism: %{handled: false, type: "generic"},
+                     mechanism: %{type: "onuncaughtexception"},
                      stacktrace: %{type: "raw", frames: _frames}
                    },
                    %{
                      type: "#PID<" <> _,
                      value: "#PID<" <> _,
-                     mechanism: %{handled: true, type: "generic"}
+                     mechanism: %{}
                    }
                  ]
                } = properties
@@ -454,7 +454,7 @@ defmodule PostHog.Integrations.PlugTest do
                    %{
                      type: "** (throw) \"catch!\"",
                      value: "\"catch!\"",
-                     mechanism: %{handled: false, type: "generic"},
+                     mechanism: %{type: "onuncaughtexception"},
                      stacktrace: %{type: "raw", frames: _frames}
                    }
                  ]
@@ -471,13 +471,13 @@ defmodule PostHog.Integrations.PlugTest do
                    %{
                      type: "** (throw) \"catch!\"",
                      value: "\"catch!\"",
-                     mechanism: %{handled: false, type: "generic"},
+                     mechanism: %{type: "onuncaughtexception"},
                      stacktrace: %{type: "raw", frames: _frames}
                    },
                    %{
                      type: "#PID<" <> _,
                      value: "#PID<" <> _,
-                     mechanism: %{handled: true, type: "generic"}
+                     mechanism: %{}
                    }
                  ]
                } = properties
@@ -508,7 +508,7 @@ defmodule PostHog.Integrations.PlugTest do
                    %{
                      type: "** (exit) \"i quit\"",
                      value: "\"i quit\"",
-                     mechanism: %{handled: false, type: "generic"}
+                     mechanism: %{type: "onuncaughtexception"}
                    }
                  ]
                } = properties
@@ -524,12 +524,12 @@ defmodule PostHog.Integrations.PlugTest do
                    %{
                      type: "** (exit) \"i quit\"",
                      value: "\"i quit\"",
-                     mechanism: %{handled: false, type: "generic"}
+                     mechanism: %{type: "onuncaughtexception"}
                    },
                    %{
                      type: "#PID<" <> _,
                      value: "#PID<" <> _,
-                     mechanism: %{handled: true, type: "generic"}
+                     mechanism: %{}
                    }
                  ]
                } = properties

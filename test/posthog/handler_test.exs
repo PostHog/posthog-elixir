@@ -23,11 +23,18 @@ defmodule PostHog.HandlerTest do
              uuid: _,
              distinct_id: "foo",
              properties: %{
+               "$exception_level": "info",
+               "$exception_source": "elixir.logger_handler",
                "$exception_list": [
                  %{
                    type: "Logger info (" <> _,
                    value: "Hello World",
-                   mechanism: %{handled: true, type: "generic"}
+                   mechanism: %{
+                     type: "logger",
+                     handled: true,
+                     synthetic: true,
+                     exception_id: 0
+                   }
                  }
                ]
              }
@@ -55,7 +62,7 @@ defmodule PostHog.HandlerTest do
                  %{
                    type: "Logger info (" <> _,
                    value: "Hello World",
-                   mechanism: %{handled: true, type: "generic"}
+                   mechanism: %{}
                  }
                ]
              }
@@ -203,7 +210,7 @@ defmodule PostHog.HandlerTest do
                    %{
                      type: "** (exit) \"exit reason\"",
                      value: "\"exit reason\"",
-                     mechanism: %{handled: false, type: "generic"}
+                     mechanism: %{type: "onuncaughtexception"}
                    }
                  ]
                }
@@ -215,14 +222,14 @@ defmodule PostHog.HandlerTest do
                properties: %{
                  "$exception_list": [
                    %{
-                     mechanism: %{handled: true, type: "generic"},
+                     mechanism: %{},
                      type: "Hello World",
                      value: "Hello World"
                    },
                    %{
                      type: "** (exit) \"exit reason\"",
                      value: "\"exit reason\"",
-                     mechanism: %{handled: false, type: "generic"}
+                     mechanism: %{type: "chained", source: "context"}
                    }
                  ]
                }
@@ -437,7 +444,7 @@ defmodule PostHog.HandlerTest do
                    %{
                      type: "RuntimeError",
                      value: "oops",
-                     mechanism: %{handled: false, type: "generic"},
+                     mechanism: %{type: "onuncaughtexception"},
                      stacktrace: %{
                        type: "raw",
                        frames: [
@@ -476,7 +483,7 @@ defmodule PostHog.HandlerTest do
                    %{
                      type: "RuntimeError",
                      value: "oops",
-                     mechanism: %{handled: false, type: "generic"},
+                     mechanism: %{type: "onuncaughtexception"},
                      stacktrace: %{
                        type: "raw",
                        frames: [
@@ -502,7 +509,7 @@ defmodule PostHog.HandlerTest do
                      }
                    },
                    %{
-                     mechanism: %{handled: true, type: "generic"},
+                     mechanism: %{},
                      type: "Task terminating",
                      value: "Task" <> _
                    }
@@ -532,7 +539,7 @@ defmodule PostHog.HandlerTest do
                    %{
                      type: "** (throw) \"catch!\"",
                      value: "\"catch!\"",
-                     mechanism: %{handled: false, type: "generic"},
+                     mechanism: %{type: "onuncaughtexception"},
                      stacktrace: %{
                        type: "raw",
                        frames: [
@@ -571,7 +578,7 @@ defmodule PostHog.HandlerTest do
                    %{
                      type: "** (throw) \"catch!\"",
                      value: "\"catch!\"",
-                     mechanism: %{handled: false, type: "generic"},
+                     mechanism: %{type: "onuncaughtexception"},
                      stacktrace: %{
                        type: "raw",
                        frames: [
@@ -597,7 +604,7 @@ defmodule PostHog.HandlerTest do
                      }
                    },
                    %{
-                     mechanism: %{handled: true, type: "generic"},
+                     mechanism: %{},
                      type: "Task terminating",
                      value: "Task" <> _
                    }
@@ -621,7 +628,7 @@ defmodule PostHog.HandlerTest do
                    %{
                      type: "** (exit) \"i quit\"",
                      value: "\"i quit\"",
-                     mechanism: %{handled: false, type: "generic"},
+                     mechanism: %{type: "onuncaughtexception"},
                      stacktrace: %{
                        type: "raw",
                        frames: [
@@ -660,7 +667,7 @@ defmodule PostHog.HandlerTest do
                    %{
                      type: "** (exit) \"i quit\"",
                      value: "\"i quit\"",
-                     mechanism: %{handled: false, type: "generic"},
+                     mechanism: %{type: "onuncaughtexception"},
                      stacktrace: %{
                        type: "raw",
                        frames: [
@@ -686,7 +693,7 @@ defmodule PostHog.HandlerTest do
                      }
                    },
                    %{
-                     mechanism: %{handled: true, type: "generic"},
+                     mechanism: %{},
                      type: "Task terminating",
                      value: "Task" <> _
                    }
@@ -713,7 +720,7 @@ defmodule PostHog.HandlerTest do
                    %{
                      type: "RuntimeError",
                      value: "oops",
-                     mechanism: %{handled: false, type: "generic"},
+                     mechanism: %{type: "onuncaughtexception"},
                      stacktrace: %{
                        type: "raw",
                        frames: [
@@ -772,7 +779,7 @@ defmodule PostHog.HandlerTest do
                    %{
                      type: "RuntimeError",
                      value: "oops",
-                     mechanism: %{handled: false, type: "generic"},
+                     mechanism: %{type: "onuncaughtexception"},
                      stacktrace: %{
                        type: "raw",
                        frames: [
@@ -816,7 +823,7 @@ defmodule PostHog.HandlerTest do
                      }
                    },
                    %{
-                     mechanism: %{handled: true, type: "generic"},
+                     mechanism: %{},
                      type: "GenServer terminating",
                      value: "GenServer" <> _
                    }
@@ -840,7 +847,7 @@ defmodule PostHog.HandlerTest do
                    %{
                      type: "** (exit) \"i quit\"",
                      value: "\"i quit\"",
-                     mechanism: %{handled: false, type: "generic"},
+                     mechanism: %{type: "onuncaughtexception"},
                      stacktrace: %{
                        type: "raw",
                        frames: [
@@ -899,7 +906,7 @@ defmodule PostHog.HandlerTest do
                    %{
                      type: "** (exit) \"i quit\"",
                      value: "\"i quit\"",
-                     mechanism: %{handled: false, type: "generic"},
+                     mechanism: %{type: "onuncaughtexception"},
                      stacktrace: %{
                        type: "raw",
                        frames: [
@@ -943,7 +950,7 @@ defmodule PostHog.HandlerTest do
                      }
                    },
                    %{
-                     mechanism: %{handled: true, type: "generic"},
+                     mechanism: %{},
                      type: "GenServer terminating",
                      value: "GenServer" <> _
                    }
@@ -970,7 +977,7 @@ defmodule PostHog.HandlerTest do
                    %{
                      type: "** (exit) %LoggerHandlerKit.FakeStruct{hello: \"world\"}",
                      value: "%LoggerHandlerKit.FakeStruct{hello: \"world\"}",
-                     mechanism: %{handled: false, type: "generic"}
+                     mechanism: %{type: "onuncaughtexception"}
                    }
                  ]
                }
@@ -988,10 +995,10 @@ defmodule PostHog.HandlerTest do
                    %{
                      type: "** (exit) %LoggerHandlerKit.FakeStruct{hello: \"world\"}",
                      value: "%LoggerHandlerKit.FakeStruct{hello: \"world\"}",
-                     mechanism: %{handled: false, type: "generic"}
+                     mechanism: %{type: "onuncaughtexception"}
                    },
                    %{
-                     mechanism: %{handled: true, type: "generic"},
+                     mechanism: %{},
                      type: "GenServer terminating",
                      value: "GenServer" <> _
                    }
@@ -1015,7 +1022,7 @@ defmodule PostHog.HandlerTest do
                    %{
                      type: "** (exit) bad return value: \"catch!\"",
                      value: "bad return value: \"catch!\"",
-                     mechanism: %{handled: false, type: "generic"}
+                     mechanism: %{type: "onuncaughtexception"}
                    }
                  ]
                }
@@ -1033,10 +1040,10 @@ defmodule PostHog.HandlerTest do
                    %{
                      type: "** (exit) bad return value: \"catch!\"",
                      value: "bad return value: \"catch!\"",
-                     mechanism: %{handled: false, type: "generic"}
+                     mechanism: %{type: "onuncaughtexception"}
                    },
                    %{
-                     mechanism: %{handled: true, type: "generic"},
+                     mechanism: %{},
                      type: "GenServer terminating",
                      value: "GenServer" <> _
                    }
@@ -1063,7 +1070,7 @@ defmodule PostHog.HandlerTest do
                    %{
                      type: "RuntimeError",
                      value: "oops",
-                     mechanism: %{handled: false, type: "generic"},
+                     mechanism: %{type: "onuncaughtexception"},
                      stacktrace: %{
                        frames: [
                          %{
@@ -1121,7 +1128,7 @@ defmodule PostHog.HandlerTest do
                    %{
                      type: "RuntimeError",
                      value: "oops",
-                     mechanism: %{handled: false, type: "generic"},
+                     mechanism: %{type: "onuncaughtexception"},
                      stacktrace: %{
                        frames: [
                          %{
@@ -1156,7 +1163,7 @@ defmodule PostHog.HandlerTest do
                      }
                    },
                    %{
-                     mechanism: %{handled: true, type: "generic"},
+                     mechanism: %{},
                      stacktrace: %{
                        frames: [_ | _] = reporter_frames,
                        type: "raw"
@@ -1210,7 +1217,7 @@ defmodule PostHog.HandlerTest do
                  %{
                    type: "RuntimeError",
                    value: "oops",
-                   mechanism: %{handled: false, type: "generic"},
+                   mechanism: %{type: "onuncaughtexception"},
                    stacktrace: %{
                      frames: [
                        %{
@@ -1251,7 +1258,7 @@ defmodule PostHog.HandlerTest do
                  %{
                    type: "ErlangError",
                    value: "Erlang error: {:nocatch, \"catch!\"}",
-                   mechanism: %{handled: false, type: "generic"},
+                   mechanism: %{type: "onuncaughtexception"},
                    stacktrace: %{
                      frames: [
                        %{
@@ -1287,7 +1294,7 @@ defmodule PostHog.HandlerTest do
                    %{
                      type: "RuntimeError",
                      value: "oops",
-                     mechanism: %{handled: false, type: "generic"},
+                     mechanism: %{type: "onuncaughtexception"},
                      stacktrace: %{
                        frames: [
                          %{
@@ -1342,7 +1349,7 @@ defmodule PostHog.HandlerTest do
                    %{
                      type: "RuntimeError",
                      value: "oops",
-                     mechanism: %{handled: false, type: "generic"},
+                     mechanism: %{type: "onuncaughtexception"},
                      stacktrace: %{
                        frames: [
                          %{
@@ -1387,7 +1394,7 @@ defmodule PostHog.HandlerTest do
                      }
                    },
                    %{
-                     mechanism: %{handled: true, type: "generic"},
+                     mechanism: %{},
                      type: "Process terminating",
                      value: "Process" <> _
                    }
@@ -1415,7 +1422,7 @@ defmodule PostHog.HandlerTest do
                    %{
                      type: "RuntimeError",
                      value: "oops",
-                     mechanism: %{handled: false, type: "generic"},
+                     mechanism: %{type: "onuncaughtexception"},
                      stacktrace: %{
                        frames: [
                          %{
@@ -1451,7 +1458,7 @@ defmodule PostHog.HandlerTest do
                    %{
                      type: "RuntimeError",
                      value: "oops",
-                     mechanism: %{handled: false, type: "generic"},
+                     mechanism: %{type: "onuncaughtexception"},
                      stacktrace: %{
                        frames: [
                          %{
@@ -1477,7 +1484,7 @@ defmodule PostHog.HandlerTest do
                      }
                    },
                    %{
-                     mechanism: %{handled: true, type: "generic"},
+                     mechanism: %{},
                      type: "Process terminating",
                      value: "Process" <> _
                    }
@@ -1504,7 +1511,7 @@ defmodule PostHog.HandlerTest do
                  %{
                    type: "Child :task of Supervisor" <> type_end,
                    value: "Child :task of Supervisor" <> value_end,
-                   mechanism: %{handled: true, type: "generic"}
+                   mechanism: %{}
                  }
                ]
              }
@@ -1531,7 +1538,7 @@ defmodule PostHog.HandlerTest do
                  %{
                    type: "Child :task of Supervisor" <> type_end,
                    value: "Child :task of Supervisor" <> value_end,
-                   mechanism: %{handled: true, type: "generic"}
+                   mechanism: %{}
                  }
                ]
              }
@@ -1563,7 +1570,7 @@ defmodule PostHog.HandlerTest do
                  "$exception_list": [
                    %{
                      type: "Child :task of Supervisor" <> type_end,
-                     mechanism: %{handled: true, type: "generic"}
+                     mechanism: %{}
                    }
                  ]
                }
@@ -1715,7 +1722,7 @@ defmodule PostHog.HandlerTest do
                  %{
                    type: "Logger error (" <> _,
                    value: "Error with metadata",
-                   mechanism: %{handled: true, type: "generic"}
+                   mechanism: %{}
                  }
                ]
              }
@@ -1744,7 +1751,7 @@ defmodule PostHog.HandlerTest do
                        type: "raw",
                        frames: [_ | _] = frames
                      },
-                     mechanism: %{type: "generic", handled: false}
+                     mechanism: %{type: "onuncaughtexception"}
                    }
                  ]
                }
@@ -1773,10 +1780,10 @@ defmodule PostHog.HandlerTest do
                        type: "raw",
                        frames: [_ | _] = frames
                      },
-                     mechanism: %{type: "generic", handled: false}
+                     mechanism: %{type: "onuncaughtexception"}
                    },
                    %{
-                     mechanism: %{handled: true, type: "generic"},
+                     mechanism: %{},
                      type: "Task terminating"
                    }
                  ]
@@ -1818,7 +1825,7 @@ defmodule PostHog.HandlerTest do
                        type: "raw",
                        frames: [_ | _] = frames
                      },
-                     mechanism: %{type: "generic", handled: false}
+                     mechanism: %{type: "onuncaughtexception"}
                    }
                  ]
                }
@@ -1844,10 +1851,10 @@ defmodule PostHog.HandlerTest do
                        type: "raw",
                        frames: [_ | _] = frames
                      },
-                     mechanism: %{type: "generic", handled: false}
+                     mechanism: %{type: "onuncaughtexception"}
                    },
                    %{
-                     mechanism: %{handled: true, type: "generic"},
+                     mechanism: %{},
                      type: "Task terminating"
                    }
                  ]
