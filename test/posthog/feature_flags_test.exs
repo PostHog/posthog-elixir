@@ -698,6 +698,22 @@ defmodule PostHog.FeatureFlagsTest do
               }} = FeatureFlags.get_feature_flag_result("myflag", "foo")
     end
 
+    test "treats malformed nested flag metadata as a missing result" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{
+               "myflag" => %{"enabled" => true, "metadata" => "bad"}
+             }
+           }
+         }}
+      end)
+
+      assert {:ok, nil} = FeatureFlags.get_feature_flag_result("myflag", "foo")
+    end
+
     test "returns disabled result when flag not enabled" do
       expect(API.Mock, :request, fn _client, _method, _url, _opts ->
         {:ok,

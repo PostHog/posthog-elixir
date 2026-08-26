@@ -121,6 +121,15 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
     end
   end
 
+  test "exact operators use Unicode lowercasing like the flags service" do
+    exact = %{"key" => "tier", "operator" => "exact", "value" => "ÉLITE"}
+    is_not = %{exact | "operator" => "is_not"}
+    context = %{person_properties: %{tier: "élite"}}
+
+    assert evaluate(flag("exact", [exact]), context).results["exact"].enabled
+    refute evaluate(flag("is-not", [is_not]), context).results["is-not"].enabled
+  end
+
   test "canonical property operators return definitive false for non-matches" do
     cases = [
       {"exact", "goodbye", "hello"},
@@ -155,6 +164,17 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
       result = evaluate(flag(operator, [property]), %{person_properties: %{prop: actual}})
       refute result.results[operator].enabled, operator
     end
+  end
+
+  test "numeric operators leave semver-shaped strings inconclusive" do
+    property = %{"key" => "version", "operator" => "gt", "value" => "2.0.0"}
+
+    result =
+      evaluate(flag("numeric-semver", [property]), %{
+        person_properties: %{version: "2.5.0"}
+      })
+
+    assert MapSet.member?(result.unresolved, "numeric-semver")
   end
 
   test "semver normalization matches maintained server SDKs" do

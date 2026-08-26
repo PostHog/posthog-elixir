@@ -305,10 +305,20 @@ defmodule PostHog.FeatureFlags.Evaluations do
   defp log(%__MODULE__{distinct_id: ""}, _result, _extra_errors), do: :ok
 
   defp log(
-         %__MODULE__{supervisor_name: name, distinct_id: distinct_id, groups: groups},
+         %__MODULE__{
+           supervisor_name: name,
+           distinct_id: distinct_id,
+           groups: groups,
+           errors_while_computing: snapshot_error?
+         },
          %Result{} = result,
          extra_errors
        ) do
+    result = %{
+      result
+      | errors_while_computing: result.errors_while_computing or snapshot_error?
+    }
+
     PostHog.FeatureFlags.log_feature_flag_usage(name, distinct_id, result, extra_errors, groups)
   end
 

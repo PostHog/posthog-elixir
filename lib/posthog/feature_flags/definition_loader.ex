@@ -75,7 +75,7 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
 
   @doc false
   def update_negative_knowledge(name, generation, requested_keys, returned_keys, clean?) do
-    GenServer.call(
+    GenServer.cast(
       via(name),
       {:update_negative_knowledge, generation, requested_keys, returned_keys, clean?}
     )
@@ -156,23 +156,22 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
   def handle_call(:ready?, _from, state), do: {:reply, not is_nil(state.definitions), state}
   def handle_call(:refresh, _from, state), do: {:reply, :ok, refresh_and_schedule(state)}
 
-  def handle_call(
+  @impl GenServer
+  def handle_cast(
         {:update_negative_knowledge, generation, requested, returned, clean?},
-        _from,
         %{definition_generation: generation} = state
       ) do
     state =
       state |> update_retained_missing(requested, returned, clean?) |> publish_evaluation_state()
 
-    {:reply, :ok, state}
+    {:noreply, state}
   end
 
-  def handle_call(
+  def handle_cast(
         {:update_negative_knowledge, _generation, _requested, _returned, _clean?},
-        _from,
         state
       ),
-      do: {:reply, :stale_generation, state}
+      do: {:noreply, state}
 
   @impl GenServer
   def handle_info({:refresh, generation}, %{timer_generation: generation} = state),

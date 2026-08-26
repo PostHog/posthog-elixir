@@ -43,6 +43,11 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     FeatureFlags.evaluate_flags(name, %{distinct_id: distinct_id, flag_keys: keys})
   end
 
+  defp sync_loader(name) do
+    :sys.get_state(PostHog.Registry.via(name, DefinitionLoader))
+    :ok
+  end
+
   test "clean omission is retained sequentially and successful refresh invalidates it" do
     owner = self()
     {:ok, count} = Agent.start_link(fn -> 0 end)
@@ -74,6 +79,7 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     assert {:ok, first} = scoped(__MODULE__.Sequential, ["missing"])
     assert Evaluations.keys(first) == []
     assert_receive :remote_probe
+    sync_loader(__MODULE__.Sequential)
 
     assert {:ok, second} = scoped(__MODULE__.Sequential, ["missing"])
     assert Evaluations.keys(second) == []
@@ -111,6 +117,43 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     start_instance(__MODULE__.Failure)
     assert {:error, %RuntimeError{message: "offline"}} = scoped(__MODULE__.Failure, ["missing"])
     assert {:error, %RuntimeError{message: "offline"}} = scoped(__MODULE__.Failure, ["missing"])
+  end
+
+  test "fallback does not wait for negative bookkeeping behind a stalled refresh" do
+    owner = self()
+    {:ok, definition_calls} = Agent.start_link(fn -> 0 end)
+
+    expect(PostHog.API.Mock, :request, 3, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          case Agent.get_and_update(definition_calls, &{&1, &1 + 1}) do
+            0 ->
+              {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+            1 ->
+              send(owner, {:refresh_started, self()})
+              receive do: (:release_refresh -> :ok)
+              {:ok, %{status: 304, body: nil, headers: %{}}}
+          end
+
+        {:post, "/flags"} ->
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    start_instance(__MODULE__.NonBlocking)
+    refresh = Task.async(fn -> DefinitionLoader.refresh(__MODULE__.NonBlocking) end)
+    assert_receive {:refresh_started, refresh_worker}
+
+    fallback = Task.async(fn -> scoped(__MODULE__.NonBlocking, ["missing"]) end)
+    fallback_result = Task.yield(fallback, 500)
+
+    send(refresh_worker, :release_refresh)
+    assert :ok = Task.await(refresh)
+
+    if is_nil(fallback_result), do: Task.await(fallback)
+    assert {:ok, {:ok, snapshot}} = fallback_result
+    assert Evaluations.keys(snapshot) == []
   end
 
   test "dirty omissions do not suppress retries and returned keys remain context specific" do
@@ -269,6 +312,7 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     start_instance(__MODULE__.Ordering)
 
     assert {:ok, _snapshot} = scoped(__MODULE__.Ordering, ["a"])
+    sync_loader(__MODULE__.Ordering)
 
     assert MapSet.member?(
              DefinitionLoader.evaluation_state(__MODULE__.Ordering, ["a"]).known_missing,
@@ -280,9 +324,11 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
 
     assert {:ok, positive} = scoped(__MODULE__.Ordering, ["a", "c"], "positive")
     assert positive.flags["a"].enabled
+    sync_loader(__MODULE__.Ordering)
 
     send(delayed_worker, :release_delayed_omission)
     assert {:ok, _snapshot} = Task.await(delayed)
+    sync_loader(__MODULE__.Ordering)
 
     refute MapSet.member?(
              DefinitionLoader.evaluation_state(__MODULE__.Ordering, ["a"]).known_missing,
@@ -307,7 +353,7 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
 
     refute new_generation == old_generation
 
-    assert :stale_generation =
+    assert :ok =
              DefinitionLoader.update_negative_knowledge(
                __MODULE__.Restart,
                old_generation,
@@ -315,6 +361,8 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
                [],
                true
              )
+
+    sync_loader(__MODULE__.Restart)
 
     assert MapSet.new() ==
              DefinitionLoader.evaluation_state(__MODULE__.Restart, ["missing"]).known_missing
@@ -367,6 +415,7 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
                true
              )
 
+    sync_loader(__MODULE__.Capacity)
     retained = DefinitionLoader.evaluation_state(__MODULE__.Capacity, keys).known_missing
     assert MapSet.size(retained) == 1_000
     refute MapSet.member?(retained, hd(keys))
@@ -383,6 +432,8 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
                false
              )
 
+    sync_loader(__MODULE__.Capacity)
+
     refute MapSet.member?(
              DefinitionLoader.evaluation_state(__MODULE__.Capacity, [returned]).known_missing,
              returned
@@ -394,7 +445,7 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
 
     DefinitionLoader.refresh(__MODULE__.Capacity)
 
-    assert :stale_generation =
+    assert :ok =
              DefinitionLoader.update_negative_knowledge(
                __MODULE__.Capacity,
                initial.generation,
@@ -402,6 +453,8 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
                [],
                true
              )
+
+    sync_loader(__MODULE__.Capacity)
 
     assert MapSet.size(DefinitionLoader.evaluation_state(__MODULE__.Capacity, keys).known_missing) ==
              0

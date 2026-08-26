@@ -445,13 +445,27 @@ defmodule PostHog.FeatureFlags do
 
   defp build_remote_results(flags, response_body) do
     Enum.reduce(flags, {%{}, false}, fn
-      {key, flag_data}, {results, malformed?} when is_binary(key) and is_map(flag_data) ->
-        {Map.put(results, key, build_result(key, flag_data, response_body)), malformed?}
+      {key, flag_data}, {results, malformed?} ->
+        case build_result_safely(key, flag_data, response_body) do
+          {:ok, result} -> {Map.put(results, key, result), malformed?}
+          :error -> {results, true}
+        end
 
       _entry, {results, _malformed?} ->
         {results, true}
     end)
   end
+
+  defp build_result_safely(key, flag_data, response_body)
+       when is_binary(key) and is_map(flag_data) do
+    {:ok, build_result(key, flag_data, response_body)}
+  rescue
+    _exception -> :error
+  catch
+    _kind, _reason -> :error
+  end
+
+  defp build_result_safely(_key, _flag_data, _response_body), do: :error
 
   defp invalid_flags_response,
     do: {:error, %RuntimeError{message: "invalid response from PostHog /flags endpoint"}}
@@ -860,9 +874,8 @@ defmodule PostHog.FeatureFlags do
       {:ok, nil, %{}}
     else
       case flags(name, Map.delete(body, :only_evaluate_locally)) do
-        {:ok, %{body: %{"flags" => %{^flag_name => flag_data}} = response_body}}
-        when is_map(flag_data) ->
-          {:ok, build_result(flag_name, flag_data, response_body), response_body}
+        {:ok, %{body: %{"flags" => %{^flag_name => flag_data}} = response_body}} ->
+          single_remote_result(flag_name, flag_data, response_body)
 
         {:ok, %{body: %{"flags" => _} = response_body}} ->
           {:ok, nil, response_body}
@@ -870,6 +883,13 @@ defmodule PostHog.FeatureFlags do
         {:error, _reason} = error ->
           error
       end
+    end
+  end
+
+  defp single_remote_result(flag_name, flag_data, response_body) do
+    case build_result_safely(flag_name, flag_data, response_body) do
+      {:ok, result} -> {:ok, result, response_body}
+      :error -> {:ok, nil, response_body}
     end
   end
 

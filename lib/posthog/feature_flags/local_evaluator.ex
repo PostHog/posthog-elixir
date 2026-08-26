@@ -775,7 +775,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   defp boolean_result(false), do: :no_match
 
   defp case_insensitive_equal?(left, right),
-    do: ascii_downcase(to_string(left)) == ascii_downcase(to_string(right))
+    do: String.downcase(to_string(left)) == String.downcase(to_string(right))
 
   defp ascii_downcase(value) do
     for <<character <- value>>, into: "" do

@@ -140,6 +140,33 @@ defmodule PostHog.FeatureFlags.LocalEvaluationIntegrationTest do
     assert snapshot.flags["extra"].enabled
   end
 
+  test "snapshot-level remote errors are logged for locally resolved flags" do
+    unknown = flag("unknown", [%{"key" => "x", "operator" => "future", "value" => 1}])
+
+    expect(PostHog.API.Mock, :request, 2, fn
+      :stub_client, :get, "/flags/definitions", _opts ->
+        {:ok, %{status: 200, body: envelope([flag("local"), unknown]), headers: %{}}}
+
+      :stub_client, :post, "/flags", _opts ->
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{"unknown" => %{"enabled" => true}},
+             "errorsWhileComputingFlags" => true
+           }
+         }}
+    end)
+
+    start_instance(__MODULE__.SnapshotErrors)
+    assert {:ok, snapshot} = FeatureFlags.evaluate_flags(__MODULE__.SnapshotErrors, "user")
+    assert snapshot.errors_while_computing
+    assert Evaluations.enabled?(snapshot, "local")
+
+    assert [%{properties: properties}] = PostHog.Test.all_captured(__MODULE__.SnapshotErrors)
+    assert properties[:"$feature_flag_error"] == "errors_while_computing_flags"
+  end
+
   test "explicit scope is preserved and local-only returns partial results with no request" do
     missing_property = flag("needs-server", [%{"key" => "plan", "value" => "pro"}])
 
@@ -205,7 +232,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluationIntegrationTest do
            body: %{
              "flags" => %{
                "remote" => %{"enabled" => true},
-               "broken" => nil
+               "broken" => %{"enabled" => true, "metadata" => "bad"}
              }
            }
          }}
