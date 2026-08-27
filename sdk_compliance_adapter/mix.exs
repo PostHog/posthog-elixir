@@ -21,7 +21,7 @@ defmodule SdkComplianceAdapter.MixProject do
 
   defp deps do
     [
-      {:plug_cowboy, "~> 2.7"},
+      {:plug_cowboy, ">= 2.8.1 and < 3.0.0"},
       {:posthog, path: ".."}
     ]
   end
