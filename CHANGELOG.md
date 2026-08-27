@@ -1,5 +1,11 @@
 # posthog
 
+## 2.15.0 — 2026-08-27
+
+### Minor changes
+
+- [c7c03fd](https://github.com/posthog/posthog-elixir/commit/c7c03fdf685eda65914943a9bf3e94f92f2a4b73) Add local feature flag definition polling and evaluation with safe remote fallback. — Thanks @marandaneto!
+
 ## 2.14.2 — 2026-08-25
 
 ### Patch changes
