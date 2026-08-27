@@ -15,7 +15,7 @@ COPY lib ./lib
 COPY config ./config
 
 # Copy the adapter
-COPY sdk_compliance_adapter/mix.exs ./sdk_compliance_adapter/
+COPY sdk_compliance_adapter/mix.exs sdk_compliance_adapter/mix.lock ./sdk_compliance_adapter/
 COPY sdk_compliance_adapter/lib ./sdk_compliance_adapter/lib
 COPY sdk_compliance_adapter/config ./sdk_compliance_adapter/config
 
