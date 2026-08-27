@@ -525,6 +525,7 @@ defmodule PostHog.FeatureFlagsTest do
                "$feature_flag_request_id": "req-xyz",
                "$feature_flag_evaluated_at": 1_700_000_000,
                "$feature_flag_error": "errors_while_computing_flags",
+               locally_evaluated: false,
                "$groups": %{company: "acme"},
                "$process_person_profile": false,
                "$lib": "posthog-elixir",
@@ -558,6 +559,7 @@ defmodule PostHog.FeatureFlagsTest do
                "$feature_flag_reason": %{"code" => "condition_match"},
                "$feature_flag_request_id": "req-xyz",
                "$feature_flag_evaluated_at": 1_700_000_000,
+               locally_evaluated: false,
                "$session_id": "session-123",
                "$lib": "posthog-elixir",
                "$lib_version": PostHog.Lib.version(),
@@ -694,6 +696,22 @@ defmodule PostHog.FeatureFlagsTest do
                 variant: "variant1",
                 payload: %{"key" => "value"}
               }} = FeatureFlags.get_feature_flag_result("myflag", "foo")
+    end
+
+    test "treats malformed nested flag metadata as a missing result" do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "flags" => %{
+               "myflag" => %{"enabled" => true, "metadata" => "bad"}
+             }
+           }
+         }}
+      end)
+
+      assert {:ok, nil} = FeatureFlags.get_feature_flag_result("myflag", "foo")
     end
 
     test "returns disabled result when flag not enabled" do

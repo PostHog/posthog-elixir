@@ -121,6 +121,16 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
                })
     end
 
+    test "translates disable_geoip to the flags wire key" do
+      expect(API.Mock, :request, fn _client, :post, "/flags", opts ->
+        assert opts[:json] == %{distinct_id: "foo", geoip_disable: true}
+        {:ok, stub_flags_response()}
+      end)
+
+      assert {:ok, _} =
+               FeatureFlags.evaluate_flags(%{distinct_id: "foo", disable_geoip: true})
+    end
+
     test "forwards person_properties unchanged in the request body" do
       expect(API.Mock, :request, fn _client, :post, "/flags", opts ->
         assert opts[:json] == %{distinct_id: "foo", person_properties: %{plan: "enterprise"}}
@@ -248,6 +258,7 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
       assert properties[:"$feature_flag_evaluated_at"] == 1_700_000_000
       assert properties[:"$feature_flag_payload"] == %{"copy" => "hi"}
       assert properties[:"$feature_flag_has_experiment"] == true
+      assert properties[:locally_evaluated] == false
       assert properties["$feature/variant-flag"] == "control"
     end
 
@@ -273,6 +284,32 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
       Evaluations.get_flag(snapshot, "boolean-flag")
 
       assert [%{event: "$feature_flag_called"}] = all_captured()
+    end
+
+    test "dedupes normalized group context and emits again when the group changes" do
+      expect(API.Mock, :request, 3, fn _client, :post, "/flags", _opts ->
+        {:ok, stub_flags_response()}
+      end)
+
+      contexts = [
+        %{company: "company-1", team: 7},
+        %{"team" => "7", "company" => "company-1"},
+        %{company: "company-2", team: 7}
+      ]
+
+      for groups <- contexts do
+        assert {:ok, snapshot} =
+                 FeatureFlags.evaluate_flags(%{distinct_id: "group-user", groups: groups})
+
+        assert Evaluations.enabled?(snapshot, "boolean-flag")
+      end
+
+      groups = Enum.map(all_captured(), & &1.properties[:"$groups"])
+
+      assert groups == [
+               %{"company" => "company-2", "team" => "7"},
+               %{"company" => "company-1", "team" => "7"}
+             ]
     end
 
     test "fires again when the same flag returns a different value" do
@@ -678,6 +715,7 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
                Enum.find(events, &(&1.properties[:"$feature_flag"] == "experiment-flag"))
 
       assert minimal == %{
+               locally_evaluated: false,
                "$feature_flag": "plain-flag",
                "$feature_flag_response": true,
                "$feature_flag_has_experiment": false,

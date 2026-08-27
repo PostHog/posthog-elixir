@@ -121,8 +121,8 @@ defmodule PostHog.API.Client do
   Response tuple returned by `c:request/4`.
 
   Successful responses must expose at least a numeric `:status` and decoded
-  `:body`; errors should return the exception or error struct from the HTTP
-  client.
+  `:body`; they may also expose response `:headers`. Errors should return the
+  exception or error struct from the HTTP client.
   """
   @type response() :: {:ok, %{status: non_neg_integer(), body: any()}} | {:error, Exception.t()}
 

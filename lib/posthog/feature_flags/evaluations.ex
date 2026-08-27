@@ -2,10 +2,10 @@ defmodule PostHog.FeatureFlags.Evaluations do
   @moduledoc """
   Snapshot of feature flag evaluations for a single `distinct_id`.
 
-  An `Evaluations` struct represents the result of a single `/flags` call. It is
-  built by `PostHog.FeatureFlags.evaluate_flags/2` and lets you branch on
-  multiple flags and enrich captured events from the same fetch — without
-  paying the cost of one round-trip per flag.
+  An `Evaluations` struct represents one point-in-time evaluation assembled
+  locally and, when needed, from at most one `/flags` call. It is built by
+  `PostHog.FeatureFlags.evaluate_flags/2` and lets you branch on multiple flags
+  and enrich captured events from the same frozen result set.
 
   Each snapshot owns a small `Agent` linked to the calling process that tracks
   which flags were accessed via `enabled?/2` and `get_flag/2`. The Agent exits
@@ -55,12 +55,14 @@ defmodule PostHog.FeatureFlags.Evaluations do
 
   - `:supervisor_name` - PostHog instance the snapshot was produced from; used
     when `enabled?/2` and `get_flag/2` fire `$feature_flag_called` events.
-  - `:distinct_id` - resolved distinct ID the `/flags` request was made for.
-    `""` for the empty fallback returned when no `distinct_id` could be
-    resolved; events are short-circuited in that case.
+  - `:distinct_id` - resolved distinct ID the local and/or remote evaluation
+    was performed for. `""` for the empty fallback returned when no
+    `distinct_id` could be resolved; events are short-circuited in that case.
   - `:flags` - map of flag key to `t:PostHog.FeatureFlags.Result.t/0`.
-  - `:request_id` - request ID returned by `/flags`.
-  - `:evaluated_at` - server-side evaluation timestamp.
+  - `:groups` - normalized group type/key context used for evaluation and
+    `$feature_flag_called` deduplication.
+  - `:request_id` - request ID returned when remote fallback was used.
+  - `:evaluated_at` - server-side evaluation timestamp when remote fallback was used.
   - `:errors_while_computing` - whether the response signaled
     `errorsWhileComputingFlags`. When `true`, every event fired from this
     snapshot includes `errors_while_computing_flags` in its
@@ -71,6 +73,7 @@ defmodule PostHog.FeatureFlags.Evaluations do
           supervisor_name: PostHog.supervisor_name(),
           distinct_id: PostHog.distinct_id(),
           flags: %{String.t() => Result.t()},
+          groups: %{String.t() => String.t()},
           request_id: String.t() | nil,
           evaluated_at: integer() | nil,
           errors_while_computing: boolean(),
@@ -85,6 +88,7 @@ defmodule PostHog.FeatureFlags.Evaluations do
     :accessed_pid,
     :request_id,
     :evaluated_at,
+    groups: %{},
     errors_while_computing: false
   ]
 
@@ -104,6 +108,30 @@ defmodule PostHog.FeatureFlags.Evaluations do
       request_id: Map.get(body, "requestId"),
       evaluated_at: Map.get(body, "evaluatedAt"),
       errors_while_computing: Map.get(body, "errorsWhileComputingFlags") == true,
+      groups: normalize_groups(Map.get(body, :groups, Map.get(body, "groups", %{}))),
+      accessed_pid: start_accessed_agent()
+    }
+  end
+
+  @doc false
+  @spec from_results(
+          PostHog.supervisor_name(),
+          PostHog.distinct_id(),
+          %{String.t() => Result.t()},
+          map()
+        ) :: t()
+  def from_results(supervisor_name, distinct_id, results, metadata)
+      when is_map(results) and is_map(metadata) do
+    %__MODULE__{
+      supervisor_name: supervisor_name,
+      distinct_id: distinct_id,
+      flags: results,
+      request_id: Map.get(metadata, :request_id, Map.get(metadata, "requestId")),
+      evaluated_at: Map.get(metadata, :evaluated_at, Map.get(metadata, "evaluatedAt")),
+      errors_while_computing:
+        Map.get(metadata, :errors_while_computing, Map.get(metadata, "errorsWhileComputingFlags")) ==
+          true,
+      groups: normalize_groups(Map.get(metadata, :groups, Map.get(metadata, "groups", %{}))),
       accessed_pid: start_accessed_agent()
     }
   end
@@ -277,10 +305,28 @@ defmodule PostHog.FeatureFlags.Evaluations do
   defp log(%__MODULE__{distinct_id: ""}, _result, _extra_errors), do: :ok
 
   defp log(
-         %__MODULE__{supervisor_name: name, distinct_id: distinct_id},
+         %__MODULE__{
+           supervisor_name: name,
+           distinct_id: distinct_id,
+           groups: groups,
+           errors_while_computing: snapshot_error?
+         },
          %Result{} = result,
          extra_errors
        ) do
-    PostHog.FeatureFlags.log_feature_flag_usage(name, distinct_id, result, extra_errors)
+    result = %{
+      result
+      | errors_while_computing: result.errors_while_computing or snapshot_error?
+    }
+
+    PostHog.FeatureFlags.log_feature_flag_usage(name, distinct_id, result, extra_errors, groups)
   end
+
+  defp normalize_groups(groups) when is_map(groups) do
+    Map.new(groups, fn {group_type, group_key} ->
+      {to_string(group_type), to_string(group_key)}
+    end)
+  end
+
+  defp normalize_groups(_groups), do: %{}
 end

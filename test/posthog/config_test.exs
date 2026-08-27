@@ -25,6 +25,38 @@ defmodule PostHog.ConfigTest do
     assert config.api_host == "https://eu.i.posthog.com"
   end
 
+  test "validate normalizes local evaluation configuration" do
+    expect(PostHog.API.Mock, :client, 2, fn _api_key, _api_host ->
+      %PostHog.API.Client{client: :stub_client, module: PostHog.API.Mock}
+    end)
+
+    assert {:ok, config} =
+             PostHog.Config.validate(
+               api_key: "project_api_key",
+               secret_key: "  secret-key  ",
+               api_client_module: PostHog.API.Mock
+             )
+
+    assert %PostHog.Config.Secret{} = config.secret_key
+    assert PostHog.Config.Secret.reveal(config.secret_key) == "secret-key"
+    refute inspect(config) =~ "secret-key"
+    assert inspect(config) =~ "#PostHog.Config.Secret<redacted>"
+    assert config.enable_local_evaluation
+    assert config.feature_flags_poll_interval_ms == 30_000
+    assert config.flag_definition_cache_provider == nil
+    assert config.flag_definition_cache_provider_timeout_ms == 5_000
+    assert config.flag_definition_request_timeout_ms == 10_000
+
+    assert {:ok, blank} =
+             PostHog.Config.validate(
+               api_key: "project_api_key",
+               secret_key: "  ",
+               api_client_module: PostHog.API.Mock
+             )
+
+    assert blank.secret_key == nil
+  end
+
   test "validate defaults a missing api_host" do
     expect(PostHog.API.Mock, :client, fn api_key, api_host ->
       assert api_key == "project_api_key"

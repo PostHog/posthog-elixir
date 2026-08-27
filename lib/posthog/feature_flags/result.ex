@@ -10,7 +10,7 @@ defmodule PostHog.FeatureFlags.Result do
   - `payload` - The JSON payload configured for this flag/variant (nil if not set)
   - `id` - Numeric flag ID from the PostHog backend (when available)
   - `version` - Flag version from the PostHog backend (when available)
-  - `reason` - Reason map describing why this evaluation produced its value
+  - `reason` - Reason describing why this evaluation produced its value
   - `request_id` - Request ID returned by the `/flags` endpoint (useful for experiment exposure tracking)
   - `evaluated_at` - Server-side evaluation timestamp from the response
   - `has_experiment` - Whether the flag is linked to an experiment. `nil` when
@@ -26,6 +26,8 @@ defmodule PostHog.FeatureFlags.Result do
     explicitly `false`, `$feature_flag_called` events for this flag are sent
     with a minimal, allowlisted property shape. `false` whenever the server
     did not report the gate.
+  - `locally_evaluated` - Whether this result was resolved from local flag
+    definitions rather than the remote `/flags` response.
 
   The metadata fields are populated when the `/flags` response includes them
   and are forwarded as `$feature_flag_id`, `$feature_flag_version`, `$feature_flag_reason`,
@@ -72,12 +74,13 @@ defmodule PostHog.FeatureFlags.Result do
           payload: json(),
           id: integer() | nil,
           version: integer() | nil,
-          reason: map() | nil,
+          reason: map() | String.t() | nil,
           request_id: String.t() | nil,
           evaluated_at: integer() | nil,
           has_experiment: boolean() | nil,
           errors_while_computing: boolean(),
-          minimal_flag_called_events: boolean()
+          minimal_flag_called_events: boolean(),
+          locally_evaluated: boolean()
         }
 
   @enforce_keys [:key, :enabled]
@@ -93,7 +96,8 @@ defmodule PostHog.FeatureFlags.Result do
     :evaluated_at,
     :has_experiment,
     errors_while_computing: false,
-    minimal_flag_called_events: false
+    minimal_flag_called_events: false,
+    locally_evaluated: false
   ]
 
   @doc """

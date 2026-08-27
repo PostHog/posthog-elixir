@@ -52,19 +52,39 @@ defmodule PostHog.Supervisor do
 
   @impl Supervisor
   def init({config, callers}) do
+    public_config = Map.drop(config, [:secret_key, :flag_definition_cache_provider])
+
     children =
       [
         {Registry,
          keys: :unique,
          name: PostHog.Registry.registry_name(config.supervisor_name),
-         meta: [config: config]},
+         meta: [config: public_config]},
         {PostHog.FeatureFlags.CalledCache, supervisor_name: config.supervisor_name}
-      ] ++ senders(config) ++ sources(config)
+      ] ++ definition_loader(config, callers) ++ senders(config) ++ sources(config)
 
     Process.put(:"$callers", callers)
 
     Supervisor.init(children, strategy: :one_for_one)
   end
+
+  defp definition_loader(
+         %{
+           enabled: true,
+           enable_local_evaluation: true,
+           secret_key: %PostHog.Config.Secret{value: secret_key}
+         } = config,
+         callers
+       )
+       when is_binary(secret_key) and secret_key != "" do
+    [
+      {PostHog.FeatureFlags.DefinitionLoader.NegativeKnowledge,
+       supervisor_name: config.supervisor_name},
+      {PostHog.FeatureFlags.DefinitionLoader, config: config, callers: callers}
+    ]
+  end
+
+  defp definition_loader(_config, _callers), do: []
 
   defp sources(%{enabled: false}), do: []
 

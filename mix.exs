@@ -20,7 +20,7 @@ defmodule PostHog.MixProject do
   def application do
     [
       mod: {PostHog.Application, []},
-      extra_applications: [:logger]
+      extra_applications: [:logger, :crypto]
     ]
   end
 
