@@ -43,7 +43,7 @@ defmodule PostHog.Handler do
   end
 
   defp properties(log_event, config) do
-    exceptions = exceptions(log_event, config)
+    exceptions = log_event |> exceptions(config) |> finalize_exceptions()
 
     metadata =
       log_event.meta
@@ -61,14 +61,17 @@ defmodule PostHog.Handler do
           Map.take(metadata, [:distinct_id | config.metadata])
         end
       end)
-      |> Map.drop(["$exception_list"])
+      |> drop_reserved_exception_properties()
       |> enrich_metadata(log_event)
       |> maybe_update_file_key()
 
     Context.get(config.supervisor_name, "$exception")
+    |> drop_reserved_exception_properties()
     |> enrich_context(log_event)
     |> Map.put(:"$exception_list", exceptions)
     |> Map.merge(metadata)
+    |> Map.put(:"$exception_level", exception_level(log_event))
+    |> Map.put(:"$exception_source", "elixir.logger_handler")
   end
 
   if Version.match?(System.version(), ">= 1.19.0") and
@@ -120,12 +123,83 @@ defmodule PostHog.Handler do
     [&type/1, &value/1, &stacktrace(&1, config.in_app_modules, config)]
     |> Enum.reduce(
       %{
-        mechanism: %{handled: not Map.has_key?(log_event.meta, :crash_reason), type: "generic"}
+        mechanism: mechanism(log_event)
       },
       fn fun, acc ->
         Map.merge(acc, fun.(log_event))
       end
     )
+  end
+
+  defp mechanism(%{meta: %{crash_reason: _}}),
+    do: %{handled: false, type: "onuncaughtexception", synthetic: false}
+
+  defp mechanism(_log_event), do: %{handled: true, type: "logger", synthetic: true}
+
+  defp finalize_exceptions(exceptions) do
+    exceptions
+    |> Enum.take(50)
+    |> Enum.with_index()
+    |> Enum.map(fn
+      {exception, 0} ->
+        update_in(exception, [:mechanism], fn mechanism ->
+          mechanism
+          |> Map.put(:exception_id, 0)
+          |> Map.delete(:parent_id)
+          |> Map.delete(:source)
+        end)
+
+      {exception, index} ->
+        update_in(exception, [:mechanism], fn mechanism ->
+          mechanism
+          |> Map.put(:type, "chained")
+          |> Map.put(:source, "context")
+          |> Map.put(:exception_id, index)
+          |> Map.put(:parent_id, index - 1)
+          |> Map.delete(:handled)
+        end)
+    end)
+  end
+
+  defp normalize_level(level) do
+    case level do
+      :emergency -> "fatal"
+      :alert -> "fatal"
+      :critical -> "fatal"
+      :error -> "error"
+      :warning -> "warning"
+      :notice -> "info"
+      :info -> "info"
+      :debug -> "debug"
+      _ -> "error"
+    end
+  end
+
+  defp exception_level(%{meta: %{crash_reason: _}}), do: "error"
+  defp exception_level(log_event), do: normalize_level(log_event.level)
+
+  @reserved_exception_properties [
+    "$exception_list",
+    "$exception_level",
+    "$exception_source",
+    "$debug_images",
+    "$exception_handled",
+    "$exception_types",
+    "$exception_values",
+    "$exception_sources",
+    "$exception_functions",
+    "$exception_fingerprint_version",
+    "$exception_fingerprint_record",
+    "$exception_issue_id",
+    "$exception_release",
+    "$cymbal_errors"
+  ]
+  defp drop_reserved_exception_properties(properties) do
+    reserved =
+      @reserved_exception_properties ++
+        Enum.map(@reserved_exception_properties, &String.to_atom/1)
+
+    Map.drop(properties, reserved)
   end
 
   defp type(log_event) do
