@@ -3,6 +3,8 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
 
   alias PostHog.FeatureFlags.LocalEvaluator
   alias PostHog.FeatureFlags.Result
+  alias PostHog.Test.LocalEvaluatorStructs.CustomValue
+  alias PostHog.Test.LocalEvaluatorStructs.DerivedObject
 
   defp snapshot(flags, extras \\ %{}) do
     Map.merge(
@@ -209,6 +211,102 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
         assert result.results == %{}, inspect({filter, property, result})
         assert result.unresolved == MapSet.new(["colliding-keys"])
       end
+    end
+  end
+
+  for version <- [:missing, 1, 2],
+      operator <- ["exact", "is_not"],
+      family <- [:ordered, :derived_ordering, :derived_keys, :derived_number, :custom] do
+    @matching_version version
+    @matching_operator operator
+    @encoder_family family
+    test "version #{version} #{operator} leaves nested #{family} encoders inconclusive" do
+      values =
+        case @encoder_family do
+          :ordered ->
+            [Jason.OrderedObject.new([{"z", 1}, {"a", 2}])]
+
+          :derived_ordering ->
+            [%DerivedObject{payload: %{:z => 1, "a" => 2}}]
+
+          :derived_keys ->
+            [%DerivedObject{payload: %{:a => 1, "a" => 2}}]
+
+          :derived_number ->
+            [%DerivedObject{payload: 0.00001}]
+
+          :custom ->
+            Enum.map(
+              [%{:z => 1, "a" => 2}, [%{n: 0.00001}], "plain"],
+              &%CustomValue{payload: &1}
+            )
+        end
+
+      for value <- values do
+        refute Jason.Encoder.impl_for(value) == Jason.Encoder.Any
+
+        for composite <- [%{"nested" => value}, [%{"nested" => [value]}]] do
+          wire = composite |> Jason.encode!() |> Jason.decode!()
+          service_string = composite |> Jason.encode!() |> String.replace("1.0e-5", "0.00001")
+
+          for {filter, property} <- [
+                {[service_string], composite},
+                {[composite], service_string},
+                {[wire], composite},
+                {[composite], wire}
+              ] do
+            condition = %{"key" => "prop", "operator" => @matching_operator, "value" => filter}
+            definitions = versioned_snapshot([flag("opaque", [condition])], @matching_version)
+            context = %{distinct_id: "user", person_properties: %{"prop" => property}}
+            result = LocalEvaluator.evaluate(definitions, context)
+
+            assert result.results == %{}, inspect({filter, property, result})
+            assert result.unresolved == MapSet.new(["opaque"])
+          end
+        end
+      end
+    end
+  end
+
+  test "nested scalar structs fall back without changing top-level scalar matching" do
+    for version <- [:missing, 1, 2],
+        operator <- ["exact", "is_not"],
+        value <- [~D[2025-01-01], ~T[12:34:56], %CustomValue{payload: "plain"}],
+        {filter, property} <- [{[to_string(value)], value}, {[value], to_string(value)}] do
+      condition = %{"key" => "prop", "operator" => operator, "value" => filter}
+      definitions = versioned_snapshot([flag("scalar", [condition])], version)
+      context = %{distinct_id: "user", person_properties: %{prop: property}}
+      result = LocalEvaluator.evaluate(definitions, context)
+      expected = operator == "exact"
+      assert %Result{enabled: ^expected} = result.results["scalar"]
+      assert result.unresolved == MapSet.new()
+
+      nested_condition = %{condition | "value" => [%{"nested" => hd(filter)}]}
+      definitions = versioned_snapshot([flag("scalar", [nested_condition])], version)
+      context = %{context | person_properties: %{prop: %{"nested" => property}}}
+      result = LocalEvaluator.evaluate(definitions, context)
+      assert result.results == %{}
+      assert result.unresolved == MapSet.new(["scalar"])
+    end
+  end
+
+  test "opaque structs do not change legacy or empty-filter truthiness" do
+    property = %{"nested" => %DerivedObject{payload: 0.00001}}
+
+    for {version, filter} <- [{:missing, false}, {1, [false]}, {1, false}, {2, []}],
+        operator <- ["exact", "is_not"] do
+      condition = %{"key" => "prop", "operator" => operator, "value" => filter}
+      definitions = versioned_snapshot([flag("truthiness", [condition])], version)
+
+      result =
+        LocalEvaluator.evaluate(definitions, %{
+          distinct_id: "user",
+          person_properties: %{prop: property}
+        })
+
+      expected = version != 2 == (operator == "exact")
+      assert %Result{enabled: ^expected} = result.results["truthiness"]
+      assert result.unresolved == MapSet.new()
     end
   end
 

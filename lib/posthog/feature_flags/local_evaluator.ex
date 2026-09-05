@@ -824,6 +824,13 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
 
   defp exact_string(value), do: to_string(value)
 
+  # Nested encoders can hide unsorted keys and ambiguous numbers from normalization.
+  # Top-level scalar structs use exact_string/1 instead. OrderedObjects generated
+  # below contain already-normalized members and are never passed back through here.
+  defp sort_json_objects(value) when is_struct(value) do
+    raise ArgumentError, "opaque composite JSON struct"
+  end
+
   # Map iteration order is not JSON key order, including for mixed atom/string keys.
   defp sort_json_objects(value) when is_map(value) and not is_struct(value) do
     members =

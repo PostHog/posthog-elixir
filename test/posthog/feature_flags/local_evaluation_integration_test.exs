@@ -303,6 +303,61 @@ defmodule PostHog.FeatureFlags.LocalEvaluationIntegrationTest do
     end
   end
 
+  for version <- [:missing, 1, 2], operator <- ["exact", "is_not"] do
+    @matching_version version
+    @matching_operator operator
+    test "version #{version} #{operator} omits nested structs locally and falls back to /flags" do
+      wire = %{"nested" => [%{"a" => 2, "z" => 1}]}
+      condition = %{"key" => "prop", "operator" => @matching_operator, "value" => wire}
+      definitions = envelope([flag("local"), flag("opaque", [condition])])
+
+      definitions =
+        if @matching_version == :missing,
+          do: definitions,
+          else: Map.put(definitions, "property_matching_version", @matching_version)
+
+      expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+        {:ok, %{status: 200, body: definitions, headers: %{}}}
+      end)
+
+      name = __MODULE__.NestedStructs
+      start_instance(name)
+      expected = @matching_operator == "exact"
+
+      for value <- [
+            Jason.OrderedObject.new([{"z", 1}, {"a", 2}]),
+            %PostHog.Test.LocalEvaluatorStructs.CustomValue{payload: %{:z => 1, "a" => 2}}
+          ] do
+        context = %{distinct_id: "user", person_properties: %{prop: %{"nested" => [value]}}}
+
+        assert {:ok, local_only} =
+                 FeatureFlags.evaluate_flags(name, Map.put(context, :only_evaluate_locally, true))
+
+        assert Evaluations.keys(local_only) == ["local"]
+
+        expect(PostHog.API.Mock, :request, fn :stub_client, :post, "/flags", opts ->
+          assert opts[:json].person_properties == context.person_properties
+
+          assert opts[:json].person_properties |> Jason.encode!() |> Jason.decode!() ==
+                   %{"prop" => wire}
+
+          {:ok, %{status: 200, body: %{"flags" => %{"opaque" => %{"enabled" => expected}}}}}
+        end)
+
+        assert {:ok, result} = FeatureFlags.evaluate_flags(name, context)
+        assert result.flags["local"].locally_evaluated
+        assert result.flags["opaque"].enabled == expected
+        refute result.flags["opaque"].locally_evaluated
+      end
+
+      # Decoded JSON still resolves locally, including normalized internal OrderedObjects.
+      context = %{distinct_id: "user", person_properties: %{prop: wire}}
+      assert {:ok, result} = FeatureFlags.evaluate_flags(name, context)
+      assert result.flags["opaque"].enabled == expected
+      assert result.flags["opaque"].locally_evaluated
+    end
+  end
+
   test "snapshot-level remote errors are logged for locally resolved flags" do
     unknown = flag("unknown", [%{"key" => "x", "operator" => "future", "value" => 1}])
 
