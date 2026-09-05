@@ -182,8 +182,10 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
           result = LocalEvaluator.evaluate(definitions, context)
           expected = @matching_operator == "exact"
 
-          assert %Result{enabled: ^expected, locally_evaluated: true} = result.results["nil-keys"],
-                 inspect({filter, property, result})
+          assert(
+            %Result{enabled: ^expected, locally_evaluated: true} = result.results["nil-keys"],
+            inspect({filter, property, result})
+          )
 
           assert MapSet.size(result.unresolved) == 0
         end
