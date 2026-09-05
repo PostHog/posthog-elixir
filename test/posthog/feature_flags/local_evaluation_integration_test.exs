@@ -213,6 +213,53 @@ defmodule PostHog.FeatureFlags.LocalEvaluationIntegrationTest do
     assert snapshot.flags["extra"].enabled
   end
 
+  for version <- [1, 2], operator <- ["exact", "is_not"] do
+    @matching_version version
+    @matching_operator operator
+    test "version #{version} #{operator} falls back for composite numeric serialization" do
+      condition = %{
+        "key" => "prop",
+        "operator" => @matching_operator,
+        "value" => ~s({"n":0.00001})
+      }
+
+      expected = @matching_operator == "exact"
+
+      definitions =
+        [flag("local"), flag("numeric-composite", [condition])]
+        |> envelope()
+        |> Map.put("property_matching_version", @matching_version)
+
+      expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+        {:ok, %{status: 200, body: definitions, headers: %{}}}
+      end)
+
+      name = __MODULE__.CompositeNumbers
+      start_instance(name)
+      context = %{distinct_id: "user", person_properties: %{prop: %{"n" => 0.00001}}}
+
+      assert {:ok, local_only} =
+               FeatureFlags.evaluate_flags(name, Map.put(context, :only_evaluate_locally, true))
+
+      assert Evaluations.keys(local_only) == ["local"]
+
+      expect(PostHog.API.Mock, :request, fn :stub_client, :post, "/flags", opts ->
+        assert opts[:json].person_properties == context.person_properties
+
+        {:ok,
+         %{
+           status: 200,
+           body: %{"flags" => %{"numeric-composite" => %{"enabled" => expected}}}
+         }}
+      end)
+
+      assert {:ok, result} = FeatureFlags.evaluate_flags(name, context)
+      assert result.flags["local"].locally_evaluated
+      assert result.flags["numeric-composite"].enabled == expected
+      refute result.flags["numeric-composite"].locally_evaluated
+    end
+  end
+
   test "snapshot-level remote errors are logged for locally resolved flags" do
     unknown = flag("unknown", [%{"key" => "x", "operator" => "future", "value" => 1}])
 

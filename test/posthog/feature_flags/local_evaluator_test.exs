@@ -131,6 +131,52 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
     end
   end
 
+  test "composite numeric serialization ambiguity stays inconclusive" do
+    for version <- [:missing, 1, 2],
+        operator <- ["exact", "is_not"],
+        {number, service_json} <- [
+          {0.00001, "0.00001"},
+          {1.0e-7, "1e-7"},
+          {1.0e20, "1e20"},
+          {18_446_744_073_709_551_616, "1.8446744073709552e19"},
+          {-9_223_372_036_854_775_809, "-9.223372036854776e18"}
+        ],
+        {composite, canonical} <- [
+          {%{"n" => number}, ~s({"n":#{service_json}})},
+          {[%{"n" => [number]}], ~s([{"n":[#{service_json}]}])}
+        ],
+        {filter, property} <- [
+          {canonical, composite},
+          {[composite], canonical}
+        ] do
+      condition = %{"key" => "prop", "operator" => operator, "value" => filter}
+      definitions = versioned_snapshot([flag("numeric-composite", [condition])], version)
+      context = %{distinct_id: "user", person_properties: %{"prop" => property}}
+      result = LocalEvaluator.evaluate(definitions, context)
+
+      assert result.results == %{}, inspect({version, operator, filter, property, result})
+      assert result.unresolved == MapSet.new(["numeric-composite"])
+    end
+  end
+
+  test "composite integers within the service range still match locally" do
+    property = %{"min" => -9_223_372_036_854_775_808, "max" => 18_446_744_073_709_551_615}
+    canonical = ~s({"max":18446744073709551615,"min":-9223372036854775808})
+
+    for version <- [:missing, 1, 2], operator <- ["exact", "is_not"] do
+      condition = %{"key" => "prop", "operator" => operator, "value" => canonical}
+      definitions = versioned_snapshot([flag("integer-composite", [condition])], version)
+      context = %{distinct_id: "user", person_properties: %{"prop" => property}}
+      result = LocalEvaluator.evaluate(definitions, context)
+      expected = operator == "exact"
+
+      assert %Result{enabled: ^expected, locally_evaluated: true} =
+               result.results["integer-composite"]
+
+      assert MapSet.size(result.unresolved) == 0
+    end
+  end
+
   for {name, property, string} <- [
         {"Date", ~D[2025-01-01], "2025-01-01"},
         {"Time", ~T[12:34:56], "12:34:56"}

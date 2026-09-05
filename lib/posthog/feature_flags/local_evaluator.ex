@@ -820,6 +820,16 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   end
 
   defp sort_json_objects(value) when is_list(value), do: Enum.map(value, &sort_json_objects/1)
+
+  # Jason and serde_json differ for floats and integers outside the service's i64/u64 range.
+  # Leave these composite comparisons inconclusive through the existing evaluation boundary.
+  defp sort_json_objects(value)
+       when is_float(value) or
+              (is_integer(value) and
+                 (value < -9_223_372_036_854_775_808 or value > 18_446_744_073_709_551_615)) do
+    raise ArgumentError, "ambiguous composite JSON number"
+  end
+
   defp sort_json_objects(value), do: value
 
   defp ascii_downcase(value) do
