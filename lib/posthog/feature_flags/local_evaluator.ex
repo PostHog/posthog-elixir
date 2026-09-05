@@ -434,9 +434,19 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
        when is_map(property) do
     {result, cache} =
       case value(property, "type") do
-        "cohort" -> {match_cohort(property, property_values, definitions, context, cache), cache}
-        "flag" -> match_dependency(property, definitions, context, cache)
-        _ -> {match_property(property, property_values, context.now), cache}
+        "cohort" ->
+          {match_cohort(property, property_values, definitions, context, cache), cache}
+
+        "flag" ->
+          match_dependency(property, definitions, context, cache)
+
+        _ ->
+          {match_property(
+             property,
+             property_values,
+             context.now,
+             Map.get(definitions, :property_matching_version, 1)
+           ), cache}
       end
 
     {apply_negation(result, value(property, "negation") == true), cache}
@@ -601,7 +611,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
     end
   end
 
-  defp match_property(property, property_values, now) do
+  defp match_property(property, property_values, now, property_matching_version) do
     key = value(property, "key")
     operator = value(property, "operator") || "exact"
     filter_value = value(property, "value")
@@ -609,6 +619,10 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
     case map_fetch(property_values, key) do
       :error ->
         :inconclusive
+
+      {:ok, property_value} when operator in ["exact", "is_not"] ->
+        match = exact_match?(property_value, filter_value, property_matching_version)
+        boolean_result(if(operator == "exact", do: match, else: not match))
 
       {:ok, property_value} ->
         apply_operator(operator, property_value, filter_value, now)
@@ -618,23 +632,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   defp apply_operator("is_set", _property, _filter, _now), do: :match
   defp apply_operator("is_not_set", _property, _filter, _now), do: :no_match
 
-  defp apply_operator("is_not", nil, filter, _now) do
-    match = if is_list(filter), do: nil in filter, else: is_nil(filter)
-    boolean_result(not match)
-  end
-
   defp apply_operator(_operator, nil, _filter, _now), do: :no_match
-
-  defp apply_operator(operator, property, filter, _now) when operator in ["exact", "is_not"] do
-    match =
-      if is_list(filter) do
-        Enum.any?(filter, &case_insensitive_equal?(property, &1))
-      else
-        case_insensitive_equal?(property, filter)
-      end
-
-    boolean_result(if(operator == "exact", do: match, else: not match))
-  end
 
   defp apply_operator(operator, property, filter, _now)
        when operator in [
@@ -775,8 +773,54 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   defp boolean_result(true), do: :match
   defp boolean_result(false), do: :no_match
 
+  defp exact_match?(property, filter, property_matching_version) do
+    cond do
+      # The service treats an empty filter as recursive ALL truthiness in both modes.
+      filter == [] ->
+        truthy?(property)
+
+      property_matching_version != 2 and boolean_like?(filter) ->
+        truthy?(property) == truthy?(filter)
+
+      is_list(filter) ->
+        Enum.any?(filter, &case_insensitive_equal?(property, &1))
+
+      true ->
+        case_insensitive_equal?(property, filter)
+    end
+  end
+
+  defp boolean_like?(value) when is_boolean(value), do: true
+  defp boolean_like?(value) when is_binary(value), do: String.downcase(value) in ["true", "false"]
+  defp boolean_like?(value) when is_list(value), do: Enum.all?(value, &boolean_like?/1)
+  defp boolean_like?(_value), do: false
+
+  defp truthy?(value) when is_boolean(value), do: value
+  defp truthy?(value) when is_binary(value), do: String.downcase(value) == "true"
+  defp truthy?(value) when is_list(value), do: Enum.all?(value, &truthy?/1)
+  defp truthy?(_value), do: false
+
   defp case_insensitive_equal?(left, right),
-    do: String.downcase(to_string(left)) == String.downcase(to_string(right))
+    do: String.downcase(exact_string(left)) == String.downcase(exact_string(right))
+
+  defp exact_string(value) when is_struct(value), do: to_string(value)
+
+  # Lists must remain whole JSON values, not Elixir charlists; known null is not missing.
+  defp exact_string(value) when is_nil(value) or is_list(value) or is_map(value),
+    do: value |> sort_json_objects() |> Jason.encode!()
+
+  defp exact_string(value), do: to_string(value)
+
+  # Map iteration order is not JSON key order, including for mixed atom/string keys.
+  defp sort_json_objects(value) when is_map(value) and not is_struct(value) do
+    value
+    |> Enum.map(fn {key, member} -> {to_string(key), sort_json_objects(member)} end)
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Jason.OrderedObject.new()
+  end
+
+  defp sort_json_objects(value) when is_list(value), do: Enum.map(value, &sort_json_objects/1)
+  defp sort_json_objects(value), do: value
 
   defp ascii_downcase(value) do
     for <<character <- value>>, into: "" do

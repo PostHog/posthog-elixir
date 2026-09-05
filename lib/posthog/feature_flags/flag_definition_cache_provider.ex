@@ -6,6 +6,9 @@ defmodule PostHog.FeatureFlags.FlagDefinitionCacheProvider do
   `:flag_definition_cache_provider`. The definition loader bounds and isolates
   every callback. Cached values must be maps containing `flags`,
   `group_type_mapping`, and `cohorts` (string or atom keys are accepted).
+  Preserve the complete envelope, including `property_matching_version`, with
+  the definitions. Only version 2 selects explicit property matching; older
+  cached envelopes omitting the version use released service legacy matching.
 
   A minimal provider can coordinate fetching and keep the complete envelope in
   an application-owned cache:

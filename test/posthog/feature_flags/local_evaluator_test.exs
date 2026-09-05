@@ -34,6 +34,197 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
     LocalEvaluator.evaluate(snapshot([flag]), context, [flag["key"]])
   end
 
+  # Expected values are the released service v1 and explicit v2 results, not
+  # Elixir truthiness or the SDK's former unversioned array membership behavior.
+  for version <- [:missing, 1, 2, 0, 3, "2", nil] do
+    @matching_version version
+    test "version #{inspect(version)} selects service exact matching and is_not complements" do
+      rows = [
+        {false, "banana", true, false},
+        {false, 0, true, false},
+        {false, 1, true, false},
+        {"FaLsE", "banana", true, false},
+        {["FALSE"], "banana", true, false},
+        {["true", "false"], "true", false, true},
+        {["true", "false"], "pro", true, false},
+        {[], true, true, true},
+        {[], [], true, true},
+        {true, [true], true, false},
+        {"TrUe", [true], true, false},
+        {[true], [true], true, false},
+        {true, [], true, false},
+        {false, "FALSE", true, true},
+        {false, nil, true, false},
+        {false, "", true, false},
+        {false, %{}, true, false},
+        {[], [true, ["TRUE", []]], true, true},
+        {[], [true, [false]], false, false},
+        {[], false, false, false},
+        {[], nil, false, false},
+        {[], 0, false, false},
+        {[], 1, false, false},
+        {[], "banana", false, false},
+        {["FREE", "PRO"], "pro", true, true},
+        {[false, "PRO"], "pro", true, true},
+        {[false, "PRO"], "banana", false, false},
+        {[[true], "PRO"], [true], true, true},
+        {[["ÉLITE", true], "PRO"], ["élite", true], true, true},
+        {[[true], ["FALSE"]], "banana", true, false},
+        {["TrUe", "FALSE"], true, false, true},
+        {["TrUe", "FALSE"], false, true, true},
+        {nil, nil, true, true},
+        {[nil], nil, true, true},
+        {nil, "", false, false},
+        {%{"plan" => "PRO"}, %{"plan" => "pro"}, true, true},
+        {"ÉLITE", "élite", true, true},
+        {[1, "pro"], "1", true, true}
+      ]
+
+      for {filter, property, legacy, explicit} <- rows,
+          operator <- ["exact", "is_not"] do
+        condition = %{"key" => "prop", "operator" => operator, "value" => filter}
+        definitions = versioned_snapshot([flag("versioned", [condition])], @matching_version)
+        context = %{distinct_id: "user", person_properties: %{"prop" => property}}
+        result = LocalEvaluator.evaluate(definitions, context)
+        expected = if @matching_version == 2, do: explicit, else: legacy
+        expected = if operator == "is_not", do: not expected, else: expected
+
+        assert %Result{enabled: ^expected, locally_evaluated: true} = result.results["versioned"],
+               inspect({@matching_version, operator, filter, property, expected, result})
+
+        assert MapSet.size(result.unresolved) == 0
+      end
+    end
+  end
+
+  for {name, property, canonical} <- [
+        {"mixed atom and string keys", %{"a" => true, :z => true}, ~s({"a":true,"z":true})},
+        {"nested objects and arrays", %{"a" => [%{"b" => 1, :z => 2}], :z => %{a: true}},
+         ~s({"a":[{"b":1,"z":2}],"z":{"a":true}})},
+        {"large string-key maps",
+         Map.new(1..40, &{"key#{String.pad_leading("#{&1}", 2, "0")}", &1}),
+         "{" <>
+           Enum.map_join(1..40, ",", &~s("key#{String.pad_leading("#{&1}", 2, "0")}":#{&1})) <>
+           "}"}
+      ] do
+    @composite_property property
+    @canonical_json canonical
+    test "exact and is_not use recursively sorted JSON for #{name}" do
+      for version <- [:missing, 1, 2],
+          operator <- ["exact", "is_not"],
+          {filter, property} <- [
+            {@canonical_json, @composite_property},
+            {@composite_property, @canonical_json},
+            {[@composite_property], @canonical_json}
+          ] do
+        condition = %{"key" => "prop", "operator" => operator, "value" => filter}
+        definitions = versioned_snapshot([flag("canonical", [condition])], version)
+        context = %{distinct_id: "user", person_properties: %{"prop" => property}}
+        result = LocalEvaluator.evaluate(definitions, context)
+        expected = operator == "exact"
+
+        assert %Result{enabled: ^expected, locally_evaluated: true} = result.results["canonical"],
+               inspect({version, operator, filter, property, result})
+
+        assert MapSet.size(result.unresolved) == 0
+      end
+    end
+  end
+
+  for {name, property, string} <- [
+        {"Date", ~D[2025-01-01], "2025-01-01"},
+        {"Time", ~T[12:34:56], "12:34:56"}
+      ] do
+    @scalar_struct property
+    @scalar_string string
+    test "exact and is_not preserve ordinary string matching for #{name} properties" do
+      for version <- [:missing, 1, 2],
+          operator <- ["exact", "is_not"],
+          {filter, matches} <- [
+            {@scalar_string, true},
+            {[@scalar_string], true},
+            {"different", false}
+          ] do
+        condition = %{"key" => "prop", "operator" => operator, "value" => filter}
+        definitions = versioned_snapshot([flag("scalar-struct", [condition])], version)
+        context = %{distinct_id: "user", person_properties: %{"prop" => @scalar_struct}}
+        result = LocalEvaluator.evaluate(definitions, context)
+        expected = if operator == "exact", do: matches, else: not matches
+
+        assert %Result{enabled: ^expected, locally_evaluated: true} =
+                 result.results["scalar-struct"],
+               inspect({version, operator, filter, @scalar_struct, result})
+
+        assert MapSet.size(result.unresolved) == 0
+      end
+    end
+  end
+
+  test "missing properties stay inconclusive for both operators and matching versions" do
+    for version <- [:missing, 1, 2], operator <- ["exact", "is_not"] do
+      condition = %{"key" => "prop", "operator" => operator, "value" => false}
+      definitions = versioned_snapshot([flag("missing", [condition])], version)
+      result = LocalEvaluator.evaluate(definitions, %{distinct_id: "user"})
+      assert result.results == %{}
+      assert MapSet.equal?(result.unresolved, MapSet.new(["missing"]))
+    end
+  end
+
+  test "person, group, recursive cohort and dependency share one snapshot version" do
+    for version <- [:missing, 1, 2], operator <- ["exact", "is_not"] do
+      condition = %{"key" => "prop", "operator" => operator, "value" => false}
+      person = flag("person", [condition])
+      group = put_in(flag("group", [condition]), ["filters", "aggregation_group_type_index"], 0)
+      cohort = flag("cohort", [%{"type" => "cohort", "value" => 1}])
+
+      dependency =
+        flag("dependency", [
+          %{
+            "type" => "flag",
+            "key" => "person",
+            "operator" => "flag_evaluates_to",
+            "value" => true,
+            "dependency_chain" => ["person"]
+          }
+        ])
+
+      definitions =
+        versioned_snapshot([person, group, cohort, dependency], version)
+        |> Map.put(:group_type_mapping, %{"0" => "organization"})
+        |> Map.put(:cohorts, %{
+          "1" => %{
+            "type" => "AND",
+            "values" => [
+              %{"type" => "OR", "values" => [condition]}
+            ]
+          }
+        })
+
+      context = %{
+        distinct_id: "user",
+        person_properties: %{prop: "banana"},
+        groups: %{organization: "org"},
+        group_properties: %{organization: %{prop: "banana"}}
+      }
+
+      expected = if operator == "exact", do: version != 2, else: version == 2
+
+      for keys <- [nil, ["dependency"], ["person"], ["group"], ["cohort"]] do
+        result = LocalEvaluator.evaluate(definitions, context, keys)
+        assert MapSet.size(result.unresolved) == 0
+
+        for key <- keys || ["person", "group", "cohort", "dependency"] do
+          assert result.results[key].enabled == expected, inspect({version, operator, key})
+        end
+      end
+    end
+  end
+
+  defp versioned_snapshot(flags, :missing), do: snapshot(flags)
+
+  defp versioned_snapshot(flags, version),
+    do: snapshot(flags, %{property_matching_version: version})
+
   test "canonical hash vectors and fractional rollout boundaries" do
     assert_in_delta LocalEvaluator.hash("flag", "user"), 0.4357368498163313, 1.0e-15
     assert_in_delta LocalEvaluator.hash("flag", "user", "variant"), 0.4727021985667222, 1.0e-15

@@ -50,6 +50,77 @@ defmodule PostHog.FeatureFlags.LocalEvaluationIntegrationTest do
     start_supervised!({PostHog.Supervisor, config})
   end
 
+  test "HTTP version-only refreshes replace matching atomically and preserve frozen results" do
+    definitions = envelope([flag("versioned", [%{"key" => "prop", "value" => false}])])
+
+    context = %{
+      distinct_id: "user",
+      person_properties: %{prop: "banana"},
+      only_evaluate_locally: true
+    }
+
+    name = __MODULE__.Versioned
+
+    expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+      {:ok, %{status: 200, body: definitions, headers: %{}}}
+    end)
+
+    start_instance(name)
+    assert {:ok, frozen} = FeatureFlags.evaluate_flags(name, context)
+    assert frozen.flags["versioned"].enabled
+    assert FeatureFlags.DefinitionLoader.definitions(name).property_matching_version == 1
+
+    for {response, version} <- [
+          {{:ok, %{status: 200, body: Map.put(definitions, "property_matching_version", 1)}}, 1},
+          {{:ok,
+            %{
+              status: 200,
+              body: Map.put(definitions, "property_matching_version", 2),
+              headers: %{"etag" => "v2"}
+            }}, 2},
+          {{:ok, %{status: 304, body: nil}}, 2},
+          {{:ok, %{status: 503, body: %{}}}, 2},
+          {{:error, :timeout}, 2},
+          {{:ok, %{status: 200, body: %{"flags" => []}}}, 2},
+          {{:ok, %{status: 200, body: Map.put(definitions, "property_matching_version", 1)}}, 1},
+          {{:ok, %{status: 200, body: Map.put(definitions, "property_matching_version", 2)}}, 2},
+          {{:ok, %{status: 200, body: definitions}}, 1},
+          {{:ok, %{status: 200, body: Map.put(definitions, "property_matching_version", 2)}}, 2},
+          {{:ok, %{status: 401, body: %{}}}, nil},
+          {{:ok, %{status: 200, body: definitions}}, 1}
+        ] do
+      before = FeatureFlags.DefinitionLoader.definitions(name)
+
+      expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", opts ->
+        if match?({:ok, %{status: 304}}, response),
+          do: assert({"if-none-match", "v2"} in opts[:headers])
+
+        response
+      end)
+
+      ExUnit.CaptureLog.capture_log(fn -> FeatureFlags.DefinitionLoader.refresh(name) end)
+      current = FeatureFlags.DefinitionLoader.definitions(name)
+      assert frozen.flags["versioned"].enabled
+
+      if is_nil(version) do
+        assert current == nil
+      else
+        assert current.property_matching_version == version
+        assert current.flags == definitions["flags"]
+
+        if match?({:ok, %{status: 304}}, response) or match?({:ok, %{status: 503}}, response) or
+             match?({:error, _}, response) or match?({:ok, %{body: %{"flags" => []}}}, response),
+           do: assert(current == before)
+
+        expected = version != 2
+        assert {:ok, result} = FeatureFlags.evaluate_flags(name, context)
+        assert result.flags["versioned"].enabled == expected
+        assert result.flags["versioned"].locally_evaluated
+        assert {:ok, ^expected} = FeatureFlags.check(name, "versioned", context)
+      end
+    end
+  end
+
   test "matching local boolean and variant payload produce a frozen snapshot without /flags" do
     variant =
       flag("variant", [], %{
