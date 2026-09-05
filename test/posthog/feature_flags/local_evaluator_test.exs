@@ -290,6 +290,59 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
     end
   end
 
+  for version <- [:missing, 1, 2], operator <- ["exact", "is_not"] do
+    @matching_version version
+    @matching_operator operator
+    test "version #{version} #{operator} leaves opaque property truthiness inconclusive" do
+      filters = if @matching_version == 2, do: [[]], else: [true, false, [true], []]
+      scalar = %CustomValue{payload: "true"}
+      assert scalar |> Jason.encode!() |> Jason.decode!() == "true"
+
+      for property <- [scalar, [scalar], [true, [scalar]]], filter <- filters do
+        condition = %{"key" => "prop", "operator" => @matching_operator, "value" => filter}
+
+        definitions =
+          versioned_snapshot([flag("opaque-truthiness", [condition])], @matching_version)
+
+        context = %{distinct_id: "user", person_properties: %{prop: property}}
+        result = LocalEvaluator.evaluate(definitions, context)
+        assert result.results == %{}, inspect({filter, property, result})
+        assert result.unresolved == MapSet.new(["opaque-truthiness"])
+      end
+    end
+
+    test "version #{version} #{operator} uses wire-string truthiness for native atoms" do
+      filters = if @matching_version == 2, do: [[]], else: [true, [true], []]
+
+      for {property, truthy} <- [
+            {:TRUE, true},
+            {[:TRUE, [:TrUe]], true},
+            {:FALSE, false},
+            {:banana, false},
+            {nil, false},
+            {false, false},
+            {true, true},
+            {%{nested: :TRUE}, false}
+          ],
+          filter <- filters do
+        wire = property |> Jason.encode!() |> Jason.decode!()
+        condition = %{"key" => "prop", "operator" => @matching_operator, "value" => filter}
+
+        definitions =
+          versioned_snapshot([flag("atom-truthiness", [condition])], @matching_version)
+
+        expected = if @matching_operator == "exact", do: truthy, else: not truthy
+
+        for value <- [property, wire] do
+          context = %{distinct_id: "user", person_properties: %{prop: value}}
+          result = LocalEvaluator.evaluate(definitions, context)
+          assert %Result{enabled: ^expected} = result.results["atom-truthiness"]
+          assert result.unresolved == MapSet.new()
+        end
+      end
+    end
+  end
+
   test "opaque structs do not change legacy or empty-filter truthiness" do
     property = %{"nested" => %DerivedObject{payload: 0.00001}}
 

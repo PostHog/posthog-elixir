@@ -798,6 +798,15 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   defp truthy?(value) when is_boolean(value), do: value
   defp truthy?(value) when is_binary(value), do: String.downcase(value) == "true"
   defp truthy?(value) when is_list(value), do: Enum.all?(value, &truthy?/1)
+
+  # Jason sends non-boolean atoms as strings, but a struct's encoder is opaque.
+  defp truthy?(value) when is_atom(value) and not is_nil(value),
+    do: value |> Atom.to_string() |> truthy?()
+
+  defp truthy?(value) when is_struct(value) do
+    raise ArgumentError, "opaque JSON struct truthiness"
+  end
+
   defp truthy?(_value), do: false
 
   defp case_insensitive_equal?(left, right) do

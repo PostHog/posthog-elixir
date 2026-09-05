@@ -358,6 +358,52 @@ defmodule PostHog.FeatureFlags.LocalEvaluationIntegrationTest do
     end
   end
 
+  for version <- [:missing, 1, 2], operator <- ["exact", "is_not"] do
+    @matching_version version
+    @matching_operator operator
+    test "version #{version} #{operator} falls back for opaque scalar truthiness" do
+      filter = if @matching_version == 2, do: [], else: true
+      condition = %{"key" => "prop", "operator" => @matching_operator, "value" => filter}
+      definitions = envelope([flag("local"), flag("opaque-truthiness", [condition])])
+
+      definitions =
+        if @matching_version == :missing,
+          do: definitions,
+          else: Map.put(definitions, "property_matching_version", @matching_version)
+
+      expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+        {:ok, %{status: 200, body: definitions, headers: %{}}}
+      end)
+
+      name = __MODULE__.OpaqueTruthiness
+      start_instance(name)
+      expected = @matching_operator == "exact"
+      scalar = %PostHog.Test.LocalEvaluatorStructs.CustomValue{payload: "true"}
+
+      for {property, wire} <- [{scalar, "true"}, {[true, [scalar]], [true, ["true"]]}] do
+        context = %{distinct_id: "user", person_properties: %{prop: property}}
+
+        assert {:ok, local_only} =
+                 FeatureFlags.evaluate_flags(name, Map.put(context, :only_evaluate_locally, true))
+
+        assert Evaluations.keys(local_only) == ["local"]
+
+        expect(PostHog.API.Mock, :request, fn :stub_client, :post, "/flags", opts ->
+          assert opts[:json].person_properties |> Jason.encode!() |> Jason.decode!() ==
+                   %{"prop" => wire}
+
+          {:ok,
+           %{status: 200, body: %{"flags" => %{"opaque-truthiness" => %{"enabled" => expected}}}}}
+        end)
+
+        assert {:ok, result} = FeatureFlags.evaluate_flags(name, context)
+        assert result.flags["local"].locally_evaluated
+        assert result.flags["opaque-truthiness"].enabled == expected
+        refute result.flags["opaque-truthiness"].locally_evaluated
+      end
+    end
+  end
+
   test "snapshot-level remote errors are logged for locally resolved flags" do
     unknown = flag("unknown", [%{"key" => "x", "operator" => "future", "value" => 1}])
 
