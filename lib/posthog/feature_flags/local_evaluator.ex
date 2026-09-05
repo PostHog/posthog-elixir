@@ -800,8 +800,21 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   defp truthy?(value) when is_list(value), do: Enum.all?(value, &truthy?/1)
   defp truthy?(_value), do: false
 
-  defp case_insensitive_equal?(left, right),
-    do: String.downcase(exact_string(left)) == String.downcase(exact_string(right))
+  defp case_insensitive_equal?(left, right) do
+    left_string = exact_string(left)
+    right_string = exact_string(right)
+
+    # Rust lowercases sigma contextually; String.downcase/1 does not. Keep newly
+    # supported composite comparisons inconclusive if either side could differ.
+    if (composite_json?(left) or composite_json?(right)) and
+         (String.contains?(left_string, "Σ") or String.contains?(right_string, "Σ")) do
+      raise ArgumentError, "ambiguous composite Unicode casing"
+    end
+
+    String.downcase(left_string) == String.downcase(right_string)
+  end
+
+  defp composite_json?(value), do: is_list(value) or (is_map(value) and not is_struct(value))
 
   defp exact_string(value) when is_struct(value), do: to_string(value)
 

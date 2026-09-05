@@ -131,6 +131,35 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
     end
   end
 
+  for version <- [:missing, 1, 2], operator <- ["exact", "is_not"] do
+    @matching_version version
+    @matching_operator operator
+    test "version #{version} #{@matching_operator} leaves composite sigma casing inconclusive" do
+      for {upper, lower} <- [
+            {%{"name" => "ΟΣ"}, %{"name" => "ος"}},
+            {%{"name" => "ΟΣ"}, %{"name" => "οσ"}},
+            {%{"ΟΣ" => [%{"name" => "ΟΣ"}]}, %{"ος" => [%{"name" => "ος"}]}},
+            {[%{"name" => "ΟΣ"}], [%{"name" => "ος"}]}
+          ],
+          {filter, property} <- [
+            {lower, upper},
+            {upper, lower},
+            {Jason.encode!(upper), lower},
+            {lower, Jason.encode!(upper)},
+            {[upper], lower},
+            {[lower], upper}
+          ] do
+        condition = %{"key" => "prop", "operator" => @matching_operator, "value" => filter}
+        definitions = versioned_snapshot([flag("unicode", [condition])], @matching_version)
+        context = %{distinct_id: "user", person_properties: %{"prop" => property}}
+        result = LocalEvaluator.evaluate(definitions, context)
+
+        assert result.results == %{}, inspect({filter, property, result})
+        assert result.unresolved == MapSet.new(["unicode"])
+      end
+    end
+  end
+
   test "composite numeric serialization ambiguity stays inconclusive" do
     for version <- [:missing, 1, 2],
         operator <- ["exact", "is_not"],
