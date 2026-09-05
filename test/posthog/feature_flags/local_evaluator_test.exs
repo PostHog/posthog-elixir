@@ -163,8 +163,36 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
   for version <- [:missing, 1, 2], operator <- ["exact", "is_not"] do
     @matching_version version
     @matching_operator operator
+    test "version #{version} #{operator} normalizes nil atom keys like Jason" do
+      for {composite, wire} <- [
+            {%{nil => 1}, %{"nil" => 1}},
+            {%{"nested" => [%{nil => 1}]}, %{"nested" => [%{"nil" => 1}]}},
+            {[%{nil => 1}], [%{"nil" => 1}]},
+            {%{nil => 1, "" => 2, true => 3, false => 4, :a => 5},
+             %{"nil" => 1, "" => 2, "true" => 3, "false" => 4, "a" => 5}}
+          ] do
+        assert composite |> Jason.encode!() |> Jason.decode!() == wire
+
+        for {filter, property} <- [{[wire], composite}, {[composite], wire}] do
+          condition = %{"key" => "prop", "operator" => @matching_operator, "value" => filter}
+          definitions = versioned_snapshot([flag("nil-keys", [condition])], @matching_version)
+          context = %{distinct_id: "user", person_properties: %{"prop" => property}}
+          result = LocalEvaluator.evaluate(definitions, context)
+          expected = @matching_operator == "exact"
+
+          assert %Result{enabled: ^expected, locally_evaluated: true} = result.results["nil-keys"],
+                 inspect({filter, property, result})
+
+          assert MapSet.size(result.unresolved) == 0
+        end
+      end
+    end
+
     test "version #{version} #{operator} leaves colliding composite keys inconclusive" do
       for {composite, candidates} <- [
+            {%{nil => 1, "nil" => 2}, [%{"nil" => 1}, %{"nil" => 2}]},
+            {%{"nested" => [%{nil => 1, "nil" => 2}]},
+             [%{"nested" => [%{"nil" => 1}]}, %{"nested" => [%{"nil" => 2}]}]},
             {%{:a => 1, "a" => 2}, [%{"a" => 1}, %{"a" => 2}]},
             {%{"nested" => [%{:a => 1, "a" => 2}]},
              [%{"nested" => [%{"a" => 1}]}, %{"nested" => [%{"a" => 2}]}]}

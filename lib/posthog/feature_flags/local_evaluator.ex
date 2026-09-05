@@ -826,7 +826,12 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
 
   # Map iteration order is not JSON key order, including for mixed atom/string keys.
   defp sort_json_objects(value) when is_map(value) and not is_struct(value) do
-    members = Enum.map(value, fn {key, member} -> {to_string(key), sort_json_objects(member)} end)
+    members =
+      Enum.map(value, fn {key, member} ->
+        # Jason uses atom names for keys, including nil as "nil", not "".
+        key = if is_atom(key), do: Atom.to_string(key), else: to_string(key)
+        {key, sort_json_objects(member)}
+      end)
 
     # JSON parsing on the service drops duplicate keys, unlike Jason.OrderedObject.
     if length(Enum.uniq_by(members, &elem(&1, 0))) != map_size(value) do
