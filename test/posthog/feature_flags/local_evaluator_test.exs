@@ -160,6 +160,30 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
     end
   end
 
+  for version <- [:missing, 1, 2], operator <- ["exact", "is_not"] do
+    @matching_version version
+    @matching_operator operator
+    test "version #{version} #{operator} leaves colliding composite keys inconclusive" do
+      for {composite, candidates} <- [
+            {%{:a => 1, "a" => 2}, [%{"a" => 1}, %{"a" => 2}]},
+            {%{"nested" => [%{:a => 1, "a" => 2}]},
+             [%{"nested" => [%{"a" => 1}]}, %{"nested" => [%{"a" => 2}]}]}
+          ],
+          {filter, property} <- [
+            {candidates, composite},
+            {[composite], hd(candidates)}
+          ] do
+        condition = %{"key" => "prop", "operator" => @matching_operator, "value" => filter}
+        definitions = versioned_snapshot([flag("colliding-keys", [condition])], @matching_version)
+        context = %{distinct_id: "user", person_properties: %{"prop" => property}}
+        result = LocalEvaluator.evaluate(definitions, context)
+
+        assert result.results == %{}, inspect({filter, property, result})
+        assert result.unresolved == MapSet.new(["colliding-keys"])
+      end
+    end
+  end
+
   test "composite numeric serialization ambiguity stays inconclusive" do
     for version <- [:missing, 1, 2],
         operator <- ["exact", "is_not"],
