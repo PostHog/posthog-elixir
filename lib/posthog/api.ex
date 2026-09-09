@@ -1,6 +1,7 @@
 defmodule PostHog.API do
   @moduledoc false
   def batch(%__MODULE__.Client{} = client, batch) do
+    batch = Enum.map(batch, &PostHog.EventProperties.normalize/1)
     client.module.request(client.client, :post, "/batch", json: %{batch: batch})
   end
 
