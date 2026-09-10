@@ -1,5 +1,7 @@
 defmodule PostHog.HandlerTest do
-  use PostHog.Case, async: true
+  # On older OTP versions, concurrent log capture can restore the global translator
+  # removed by setup_all, dropping SASL reports before they reach our handler.
+  use PostHog.Case, async: false
 
   require Logger
 
