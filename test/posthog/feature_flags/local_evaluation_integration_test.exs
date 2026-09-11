@@ -50,6 +50,77 @@ defmodule PostHog.FeatureFlags.LocalEvaluationIntegrationTest do
     start_supervised!({PostHog.Supervisor, config})
   end
 
+  test "HTTP version-only refreshes replace matching atomically and preserve frozen results" do
+    definitions = envelope([flag("versioned", [%{"key" => "prop", "value" => false}])])
+
+    context = %{
+      distinct_id: "user",
+      person_properties: %{prop: "banana"},
+      only_evaluate_locally: true
+    }
+
+    name = __MODULE__.Versioned
+
+    expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+      {:ok, %{status: 200, body: definitions, headers: %{}}}
+    end)
+
+    start_instance(name)
+    assert {:ok, frozen} = FeatureFlags.evaluate_flags(name, context)
+    assert frozen.flags["versioned"].enabled
+    assert FeatureFlags.DefinitionLoader.definitions(name).property_matching_version == 1
+
+    for {response, version} <- [
+          {{:ok, %{status: 200, body: Map.put(definitions, "property_matching_version", 1)}}, 1},
+          {{:ok,
+            %{
+              status: 200,
+              body: Map.put(definitions, "property_matching_version", 2),
+              headers: %{"etag" => "v2"}
+            }}, 2},
+          {{:ok, %{status: 304, body: nil}}, 2},
+          {{:ok, %{status: 503, body: %{}}}, 2},
+          {{:error, :timeout}, 2},
+          {{:ok, %{status: 200, body: %{"flags" => []}}}, 2},
+          {{:ok, %{status: 200, body: Map.put(definitions, "property_matching_version", 1)}}, 1},
+          {{:ok, %{status: 200, body: Map.put(definitions, "property_matching_version", 2)}}, 2},
+          {{:ok, %{status: 200, body: definitions}}, 1},
+          {{:ok, %{status: 200, body: Map.put(definitions, "property_matching_version", 2)}}, 2},
+          {{:ok, %{status: 401, body: %{}}}, nil},
+          {{:ok, %{status: 200, body: definitions}}, 1}
+        ] do
+      before = FeatureFlags.DefinitionLoader.definitions(name)
+
+      expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", opts ->
+        if match?({:ok, %{status: 304}}, response),
+          do: assert({"if-none-match", "v2"} in opts[:headers])
+
+        response
+      end)
+
+      ExUnit.CaptureLog.capture_log(fn -> FeatureFlags.DefinitionLoader.refresh(name) end)
+      current = FeatureFlags.DefinitionLoader.definitions(name)
+      assert frozen.flags["versioned"].enabled
+
+      if is_nil(version) do
+        assert current == nil
+      else
+        assert current.property_matching_version == version
+        assert current.flags == definitions["flags"]
+
+        if match?({:ok, %{status: 304}}, response) or match?({:ok, %{status: 503}}, response) or
+             match?({:error, _}, response) or match?({:ok, %{body: %{"flags" => []}}}, response),
+           do: assert(current == before)
+
+        expected = version != 2
+        assert {:ok, result} = FeatureFlags.evaluate_flags(name, context)
+        assert result.flags["versioned"].enabled == expected
+        assert result.flags["versioned"].locally_evaluated
+        assert {:ok, ^expected} = FeatureFlags.check(name, "versioned", context)
+      end
+    end
+  end
+
   test "matching local boolean and variant payload produce a frozen snapshot without /flags" do
     variant =
       flag("variant", [], %{
@@ -140,6 +211,197 @@ defmodule PostHog.FeatureFlags.LocalEvaluationIntegrationTest do
     assert snapshot.flags["local"].enabled
     assert snapshot.flags["unknown"].enabled
     assert snapshot.flags["extra"].enabled
+  end
+
+  for version <- [1, 2], operator <- ["exact", "is_not"] do
+    @matching_version version
+    @matching_operator operator
+    test "version #{version} #{operator} falls back for composite numeric serialization" do
+      condition = %{
+        "key" => "prop",
+        "operator" => @matching_operator,
+        "value" => ~s({"n":0.00001})
+      }
+
+      expected = @matching_operator == "exact"
+
+      definitions =
+        [flag("local"), flag("numeric-composite", [condition])]
+        |> envelope()
+        |> Map.put("property_matching_version", @matching_version)
+
+      expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+        {:ok, %{status: 200, body: definitions, headers: %{}}}
+      end)
+
+      name = __MODULE__.CompositeNumbers
+      start_instance(name)
+      context = %{distinct_id: "user", person_properties: %{prop: %{"n" => 0.00001}}}
+
+      assert {:ok, local_only} =
+               FeatureFlags.evaluate_flags(name, Map.put(context, :only_evaluate_locally, true))
+
+      assert Evaluations.keys(local_only) == ["local"]
+
+      expect(PostHog.API.Mock, :request, fn :stub_client, :post, "/flags", opts ->
+        assert opts[:json].person_properties == context.person_properties
+
+        {:ok,
+         %{
+           status: 200,
+           body: %{"flags" => %{"numeric-composite" => %{"enabled" => expected}}}
+         }}
+      end)
+
+      assert {:ok, result} = FeatureFlags.evaluate_flags(name, context)
+      assert result.flags["local"].locally_evaluated
+      assert result.flags["numeric-composite"].enabled == expected
+      refute result.flags["numeric-composite"].locally_evaluated
+    end
+  end
+
+  for version <- [1, 2], operator <- ["exact", "is_not"] do
+    @matching_version version
+    @matching_operator operator
+    test "version #{version} #{operator} falls back for composite sigma casing" do
+      condition = %{
+        "key" => "prop",
+        "operator" => @matching_operator,
+        "value" => %{"name" => "ος"}
+      }
+
+      expected = @matching_operator == "exact"
+
+      definitions =
+        [flag("local"), flag("unicode", [condition])]
+        |> envelope()
+        |> Map.put("property_matching_version", @matching_version)
+
+      expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+        {:ok, %{status: 200, body: definitions, headers: %{}}}
+      end)
+
+      name = __MODULE__.CompositeUnicode
+      start_instance(name)
+      context = %{distinct_id: "user", person_properties: %{prop: %{"name" => "ΟΣ"}}}
+
+      assert {:ok, local_only} =
+               FeatureFlags.evaluate_flags(name, Map.put(context, :only_evaluate_locally, true))
+
+      assert Evaluations.keys(local_only) == ["local"]
+
+      expect(PostHog.API.Mock, :request, fn :stub_client, :post, "/flags", opts ->
+        assert opts[:json].person_properties == context.person_properties
+
+        {:ok, %{status: 200, body: %{"flags" => %{"unicode" => %{"enabled" => expected}}}}}
+      end)
+
+      assert {:ok, result} = FeatureFlags.evaluate_flags(name, context)
+      assert result.flags["local"].locally_evaluated
+      assert result.flags["unicode"].enabled == expected
+      refute result.flags["unicode"].locally_evaluated
+    end
+  end
+
+  for version <- [:missing, 1, 2], operator <- ["exact", "is_not"] do
+    @matching_version version
+    @matching_operator operator
+    test "version #{version} #{operator} omits nested structs locally and falls back to /flags" do
+      wire = %{"nested" => [%{"a" => 2, "z" => 1}]}
+      condition = %{"key" => "prop", "operator" => @matching_operator, "value" => wire}
+      definitions = envelope([flag("local"), flag("opaque", [condition])])
+
+      definitions =
+        if @matching_version == :missing,
+          do: definitions,
+          else: Map.put(definitions, "property_matching_version", @matching_version)
+
+      expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+        {:ok, %{status: 200, body: definitions, headers: %{}}}
+      end)
+
+      name = __MODULE__.NestedStructs
+      start_instance(name)
+      expected = @matching_operator == "exact"
+
+      for value <- [
+            Jason.OrderedObject.new([{"z", 1}, {"a", 2}]),
+            %PostHog.Test.LocalEvaluatorStructs.CustomValue{payload: %{:z => 1, "a" => 2}}
+          ] do
+        context = %{distinct_id: "user", person_properties: %{prop: %{"nested" => [value]}}}
+
+        assert {:ok, local_only} =
+                 FeatureFlags.evaluate_flags(name, Map.put(context, :only_evaluate_locally, true))
+
+        assert Evaluations.keys(local_only) == ["local"]
+
+        expect(PostHog.API.Mock, :request, fn :stub_client, :post, "/flags", opts ->
+          assert opts[:json].person_properties == context.person_properties
+
+          assert opts[:json].person_properties |> Jason.encode!() |> Jason.decode!() ==
+                   %{"prop" => wire}
+
+          {:ok, %{status: 200, body: %{"flags" => %{"opaque" => %{"enabled" => expected}}}}}
+        end)
+
+        assert {:ok, result} = FeatureFlags.evaluate_flags(name, context)
+        assert result.flags["local"].locally_evaluated
+        assert result.flags["opaque"].enabled == expected
+        refute result.flags["opaque"].locally_evaluated
+      end
+
+      # Decoded JSON still resolves locally, including normalized internal OrderedObjects.
+      context = %{distinct_id: "user", person_properties: %{prop: wire}}
+      assert {:ok, result} = FeatureFlags.evaluate_flags(name, context)
+      assert result.flags["opaque"].enabled == expected
+      assert result.flags["opaque"].locally_evaluated
+    end
+  end
+
+  for version <- [:missing, 1, 2], operator <- ["exact", "is_not"] do
+    @matching_version version
+    @matching_operator operator
+    test "version #{version} #{operator} falls back for opaque scalar truthiness" do
+      filter = if @matching_version == 2, do: [], else: true
+      condition = %{"key" => "prop", "operator" => @matching_operator, "value" => filter}
+      definitions = envelope([flag("local"), flag("opaque-truthiness", [condition])])
+
+      definitions =
+        if @matching_version == :missing,
+          do: definitions,
+          else: Map.put(definitions, "property_matching_version", @matching_version)
+
+      expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+        {:ok, %{status: 200, body: definitions, headers: %{}}}
+      end)
+
+      name = __MODULE__.OpaqueTruthiness
+      start_instance(name)
+      expected = @matching_operator == "exact"
+      scalar = %PostHog.Test.LocalEvaluatorStructs.CustomValue{payload: "true"}
+
+      for {property, wire} <- [{scalar, "true"}, {[true, [scalar]], [true, ["true"]]}] do
+        context = %{distinct_id: "user", person_properties: %{prop: property}}
+
+        assert {:ok, local_only} =
+                 FeatureFlags.evaluate_flags(name, Map.put(context, :only_evaluate_locally, true))
+
+        assert Evaluations.keys(local_only) == ["local"]
+
+        expect(PostHog.API.Mock, :request, fn :stub_client, :post, "/flags", opts ->
+          assert opts[:json].person_properties |> Jason.encode!() |> Jason.decode!() ==
+                   %{"prop" => wire}
+
+          {:ok,
+           %{status: 200, body: %{"flags" => %{"opaque-truthiness" => %{"enabled" => expected}}}}}
+        end)
+
+        assert {:ok, result} = FeatureFlags.evaluate_flags(name, context)
+        assert result.flags["local"].locally_evaluated
+        assert result.flags["opaque-truthiness"].enabled == expected
+        refute result.flags["opaque-truthiness"].locally_evaluated
+      end
+    end
   end
 
   test "snapshot-level remote errors are logged for locally resolved flags" do

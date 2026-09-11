@@ -3,6 +3,8 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
 
   alias PostHog.FeatureFlags.LocalEvaluator
   alias PostHog.FeatureFlags.Result
+  alias PostHog.Test.LocalEvaluatorStructs.CustomValue
+  alias PostHog.Test.LocalEvaluatorStructs.DerivedObject
 
   defp snapshot(flags, extras \\ %{}) do
     Map.merge(
@@ -33,6 +35,475 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
     context = Map.merge(%{distinct_id: "user", person_properties: %{}}, context)
     LocalEvaluator.evaluate(snapshot([flag]), context, [flag["key"]])
   end
+
+  # Expected values are the released service v1 and explicit v2 results, not
+  # Elixir truthiness or the SDK's former unversioned array membership behavior.
+  for version <- [:missing, 1, 2, 0, 3, "2", nil] do
+    @matching_version version
+    test "version #{inspect(version)} selects service exact matching and is_not complements" do
+      rows = [
+        {false, "banana", true, false},
+        {false, 0, true, false},
+        {false, 1, true, false},
+        {"FaLsE", "banana", true, false},
+        {["FALSE"], "banana", true, false},
+        {["true", "false"], "true", false, true},
+        {["true", "false"], "pro", true, false},
+        {[], true, true, true},
+        {[], [], true, true},
+        {true, [true], true, false},
+        {"TrUe", [true], true, false},
+        {[true], [true], true, false},
+        {true, [], true, false},
+        {false, "FALSE", true, true},
+        {false, nil, true, false},
+        {false, "", true, false},
+        {false, %{}, true, false},
+        {[], [true, ["TRUE", []]], true, true},
+        {[], [true, [false]], false, false},
+        {[], false, false, false},
+        {[], nil, false, false},
+        {[], 0, false, false},
+        {[], 1, false, false},
+        {[], "banana", false, false},
+        {["FREE", "PRO"], "pro", true, true},
+        {[false, "PRO"], "pro", true, true},
+        {[false, "PRO"], "banana", false, false},
+        {[[true], "PRO"], [true], true, true},
+        {[["ÉLITE", true], "PRO"], ["élite", true], true, true},
+        {[[true], ["FALSE"]], "banana", true, false},
+        {["TrUe", "FALSE"], true, false, true},
+        {["TrUe", "FALSE"], false, true, true},
+        {nil, nil, true, true},
+        {[nil], nil, true, true},
+        {nil, "", false, false},
+        {%{"plan" => "PRO"}, %{"plan" => "pro"}, true, true},
+        {"ÉLITE", "élite", true, true},
+        {[1, "pro"], "1", true, true}
+      ]
+
+      for {filter, property, legacy, explicit} <- rows,
+          operator <- ["exact", "is_not"] do
+        condition = %{"key" => "prop", "operator" => operator, "value" => filter}
+        definitions = versioned_snapshot([flag("versioned", [condition])], @matching_version)
+        context = %{distinct_id: "user", person_properties: %{"prop" => property}}
+        result = LocalEvaluator.evaluate(definitions, context)
+        expected = if @matching_version == 2, do: explicit, else: legacy
+        expected = if operator == "is_not", do: not expected, else: expected
+
+        assert %Result{enabled: ^expected, locally_evaluated: true} = result.results["versioned"],
+               inspect({@matching_version, operator, filter, property, expected, result})
+
+        assert MapSet.size(result.unresolved) == 0
+      end
+    end
+  end
+
+  for {name, property, canonical} <- [
+        {"mixed atom and string keys", %{"a" => true, :z => true}, ~s({"a":true,"z":true})},
+        {"nested objects and arrays", %{"a" => [%{"b" => 1, :z => 2}], :z => %{a: true}},
+         ~s({"a":[{"b":1,"z":2}],"z":{"a":true}})},
+        {"large string-key maps",
+         Map.new(1..40, &{"key#{String.pad_leading("#{&1}", 2, "0")}", &1}),
+         "{" <>
+           Enum.map_join(1..40, ",", &~s("key#{String.pad_leading("#{&1}", 2, "0")}":#{&1})) <>
+           "}"}
+      ] do
+    @composite_property property
+    @canonical_json canonical
+    test "exact and is_not use recursively sorted JSON for #{name}" do
+      for version <- [:missing, 1, 2],
+          operator <- ["exact", "is_not"],
+          {filter, property} <- [
+            {@canonical_json, @composite_property},
+            {@composite_property, @canonical_json},
+            {[@composite_property], @canonical_json}
+          ] do
+        condition = %{"key" => "prop", "operator" => operator, "value" => filter}
+        definitions = versioned_snapshot([flag("canonical", [condition])], version)
+        context = %{distinct_id: "user", person_properties: %{"prop" => property}}
+        result = LocalEvaluator.evaluate(definitions, context)
+        expected = operator == "exact"
+
+        assert %Result{enabled: ^expected, locally_evaluated: true} = result.results["canonical"],
+               inspect({version, operator, filter, property, result})
+
+        assert MapSet.size(result.unresolved) == 0
+      end
+    end
+  end
+
+  for version <- [:missing, 1, 2], operator <- ["exact", "is_not"] do
+    @matching_version version
+    @matching_operator operator
+    test "version #{version} #{@matching_operator} leaves composite sigma casing inconclusive" do
+      for {upper, lower} <- [
+            {%{"name" => "ΟΣ"}, %{"name" => "ος"}},
+            {%{"name" => "ΟΣ"}, %{"name" => "οσ"}},
+            {%{"ΟΣ" => [%{"name" => "ΟΣ"}]}, %{"ος" => [%{"name" => "ος"}]}},
+            {[%{"name" => "ΟΣ"}], [%{"name" => "ος"}]}
+          ],
+          {filter, property} <- [
+            {lower, upper},
+            {upper, lower},
+            {Jason.encode!(upper), lower},
+            {lower, Jason.encode!(upper)},
+            {[upper], lower},
+            {[lower], upper}
+          ] do
+        condition = %{"key" => "prop", "operator" => @matching_operator, "value" => filter}
+        definitions = versioned_snapshot([flag("unicode", [condition])], @matching_version)
+        context = %{distinct_id: "user", person_properties: %{"prop" => property}}
+        result = LocalEvaluator.evaluate(definitions, context)
+
+        assert result.results == %{}, inspect({filter, property, result})
+        assert result.unresolved == MapSet.new(["unicode"])
+      end
+    end
+  end
+
+  for version <- [:missing, 1, 2], operator <- ["exact", "is_not"] do
+    @matching_version version
+    @matching_operator operator
+    test "version #{version} #{operator} normalizes nil atom keys like Jason" do
+      for {composite, wire} <- [
+            {%{nil => 1}, %{"nil" => 1}},
+            {%{"nested" => [%{nil => 1}]}, %{"nested" => [%{"nil" => 1}]}},
+            {[%{nil => 1}], [%{"nil" => 1}]},
+            {%{nil => 1, "" => 2, true => 3, false => 4, :a => 5},
+             %{"nil" => 1, "" => 2, "true" => 3, "false" => 4, "a" => 5}}
+          ] do
+        assert composite |> Jason.encode!() |> Jason.decode!() == wire
+
+        for {filter, property} <- [{[wire], composite}, {[composite], wire}] do
+          condition = %{"key" => "prop", "operator" => @matching_operator, "value" => filter}
+          definitions = versioned_snapshot([flag("nil-keys", [condition])], @matching_version)
+          context = %{distinct_id: "user", person_properties: %{"prop" => property}}
+          result = LocalEvaluator.evaluate(definitions, context)
+          expected = @matching_operator == "exact"
+
+          assert(
+            %Result{enabled: ^expected, locally_evaluated: true} = result.results["nil-keys"],
+            inspect({filter, property, result})
+          )
+
+          assert MapSet.size(result.unresolved) == 0
+        end
+      end
+    end
+
+    test "version #{version} #{operator} leaves colliding composite keys inconclusive" do
+      for {composite, candidates} <- [
+            {%{nil => 1, "nil" => 2}, [%{"nil" => 1}, %{"nil" => 2}]},
+            {%{"nested" => [%{nil => 1, "nil" => 2}]},
+             [%{"nested" => [%{"nil" => 1}]}, %{"nested" => [%{"nil" => 2}]}]},
+            {%{:a => 1, "a" => 2}, [%{"a" => 1}, %{"a" => 2}]},
+            {%{"nested" => [%{:a => 1, "a" => 2}]},
+             [%{"nested" => [%{"a" => 1}]}, %{"nested" => [%{"a" => 2}]}]}
+          ],
+          {filter, property} <- [
+            {candidates, composite},
+            {[composite], hd(candidates)}
+          ] do
+        condition = %{"key" => "prop", "operator" => @matching_operator, "value" => filter}
+        definitions = versioned_snapshot([flag("colliding-keys", [condition])], @matching_version)
+        context = %{distinct_id: "user", person_properties: %{"prop" => property}}
+        result = LocalEvaluator.evaluate(definitions, context)
+
+        assert result.results == %{}, inspect({filter, property, result})
+        assert result.unresolved == MapSet.new(["colliding-keys"])
+      end
+    end
+  end
+
+  for version <- [:missing, 1, 2],
+      operator <- ["exact", "is_not"],
+      family <- [:ordered, :derived_ordering, :derived_keys, :derived_number, :custom] do
+    @matching_version version
+    @matching_operator operator
+    @encoder_family family
+    test "version #{version} #{operator} leaves nested #{family} encoders inconclusive" do
+      values =
+        case @encoder_family do
+          :ordered ->
+            [Jason.OrderedObject.new([{"z", 1}, {"a", 2}])]
+
+          :derived_ordering ->
+            [%DerivedObject{payload: %{:z => 1, "a" => 2}}]
+
+          :derived_keys ->
+            [%DerivedObject{payload: %{:a => 1, "a" => 2}}]
+
+          :derived_number ->
+            [%DerivedObject{payload: 0.00001}]
+
+          :custom ->
+            Enum.map(
+              [%{:z => 1, "a" => 2}, [%{n: 0.00001}], "plain"],
+              &%CustomValue{payload: &1}
+            )
+        end
+
+      for value <- values do
+        refute Jason.Encoder.impl_for(value) == Jason.Encoder.Any
+
+        for composite <- [%{"nested" => value}, [%{"nested" => [value]}]] do
+          wire = composite |> Jason.encode!() |> Jason.decode!()
+          service_string = composite |> Jason.encode!() |> String.replace("1.0e-5", "0.00001")
+
+          for {filter, property} <- [
+                {[service_string], composite},
+                {[composite], service_string},
+                {[wire], composite},
+                {[composite], wire}
+              ] do
+            condition = %{"key" => "prop", "operator" => @matching_operator, "value" => filter}
+            definitions = versioned_snapshot([flag("opaque", [condition])], @matching_version)
+            context = %{distinct_id: "user", person_properties: %{"prop" => property}}
+            result = LocalEvaluator.evaluate(definitions, context)
+
+            assert result.results == %{}, inspect({filter, property, result})
+            assert result.unresolved == MapSet.new(["opaque"])
+          end
+        end
+      end
+    end
+  end
+
+  test "nested scalar structs fall back without changing top-level scalar matching" do
+    for version <- [:missing, 1, 2],
+        operator <- ["exact", "is_not"],
+        value <- [~D[2025-01-01], ~T[12:34:56], %CustomValue{payload: "plain"}],
+        {filter, property} <- [{[to_string(value)], value}, {[value], to_string(value)}] do
+      condition = %{"key" => "prop", "operator" => operator, "value" => filter}
+      definitions = versioned_snapshot([flag("scalar", [condition])], version)
+      context = %{distinct_id: "user", person_properties: %{prop: property}}
+      result = LocalEvaluator.evaluate(definitions, context)
+      expected = operator == "exact"
+      assert %Result{enabled: ^expected} = result.results["scalar"]
+      assert result.unresolved == MapSet.new()
+
+      nested_condition = %{condition | "value" => [%{"nested" => hd(filter)}]}
+      definitions = versioned_snapshot([flag("scalar", [nested_condition])], version)
+      context = %{context | person_properties: %{prop: %{"nested" => property}}}
+      result = LocalEvaluator.evaluate(definitions, context)
+      assert result.results == %{}
+      assert result.unresolved == MapSet.new(["scalar"])
+    end
+  end
+
+  for version <- [:missing, 1, 2], operator <- ["exact", "is_not"] do
+    @matching_version version
+    @matching_operator operator
+    test "version #{version} #{operator} leaves opaque property truthiness inconclusive" do
+      filters = if @matching_version == 2, do: [[]], else: [true, false, [true], []]
+      scalar = %CustomValue{payload: "true"}
+      assert scalar |> Jason.encode!() |> Jason.decode!() == "true"
+
+      for property <- [scalar, [scalar], [true, [scalar]]], filter <- filters do
+        condition = %{"key" => "prop", "operator" => @matching_operator, "value" => filter}
+
+        definitions =
+          versioned_snapshot([flag("opaque-truthiness", [condition])], @matching_version)
+
+        context = %{distinct_id: "user", person_properties: %{prop: property}}
+        result = LocalEvaluator.evaluate(definitions, context)
+        assert result.results == %{}, inspect({filter, property, result})
+        assert result.unresolved == MapSet.new(["opaque-truthiness"])
+      end
+    end
+
+    test "version #{version} #{operator} uses wire-string truthiness for native atoms" do
+      filters = if @matching_version == 2, do: [[]], else: [true, [true], []]
+
+      for {property, truthy} <- [
+            {:TRUE, true},
+            {[:TRUE, [:TrUe]], true},
+            {:FALSE, false},
+            {:banana, false},
+            {nil, false},
+            {false, false},
+            {true, true},
+            {%{nested: :TRUE}, false}
+          ],
+          filter <- filters do
+        wire = property |> Jason.encode!() |> Jason.decode!()
+        condition = %{"key" => "prop", "operator" => @matching_operator, "value" => filter}
+
+        definitions =
+          versioned_snapshot([flag("atom-truthiness", [condition])], @matching_version)
+
+        expected = if @matching_operator == "exact", do: truthy, else: not truthy
+
+        for value <- [property, wire] do
+          context = %{distinct_id: "user", person_properties: %{prop: value}}
+          result = LocalEvaluator.evaluate(definitions, context)
+          assert %Result{enabled: ^expected} = result.results["atom-truthiness"]
+          assert result.unresolved == MapSet.new()
+        end
+      end
+    end
+  end
+
+  test "opaque structs do not change legacy or empty-filter truthiness" do
+    property = %{"nested" => %DerivedObject{payload: 0.00001}}
+
+    for {version, filter} <- [{:missing, false}, {1, [false]}, {1, false}, {2, []}],
+        operator <- ["exact", "is_not"] do
+      condition = %{"key" => "prop", "operator" => operator, "value" => filter}
+      definitions = versioned_snapshot([flag("truthiness", [condition])], version)
+
+      result =
+        LocalEvaluator.evaluate(definitions, %{
+          distinct_id: "user",
+          person_properties: %{prop: property}
+        })
+
+      expected = version != 2 == (operator == "exact")
+      assert %Result{enabled: ^expected} = result.results["truthiness"]
+      assert result.unresolved == MapSet.new()
+    end
+  end
+
+  test "composite numeric serialization ambiguity stays inconclusive" do
+    for version <- [:missing, 1, 2],
+        operator <- ["exact", "is_not"],
+        {number, service_json} <- [
+          {0.00001, "0.00001"},
+          {1.0e-7, "1e-7"},
+          {1.0e20, "1e20"},
+          {18_446_744_073_709_551_616, "1.8446744073709552e19"},
+          {-9_223_372_036_854_775_809, "-9.223372036854776e18"}
+        ],
+        {composite, canonical} <- [
+          {%{"n" => number}, ~s({"n":#{service_json}})},
+          {[%{"n" => [number]}], ~s([{"n":[#{service_json}]}])}
+        ],
+        {filter, property} <- [
+          {canonical, composite},
+          {[composite], canonical}
+        ] do
+      condition = %{"key" => "prop", "operator" => operator, "value" => filter}
+      definitions = versioned_snapshot([flag("numeric-composite", [condition])], version)
+      context = %{distinct_id: "user", person_properties: %{"prop" => property}}
+      result = LocalEvaluator.evaluate(definitions, context)
+
+      assert result.results == %{}, inspect({version, operator, filter, property, result})
+      assert result.unresolved == MapSet.new(["numeric-composite"])
+    end
+  end
+
+  test "composite integers within the service range still match locally" do
+    property = %{"min" => -9_223_372_036_854_775_808, "max" => 18_446_744_073_709_551_615}
+    canonical = ~s({"max":18446744073709551615,"min":-9223372036854775808})
+
+    for version <- [:missing, 1, 2], operator <- ["exact", "is_not"] do
+      condition = %{"key" => "prop", "operator" => operator, "value" => canonical}
+      definitions = versioned_snapshot([flag("integer-composite", [condition])], version)
+      context = %{distinct_id: "user", person_properties: %{"prop" => property}}
+      result = LocalEvaluator.evaluate(definitions, context)
+      expected = operator == "exact"
+
+      assert %Result{enabled: ^expected, locally_evaluated: true} =
+               result.results["integer-composite"]
+
+      assert MapSet.size(result.unresolved) == 0
+    end
+  end
+
+  for {name, property, string} <- [
+        {"Date", ~D[2025-01-01], "2025-01-01"},
+        {"Time", ~T[12:34:56], "12:34:56"}
+      ] do
+    @scalar_struct property
+    @scalar_string string
+    test "exact and is_not preserve ordinary string matching for #{name} properties" do
+      for version <- [:missing, 1, 2],
+          operator <- ["exact", "is_not"],
+          {filter, matches} <- [
+            {@scalar_string, true},
+            {[@scalar_string], true},
+            {"different", false}
+          ] do
+        condition = %{"key" => "prop", "operator" => operator, "value" => filter}
+        definitions = versioned_snapshot([flag("scalar-struct", [condition])], version)
+        context = %{distinct_id: "user", person_properties: %{"prop" => @scalar_struct}}
+        result = LocalEvaluator.evaluate(definitions, context)
+        expected = if operator == "exact", do: matches, else: not matches
+
+        assert %Result{enabled: ^expected, locally_evaluated: true} =
+                 result.results["scalar-struct"],
+               inspect({version, operator, filter, @scalar_struct, result})
+
+        assert MapSet.size(result.unresolved) == 0
+      end
+    end
+  end
+
+  test "missing properties stay inconclusive for both operators and matching versions" do
+    for version <- [:missing, 1, 2], operator <- ["exact", "is_not"] do
+      condition = %{"key" => "prop", "operator" => operator, "value" => false}
+      definitions = versioned_snapshot([flag("missing", [condition])], version)
+      result = LocalEvaluator.evaluate(definitions, %{distinct_id: "user"})
+      assert result.results == %{}
+      assert MapSet.equal?(result.unresolved, MapSet.new(["missing"]))
+    end
+  end
+
+  test "person, group, recursive cohort and dependency share one snapshot version" do
+    for version <- [:missing, 1, 2], operator <- ["exact", "is_not"] do
+      condition = %{"key" => "prop", "operator" => operator, "value" => false}
+      person = flag("person", [condition])
+      group = put_in(flag("group", [condition]), ["filters", "aggregation_group_type_index"], 0)
+      cohort = flag("cohort", [%{"type" => "cohort", "value" => 1}])
+
+      dependency =
+        flag("dependency", [
+          %{
+            "type" => "flag",
+            "key" => "person",
+            "operator" => "flag_evaluates_to",
+            "value" => true,
+            "dependency_chain" => ["person"]
+          }
+        ])
+
+      definitions =
+        versioned_snapshot([person, group, cohort, dependency], version)
+        |> Map.put(:group_type_mapping, %{"0" => "organization"})
+        |> Map.put(:cohorts, %{
+          "1" => %{
+            "type" => "AND",
+            "values" => [
+              %{"type" => "OR", "values" => [condition]}
+            ]
+          }
+        })
+
+      context = %{
+        distinct_id: "user",
+        person_properties: %{prop: "banana"},
+        groups: %{organization: "org"},
+        group_properties: %{organization: %{prop: "banana"}}
+      }
+
+      expected = if operator == "exact", do: version != 2, else: version == 2
+
+      for keys <- [nil, ["dependency"], ["person"], ["group"], ["cohort"]] do
+        result = LocalEvaluator.evaluate(definitions, context, keys)
+        assert MapSet.size(result.unresolved) == 0
+
+        for key <- keys || ["person", "group", "cohort", "dependency"] do
+          assert result.results[key].enabled == expected, inspect({version, operator, key})
+        end
+      end
+    end
+  end
+
+  defp versioned_snapshot(flags, :missing), do: snapshot(flags)
+
+  defp versioned_snapshot(flags, version),
+    do: snapshot(flags, %{property_matching_version: version})
 
   test "canonical hash vectors and fractional rollout boundaries" do
     assert_in_delta LocalEvaluator.hash("flag", "user"), 0.4357368498163313, 1.0e-15

@@ -166,6 +166,7 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
           flags_by_key: %{String.t() => map()},
           group_type_mapping: map(),
           cohorts: map(),
+          property_matching_version: term(),
           minimal_flag_called_events: boolean()
         }
 
@@ -534,6 +535,7 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
 
     if is_list(flags) and is_map(mapping) and is_map(cohorts) do
       minimal = value(body, "minimal_flag_called_events") == true
+      property_matching_version = value(body, "property_matching_version")
 
       snapshot = %{
         flags: flags,
@@ -543,6 +545,7 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
           end),
         group_type_mapping: mapping,
         cohorts: cohorts,
+        property_matching_version: property_matching_version,
         minimal_flag_called_events: minimal
       }
 
@@ -550,6 +553,7 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
         "flags" => flags,
         "group_type_mapping" => mapping,
         "cohorts" => cohorts,
+        "property_matching_version" => property_matching_version,
         "minimal_flag_called_events" => minimal
       }
 
@@ -570,6 +574,9 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
 
   defp value(map, "minimal_flag_called_events"),
     do: Map.get(map, "minimal_flag_called_events", Map.get(map, :minimal_flag_called_events))
+
+  defp value(map, "property_matching_version"),
+    do: Map.get(map, "property_matching_version", Map.get(map, :property_matching_version, 1))
 
   defp value(map, "key"), do: Map.get(map, "key", Map.get(map, :key))
 
