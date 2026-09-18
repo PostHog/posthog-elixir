@@ -138,63 +138,29 @@ defmodule SdkComplianceAdapter.Router do
         json_response(conn, 400, %{success: false, error: "Missing distinct_id"})
 
       true ->
-        # Build the /flags request body. The PostHog Elixir SDK forwards the
-        # body to the /flags endpoint as-is (api_key is auto-injected by the
-        # API client). The harness asserts on the actual /flags HTTP request,
-        # so we mirror person_properties.distinct_id here per the contract:
-        # "auto-added distinct_id in person_properties".
-        person_properties =
-          (params["person_properties"] || %{})
-          |> Map.put("distinct_id", distinct_id)
+        options =
+          Enum.reduce(
+            [:person_properties, :groups, :group_properties, :disable_geoip],
+            %{distinct_id: distinct_id, flag_keys: [key]},
+            fn option, options ->
+              case Map.fetch(params, Atom.to_string(option)) do
+                {:ok, value} -> Map.put(options, option, value)
+                :error -> options
+              end
+            end
+          )
 
-        body =
-          %{
-            distinct_id: distinct_id,
-            person_properties: person_properties,
-            groups: params["groups"] || %{},
-            group_properties: params["group_properties"] || %{},
-            geoip_disable: Map.get(params, "disable_geoip", false),
-            flag_keys_to_evaluate: [key]
-          }
+        # This instance has no local definitions configured, so each evaluation
+        # uses the SDK's remote path, including when force_remote is false.
+        case PostHog.FeatureFlags.evaluate_flags(SdkComplianceAdapter.PostHog, options) do
+          {:ok, evaluations} ->
+            value = PostHog.FeatureFlags.Evaluations.get_flag(evaluations, key)
 
-        config = SdkComplianceAdapter.State.get_config()
-        api_client = PostHog.config(SdkComplianceAdapter.PostHog).api_client
-
-        case PostHog.API.flags(api_client, body) do
-          {:ok, %{status: 200, body: resp_body}} ->
-            flags = Map.get(resp_body, "featureFlags") || Map.get(resp_body, "flags") || %{}
-            value = extract_flag_value(flags, key)
-
-            properties =
-              maybe_put(
-                %{
-                  "$feature_flag" => key,
-                  "$feature_flag_response" => value,
-                  "$feature/#{key}" => value
-                },
-                "$feature_flag_has_experiment",
-                extract_has_experiment(flags, key)
-              )
-
-            PostHog.bare_capture(
-              SdkComplianceAdapter.PostHog,
-              "$feature_flag_called",
-              distinct_id,
-              properties
-            )
-
-            SdkComplianceAdapter.State.increment_events_captured()
+            config = SdkComplianceAdapter.State.get_config()
             interval_ms = config[:max_batch_time_ms] || 100
             Process.sleep(interval_ms + 500)
 
             json_response(conn, 200, %{success: true, value: value})
-
-          {:ok, %{status: status, body: resp_body}} ->
-            json_response(conn, 200, %{
-              success: false,
-              error: "Unexpected response status: #{status}",
-              response: inspect(resp_body)
-            })
 
           {:error, reason} ->
             json_response(conn, 200, %{success: false, error: inspect(reason)})
@@ -265,45 +231,6 @@ defmodule SdkComplianceAdapter.Router do
         {:error, reason}
     end
   end
-
-  defp extract_flag_value(flags, key) when is_map(flags) do
-    case Map.get(flags, key) do
-      nil ->
-        false
-
-      flag_data when is_map(flag_data) ->
-        cond do
-          is_binary(flag_data["variant"]) -> flag_data["variant"]
-          true -> Map.get(flag_data, "enabled", false) == true
-        end
-
-      other ->
-        other
-    end
-  end
-
-  defp extract_flag_value(_flags, _key), do: false
-
-  # Reads has_experiment from the flag's v2 metadata. Returns nil when the
-  # server did not report it (legacy featureFlags entries are bare values
-  # without metadata); the property is omitted in that case.
-  defp extract_has_experiment(flags, key) when is_map(flags) do
-    case Map.get(flags, key) do
-      flag_data when is_map(flag_data) ->
-        case get_in(flag_data, ["metadata", "has_experiment"]) do
-          value when is_boolean(value) -> value
-          _ -> nil
-        end
-
-      _ ->
-        nil
-    end
-  end
-
-  defp extract_has_experiment(_flags, _key), do: nil
-
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp stop_posthog do
     case Process.whereis(SdkComplianceAdapter.PostHog) do

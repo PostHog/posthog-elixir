@@ -63,8 +63,6 @@ jobs:
     environment: "Release" # This will require an approval from a maintainer, they are notified in Slack above
     permissions:
       contents: write
-      actions: write
-      id-token: write
     steps:
       - name: Notify Slack - Approved
         if: needs.notify-approval-needed.outputs.slack_ts != ''
