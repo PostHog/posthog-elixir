@@ -270,6 +270,32 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
     end
   end
 
+  test "candidate matching remains lazy around unsupported composite comparisons" do
+    for version <- [:missing, 1, 2],
+        operator <- ["exact", "is_not"],
+        unsupported <- [["Σ"], %{"ambiguous" => 0.1}] do
+      matching = %{"plan" => "PRO"}
+      context = %{distinct_id: "user", person_properties: %{prop: %{"plan" => "pro"}}}
+
+      for {candidates, resolved?} <- [
+            {[matching, unsupported], true},
+            {[unsupported, matching], false}
+          ] do
+        condition = %{"key" => "prop", "operator" => operator, "value" => candidates}
+        definitions = versioned_snapshot([flag("lazy", [condition])], version)
+        result = LocalEvaluator.evaluate(definitions, context)
+
+        if resolved? do
+          assert result.results["lazy"].enabled == (operator == "exact")
+          assert result.unresolved == MapSet.new()
+        else
+          assert result.results == %{}
+          assert result.unresolved == MapSet.new(["lazy"])
+        end
+      end
+    end
+  end
+
   test "nested scalar structs fall back without changing top-level scalar matching" do
     for version <- [:missing, 1, 2],
         operator <- ["exact", "is_not"],
