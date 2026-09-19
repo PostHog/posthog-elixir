@@ -627,6 +627,9 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
       {:ok, property_value} ->
         apply_operator(operator, property_value, filter_value, now)
     end
+  rescue
+    # Unsupported comparisons must not prevent later conditions from matching.
+    _exception -> :inconclusive
   end
 
   defp apply_operator("is_set", _property, _filter, _now), do: :match

@@ -789,6 +789,79 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
            ].enabled
   end
 
+  for version <- [:missing, 1, 2], operator <- ["exact", "is_not"] do
+    @matching_version version
+    @matching_operator operator
+    test "version #{version} #{operator} contains unsupported comparisons within OR conditions" do
+      comparisons =
+        if @matching_version == 2,
+          do: [{["Σ"], [["σ"]]}],
+          else: [{~U[2025-01-01 00:00:00Z], false}, {["Σ"], [["σ"]]}]
+
+      for {property, filter} <- comparisons, negated? <- [false, true] do
+        unsupported = %{
+          "key" => "prop",
+          "operator" => @matching_operator,
+          "value" => filter,
+          "negation" => negated?
+        }
+
+        context = %{distinct_id: "user", person_properties: %{prop: property, plan: "pro"}}
+        unresolved_flag = flag("unsupported", [unsupported])
+        definitions = versioned_snapshot([unresolved_flag], @matching_version)
+
+        assert LocalEvaluator.evaluate(definitions, context).unresolved ==
+                 MapSet.new(["unsupported"])
+
+        for {plan, expected} <- [{"free", :inconclusive}, {"pro", :match}] do
+          later = %{"properties" => [%{"key" => "plan", "value" => plan}]}
+
+          conditions =
+            put_in(unresolved_flag, ["filters", "groups"], [
+              %{"properties" => [unsupported]},
+              later
+            ])
+
+          definitions = versioned_snapshot([conditions], @matching_version)
+          result = LocalEvaluator.evaluate(definitions, context)
+
+          if expected == :match do
+            assert %Result{enabled: true} = result.results["unsupported"]
+            assert result.unresolved == MapSet.new()
+          else
+            assert result.results == %{}
+            assert result.unresolved == MapSet.new(["unsupported"])
+          end
+        end
+      end
+    end
+
+    test "version #{version} #{operator} preserves false AND after an unsupported comparison" do
+      comparisons =
+        if @matching_version == 2,
+          do: [{["Σ"], [["σ"]]}],
+          else: [{~U[2025-01-01 00:00:00Z], false}, {["Σ"], [["σ"]]}]
+
+      for {property, filter} <- comparisons, negated? <- [false, true] do
+        unsupported = %{
+          "key" => "prop",
+          "operator" => @matching_operator,
+          "value" => filter,
+          "negation" => negated?
+        }
+
+        no_match = %{"key" => "plan", "value" => "free"}
+        conditions = flag("unsupported", [unsupported, no_match])
+        definitions = versioned_snapshot([conditions], @matching_version)
+        context = %{distinct_id: "user", person_properties: %{prop: property, plan: "pro"}}
+        result = LocalEvaluator.evaluate(definitions, context)
+
+        assert %Result{enabled: false} = result.results["unsupported"]
+        assert result.unresolved == MapSet.new()
+      end
+    end
+  end
+
   test "early exit preserves prior inconclusive state and later conditions can recover" do
     missing = %{"properties" => [%{"key" => "missing", "value" => true}]}
     out_of_rollout = %{"properties" => [], "rollout_percentage" => 0}
