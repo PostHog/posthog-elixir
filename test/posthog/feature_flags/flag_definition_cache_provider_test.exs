@@ -71,6 +71,113 @@ defmodule PostHog.FeatureFlags.FlagDefinitionCacheProviderTest do
     start_supervised!({PostHog.Supervisor, cfg})
   end
 
+  test "matching version round trips through providers and version-only hydration replaces results" do
+    owner = self()
+    # No API request stub: only the owned definitions GET below is permitted.
+    stub(PostHog.API.Mock, :client, fn _key, _host ->
+      %PostHog.API.Client{client: :stub_client, module: PostHog.API.Mock}
+    end)
+
+    property = %{"key" => "prop", "value" => false}
+    cohort = %{"type" => "AND", "values" => [%{"type" => "OR", "values" => [property]}]}
+
+    flags =
+      for {key, properties, extra} <- [
+            {"person", [property], %{}},
+            {"group", [property], %{"aggregation_group_type_index" => 0}},
+            {"cohort", [%{"type" => "cohort", "value" => 1}], %{}}
+          ] do
+        %{
+          "key" => key,
+          "active" => true,
+          "filters" => Map.merge(%{"groups" => [%{"properties" => properties}]}, extra)
+        }
+      end
+
+    wire =
+      envelope("unused")
+      |> Map.put("flags", flags)
+      |> Map.put("cohorts", %{"1" => cohort})
+      |> Map.put("property_matching_version", 2)
+
+    expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+      {:ok, %{status: 200, body: wire, headers: %{}}}
+    end)
+
+    {:ok, provider} =
+      Agent.start_link(fn ->
+        %{owner: owner, decision: true, read: nil, store: :ok, shutdown: :ok}
+      end)
+
+    start_instance(__MODULE__.VersionOwner, provider)
+    assert DefinitionLoader.ready?(__MODULE__.VersionOwner)
+    assert_receive {:stored, stored}
+    assert stored == wire
+
+    Agent.update(provider, &%{&1 | decision: false, read: stored})
+    name = __MODULE__.VersionReader
+    start_instance(name, provider)
+
+    context = %{
+      distinct_id: "user",
+      person_properties: %{prop: "banana"},
+      groups: %{organization: "org"},
+      group_properties: %{organization: %{prop: "banana"}},
+      only_evaluate_locally: true
+    }
+
+    assert {:ok, frozen} = PostHog.FeatureFlags.evaluate_flags(name, context)
+
+    assert Enum.all?(frozen.flags, fn {_key, result} ->
+             not result.enabled and result.locally_evaluated
+           end)
+
+    initial = DefinitionLoader.definitions(name)
+    assert initial.property_matching_version == 2
+
+    for read <- [nil, {:raise, "unavailable"}, %{"flags" => []}] do
+      Agent.update(provider, &%{&1 | read: read})
+      capture_log(fn -> DefinitionLoader.refresh(name) end)
+      assert DefinitionLoader.definitions(name) == initial
+    end
+
+    for version <- [1, 2, 1, 2, :missing] do
+      # Atom-key cache documents are supported alongside JSON string keys.
+      cached = %{
+        flags: flags,
+        cohorts: %{"1" => cohort},
+        group_type_mapping: %{"0" => "organization"},
+        minimal_flag_called_events: true
+      }
+
+      cached =
+        if version == :missing,
+          do: cached,
+          else: Map.put(cached, :property_matching_version, version)
+
+      Agent.update(provider, &%{&1 | read: cached})
+      assert :ok = DefinitionLoader.refresh(name)
+      current = DefinitionLoader.definitions(name)
+      assert current.flags == initial.flags
+      assert current.cohorts == initial.cohorts
+      assert current.group_type_mapping == initial.group_type_mapping
+      assert current.property_matching_version == if(version == :missing, do: 1, else: version)
+      assert {:ok, result} = PostHog.FeatureFlags.evaluate_flags(name, context)
+      assert map_size(result.flags) == 3
+
+      for {_key, flag} <- result.flags do
+        assert flag.enabled == (version != 2)
+        assert flag.locally_evaluated
+      end
+
+      assert Enum.all?(frozen.flags, fn {_key, result} -> not result.enabled end)
+    end
+
+    assert DefinitionLoader.definitions(__MODULE__.VersionOwner).property_matching_version == 2
+    stop_supervised(name)
+    stop_supervised(__MODULE__.VersionOwner)
+  end
+
   test "negative decision reads complete cached definitions without an API request" do
     stub_with(PostHog.API.Mock, PostHog.API.Stub)
 
