@@ -1,5 +1,11 @@
 # posthog
 
+## 2.15.1 — 2026-09-21
+
+### Patch changes
+
+- [a481ed7](https://github.com/posthog/posthog-elixir/commit/a481ed753df59cf2f1be72213a06757584f037c7) Honor the definitions snapshot property_matching_version in local feature flag evaluation and shared definition caches. Missing or version 1 now intentionally matches released service legacy boolean truthiness rather than the former SDK behavior; version 2 uses explicit equality, with recursive truthiness for empty filters. Correct known-null complements and composite equality normalization. — Thanks @marandaneto!
+
 ## 2.15.0 — 2026-08-27
 
 ### Minor changes
