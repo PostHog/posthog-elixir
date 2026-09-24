@@ -47,10 +47,12 @@ if Code.ensure_loaded?(OpenFeature.Provider) do
     - Number flags resolve to the variant key parsed as a number.
     - Map flags resolve to the flag's JSON payload.
 
-    Reading a disabled flag returns the default value with reason `:default`.
-    Reading an enabled flag whose value doesn't fit the requested type returns
-    the default value with `error_code: :type_mismatch`. Unknown flags return
-    `:flag_not_found`.
+    Reading a disabled flag returns the default value with reason `:default`,
+    unless the flag still carries a variant (or payload, for maps). That value
+    is then returned with reason `:default`, as in the Node and Python
+    providers. Reading an enabled flag whose value doesn't fit the requested
+    type returns the default value with `error_code: :type_mismatch`. Unknown
+    flags return `:flag_not_found`.
 
     The OpenFeature Elixir SDK has no error tuple for `:type_mismatch` or
     `:targeting_key_missing`, so these are returned as resolution details with
@@ -103,7 +105,7 @@ if Code.ensure_loaded?(OpenFeature.Provider) do
     def resolve_string_value(provider, key, default, context) do
       with {:ok, %Result{} = result} <- evaluate(provider, key, default, context) do
         case result do
-          %Result{enabled: false} ->
+          %Result{variant: nil, enabled: false} ->
             {:ok, default_details(default)}
 
           %Result{variant: nil} ->
@@ -119,7 +121,7 @@ if Code.ensure_loaded?(OpenFeature.Provider) do
     def resolve_number_value(provider, key, default, context) do
       with {:ok, %Result{} = result} <- evaluate(provider, key, default, context) do
         case result do
-          %Result{enabled: false} ->
+          %Result{variant: nil, enabled: false} ->
             {:ok, default_details(default)}
 
           %Result{variant: nil} ->
@@ -135,11 +137,11 @@ if Code.ensure_loaded?(OpenFeature.Provider) do
     def resolve_map_value(provider, key, default, context) do
       with {:ok, %Result{} = result} <- evaluate(provider, key, default, context) do
         case result do
-          %Result{enabled: false} ->
-            {:ok, default_details(default)}
-
           %Result{payload: payload} when is_map(payload) ->
             {:ok, details(result, payload)}
+
+          %Result{enabled: false} ->
+            {:ok, default_details(default)}
 
           %Result{} ->
             {:ok, type_mismatch(default, "Flag '#{key}' has no object/JSON payload.")}
@@ -216,15 +218,27 @@ if Code.ensure_loaded?(OpenFeature.Provider) do
     defp parse_number(variant) do
       trimmed = String.trim(variant)
 
-      case Integer.parse(trimmed) do
-        {integer, ""} ->
-          {:ok, integer}
+      if trimmed =~ ~r/\d/ do
+        case Integer.parse(trimmed) do
+          {integer, ""} -> {:ok, integer}
+          _ -> parse_float(trimmed)
+        end
+      else
+        :error
+      end
+    end
 
-        _ ->
-          case Float.parse(trimmed) do
-            {float, ""} -> {:ok, float}
-            _ -> :error
-          end
+    # Float.parse/1 needs digits on both sides of the decimal point, unlike
+    # JavaScript's Number() and Python's float(), so `.5` and `1.` are padded.
+    defp parse_float(string) do
+      padded =
+        string
+        |> String.replace(~r/^([+-]?)\./, "\\g{1}0.")
+        |> String.replace(~r/\.$/, ".0")
+
+      case Float.parse(padded) do
+        {float, ""} -> {:ok, float}
+        _ -> :error
       end
     end
 
