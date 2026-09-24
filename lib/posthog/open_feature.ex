@@ -47,10 +47,10 @@ if Code.ensure_loaded?(OpenFeature.Provider) do
     - Number flags resolve to the variant key parsed as a number.
     - Map flags resolve to the flag's JSON payload.
 
-    Reading a disabled flag without a variant (or payload, for maps) returns the
-    default value with reason `:default`. Reading an enabled flag whose value
-    doesn't fit the requested type returns the default value with
-    `error_code: :type_mismatch`. Unknown flags return `:flag_not_found`.
+    Reading a disabled flag returns the default value with reason `:default`.
+    Reading an enabled flag whose value doesn't fit the requested type returns
+    the default value with `error_code: :type_mismatch`. Unknown flags return
+    `:flag_not_found`.
 
     The OpenFeature Elixir SDK has no error tuple for `:type_mismatch` or
     `:targeting_key_missing`, so these are returned as resolution details with
