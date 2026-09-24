@@ -103,7 +103,7 @@ if Code.ensure_loaded?(OpenFeature.Provider) do
     def resolve_string_value(provider, key, default, context) do
       with {:ok, %Result{} = result} <- evaluate(provider, key, default, context) do
         case result do
-          %Result{variant: nil, enabled: false} ->
+          %Result{enabled: false} ->
             {:ok, default_details(default)}
 
           %Result{variant: nil} ->
@@ -119,7 +119,7 @@ if Code.ensure_loaded?(OpenFeature.Provider) do
     def resolve_number_value(provider, key, default, context) do
       with {:ok, %Result{} = result} <- evaluate(provider, key, default, context) do
         case result do
-          %Result{variant: nil, enabled: false} ->
+          %Result{enabled: false} ->
             {:ok, default_details(default)}
 
           %Result{variant: nil} ->
@@ -135,11 +135,11 @@ if Code.ensure_loaded?(OpenFeature.Provider) do
     def resolve_map_value(provider, key, default, context) do
       with {:ok, %Result{} = result} <- evaluate(provider, key, default, context) do
         case result do
-          %Result{payload: payload} when is_map(payload) ->
-            {:ok, details(result, payload)}
-
           %Result{enabled: false} ->
             {:ok, default_details(default)}
+
+          %Result{payload: payload} when is_map(payload) ->
+            {:ok, details(result, payload)}
 
           %Result{} ->
             {:ok, type_mismatch(default, "Flag '#{key}' has no object/JSON payload.")}

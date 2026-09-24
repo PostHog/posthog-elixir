@@ -210,6 +210,13 @@ PostHog.LLMAnalytics
   macros:
     (none)
 
+PostHog.OpenFeature.Provider
+  module_doc: documented
+  functions:
+    (none)
+  macros:
+    (none)
+
 PostHog.Supervisor
   module_doc: documented
   functions:

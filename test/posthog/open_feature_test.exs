@@ -76,6 +76,13 @@ defmodule PostHog.OpenFeature.ProviderTest do
                Provider.resolve_string_value(provider(), "flag", "control", @context)
     end
 
+    test "returns the default for a disabled flag that still has a variant" do
+      expect_flag("flag", %{"enabled" => false, "variant" => "test"})
+
+      assert {:ok, %ResolutionDetails{value: "control", reason: :default, variant: nil}} =
+               Provider.resolve_string_value(provider(), "flag", "control", @context)
+    end
+
     test "returns type_mismatch for an enabled flag without a variant" do
       expect_flag("flag", %{"enabled" => true})
 
@@ -113,6 +120,13 @@ defmodule PostHog.OpenFeature.ProviderTest do
                Provider.resolve_number_value(provider(), "flag", 5, @context)
     end
 
+    test "returns the default for a disabled flag that still has a variant" do
+      expect_flag("flag", %{"enabled" => false, "variant" => "42"})
+
+      assert {:ok, %ResolutionDetails{value: 5, reason: :default, variant: nil}} =
+               Provider.resolve_number_value(provider(), "flag", 5, @context)
+    end
+
     test "returns type_mismatch for an enabled flag without a variant" do
       expect_flag("flag", %{"enabled" => true})
 
@@ -133,6 +147,13 @@ defmodule PostHog.OpenFeature.ProviderTest do
       expect_flag("flag", %{"enabled" => false})
 
       assert {:ok, %ResolutionDetails{value: %{"d" => 1}, reason: :default}} =
+               Provider.resolve_map_value(provider(), "flag", %{"d" => 1}, @context)
+    end
+
+    test "returns the default for a disabled flag that still has a payload" do
+      expect_flag("flag", %{"enabled" => false, "metadata" => %{"payload" => ~s({"a": 1})}})
+
+      assert {:ok, %ResolutionDetails{value: %{"d" => 1}, reason: :default, variant: nil}} =
                Provider.resolve_map_value(provider(), "flag", %{"d" => 1}, @context)
     end
 
