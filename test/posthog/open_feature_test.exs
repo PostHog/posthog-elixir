@@ -38,6 +38,48 @@ defmodule PostHog.OpenFeature.ProviderTest do
     end
   end
 
+  describe "snapshot cleanup" do
+    for events <- [true, false], present <- [true, false] do
+      @events events
+      @present present
+      test "releases access trackers with events=#{events} and flag present=#{present}" do
+        flags = if @present, do: %{"flag" => flag(%{"key" => "flag"})}, else: %{}
+
+        expect(API.Mock, :request, 10, fn _client, :post, "/flags", _opts ->
+          {:ok, %{status: 200, body: %{"flags" => flags}}}
+        end)
+
+        provider = provider(send_feature_flag_events: @events)
+        {:links, before} = Process.info(self(), :links)
+
+        for _ <- 1..10 do
+          result = Provider.resolve_boolean_value(provider, "flag", false, @context)
+
+          if @present do
+            assert {:ok, %ResolutionDetails{value: true}} = result
+          else
+            assert {:error, :flag_not_found} = result
+          end
+        end
+
+        {:links, after_calls} = Process.info(self(), :links)
+        retained = after_calls -- before
+
+        retained
+        |> Enum.filter(fn pid ->
+          is_pid(pid) and
+            match?(
+              {PostHog.FeatureFlags.Evaluations, _, _},
+              :proc_lib.translate_initial_call(pid)
+            )
+        end)
+        |> Enum.each(&Agent.stop/1)
+
+        assert retained == []
+      end
+    end
+  end
+
   describe "resolve_boolean_value/4" do
     test "resolves an enabled flag" do
       expect_flag("flag", %{"enabled" => true})
