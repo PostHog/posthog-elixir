@@ -117,7 +117,7 @@ if Code.ensure_loaded?(OpenFeature.Provider) do
             {:ok, default_details(result, default)}
 
           %Result{variant: nil} ->
-            {:ok, type_mismatch(default, "Flag '#{key}' has no string variant.")}
+            {:ok, type_mismatch(result, default, "Flag '#{key}' has no string variant.")}
 
           %Result{variant: variant} ->
             {:ok, details(result, variant)}
@@ -133,7 +133,7 @@ if Code.ensure_loaded?(OpenFeature.Provider) do
             {:ok, default_details(result, default)}
 
           %Result{variant: nil} ->
-            {:ok, type_mismatch(default, "Flag '#{key}' has no numeric variant.")}
+            {:ok, type_mismatch(result, default, "Flag '#{key}' has no numeric variant.")}
 
           %Result{variant: variant} ->
             {:ok, number_details(result, key, variant, default)}
@@ -155,7 +155,7 @@ if Code.ensure_loaded?(OpenFeature.Provider) do
             {:ok, default_details(result, default)}
 
           %Result{} ->
-            {:ok, type_mismatch(default, "Flag '#{key}' has no object/JSON payload.")}
+            {:ok, type_mismatch(result, default, "Flag '#{key}' has no object/JSON payload.")}
         end
       end
     end
@@ -221,8 +221,11 @@ if Code.ensure_loaded?(OpenFeature.Provider) do
 
     defp number_details(result, key, variant, default) do
       case parse_number(variant) do
-        {:ok, number} -> details(result, number)
-        :error -> type_mismatch(default, "Flag '#{key}' variant '#{variant}' is not a number.")
+        {:ok, number} ->
+          details(result, number)
+
+        :error ->
+          type_mismatch(result, default, "Flag '#{key}' variant '#{variant}' is not a number.")
       end
     end
 
@@ -283,7 +286,12 @@ if Code.ensure_loaded?(OpenFeature.Provider) do
 
     defp default_details(result, default), do: %{details(result, default) | variant: nil}
 
-    defp type_mismatch(default, message), do: error_details(default, :type_mismatch, message)
+    defp type_mismatch(result, default, message) do
+      %{
+        error_details(default, :type_mismatch, message)
+        | flag_metadata: reason_metadata(result.reason)
+      }
+    end
 
     defp error_details(default, code, message) do
       %ResolutionDetails{value: default, reason: :error, error_code: code, error_message: message}

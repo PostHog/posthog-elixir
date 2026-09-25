@@ -266,6 +266,38 @@ defmodule PostHog.OpenFeature.ProviderTest do
       end
     end
 
+    for {label, resolver, default, attrs} <- [
+          {"missing string variant", :resolve_string_value, "fallback", %{}},
+          {"missing numeric variant", :resolve_number_value, 0, %{}},
+          {"invalid numeric variant", :resolve_number_value, 0, %{"variant" => "abc"}},
+          {"missing payload", :resolve_map_value, %{}, %{}},
+          {"scalar payload", :resolve_map_value, %{}, %{"metadata" => %{"payload" => "123"}}}
+        ] do
+      test "preserves reason metadata on type mismatch for #{label}" do
+        expect_flag(
+          "flag",
+          Map.put(unquote(Macro.escape(attrs)), "reason", %{
+            "code" => "condition_match",
+            "description" => "Matched condition set 1"
+          })
+        )
+
+        assert {:ok,
+                %ResolutionDetails{
+                  value: unquote(Macro.escape(default)),
+                  reason: :error,
+                  error_code: :type_mismatch,
+                  flag_metadata: %{"posthog_reason" => "Matched condition set 1"}
+                }} =
+                 apply(Provider, unquote(resolver), [
+                   provider(),
+                   "flag",
+                   unquote(Macro.escape(default)),
+                   @context
+                 ])
+      end
+    end
+
     test "does not infer disabled from the description" do
       expect_flag("flag", %{
         "enabled" => false,
