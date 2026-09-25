@@ -100,7 +100,11 @@ defmodule PostHog.OpenFeature.ProviderTest do
           {"-1", -1},
           {".5", 0.5},
           {"-.5", -0.5},
-          {"1.", 1.0}
+          {"1.", 1.0},
+          {"0x10", 16},
+          {"0Xff", 255},
+          {" 0xA0 ", 160},
+          {"0x0", 0}
         ] do
       test "parses variant #{inspect(variant)}" do
         expect_flag("flag", %{"variant" => unquote(variant)})
@@ -112,7 +116,20 @@ defmodule PostHog.OpenFeature.ProviderTest do
       end
     end
 
-    for variant <- ["abc", "", "  ", "12abc", ".", "-."] do
+    for variant <- [
+          "abc",
+          "",
+          "  ",
+          "12abc",
+          ".",
+          "-.",
+          "0x",
+          "0xgg",
+          "0x1.5",
+          "0x_10",
+          "-0x10",
+          "+0x10"
+        ] do
       test "returns type_mismatch for variant #{inspect(variant)}" do
         expect_flag("flag", %{"variant" => unquote(variant)})
 
@@ -172,11 +189,123 @@ defmodule PostHog.OpenFeature.ProviderTest do
                Provider.resolve_map_value(provider(), "flag", %{}, @context)
     end
 
-    test "returns type_mismatch for a non-object payload" do
-      expect_flag("flag", %{"metadata" => %{"payload" => "[1, 2]"}})
+    for payload <- [[], [1, 2], [%{"nested" => [true, nil]}]] do
+      test "resolves array payload #{inspect(payload)}" do
+        payload = unquote(Macro.escape(payload))
+        expect_flag("flag", %{"metadata" => %{"payload" => Jason.encode!(payload)}})
+
+        assert {:ok, %ResolutionDetails{value: ^payload, reason: :targeting_match}} =
+                 Provider.resolve_map_value(provider(), "flag", %{}, @context)
+      end
+    end
+
+    test "preserves array payloads on disabled flags" do
+      expect_flag("flag", %{"enabled" => false, "metadata" => %{"payload" => "[]"}})
+
+      assert {:ok, %ResolutionDetails{value: [], reason: :default}} =
+               Provider.resolve_map_value(provider(), "flag", %{}, @context)
+    end
+
+    test "returns type_mismatch for a scalar payload" do
+      expect_flag("flag", %{"metadata" => %{"payload" => "123"}})
 
       assert {:ok, %ResolutionDetails{value: %{}, error_code: :type_mismatch}} =
                Provider.resolve_map_value(provider(), "flag", %{}, @context)
+    end
+  end
+
+  describe "reason metadata" do
+    for {resolver, default, attrs} <- [
+          {:resolve_boolean_value, false, %{}},
+          {:resolve_string_value, "fallback", %{"variant" => "test"}},
+          {:resolve_number_value, 0, %{"variant" => "42"}},
+          {:resolve_map_value, %{}, %{"metadata" => %{"payload" => "{}"}}}
+        ] do
+      test "preserves PostHog reason for #{resolver}" do
+        expect_flag(
+          "flag",
+          Map.put(unquote(Macro.escape(attrs)), "reason", %{
+            "code" => "condition_match",
+            "description" => "Matched condition set 1"
+          })
+        )
+
+        assert {:ok,
+                %ResolutionDetails{
+                  reason: :targeting_match,
+                  flag_metadata: %{"posthog_reason" => "Matched condition set 1"}
+                }} =
+                 apply(Provider, unquote(resolver), [
+                   provider(),
+                   "flag",
+                   unquote(Macro.escape(default)),
+                   @context
+                 ])
+      end
+
+      test "reports explicit disabled reason for #{resolver}" do
+        expect_flag("flag", %{
+          "enabled" => false,
+          "reason" => %{
+            "code" => "flag_disabled",
+            "description" => "Flag switched off"
+          }
+        })
+
+        assert {:ok,
+                %ResolutionDetails{
+                  reason: :disabled,
+                  flag_metadata: %{"posthog_reason" => "Flag switched off"}
+                }} =
+                 apply(Provider, unquote(resolver), [
+                   provider(),
+                   "flag",
+                   unquote(Macro.escape(default)),
+                   @context
+                 ])
+      end
+    end
+
+    test "does not infer disabled from the description" do
+      expect_flag("flag", %{
+        "enabled" => false,
+        "reason" => %{
+          "code" => "no_condition_match",
+          "description" => "User property disabled is true"
+        }
+      })
+
+      assert {:ok, %ResolutionDetails{reason: :default}} =
+               Provider.resolve_boolean_value(provider(), "flag", true, @context)
+    end
+
+    test "falls back to the reason code for metadata" do
+      expect_flag("flag", %{"enabled" => false, "reason" => %{"code" => "flag_disabled"}})
+
+      assert {:ok,
+              %ResolutionDetails{
+                reason: :disabled,
+                flag_metadata: %{"posthog_reason" => "flag_disabled"}
+              }} =
+               Provider.resolve_boolean_value(provider(), "flag", true, @context)
+    end
+
+    test "preserves string reasons used by local evaluation" do
+      expect_flag("flag", %{"reason" => "Evaluated locally"})
+
+      assert {:ok,
+              %ResolutionDetails{
+                reason: :targeting_match,
+                flag_metadata: %{"posthog_reason" => "Evaluated locally"}
+              }} =
+               Provider.resolve_boolean_value(provider(), "flag", false, @context)
+    end
+
+    test "omits metadata when no reason is available" do
+      expect_flag("flag", %{})
+
+      assert {:ok, %ResolutionDetails{flag_metadata: %{}}} =
+               Provider.resolve_boolean_value(provider(), "flag", false, @context)
     end
   end
 
@@ -323,6 +452,18 @@ defmodule PostHog.OpenFeature.ProviderTest do
 
       assert OpenFeature.Client.get_string_value(client, "flag", "control", context: @context) ==
                "test"
+    end
+
+    test "resolves array payloads with a map default", %{client: client} do
+      expect_flag("flag", %{"metadata" => %{"payload" => "[1, 2]"}})
+      assert OpenFeature.Client.get_map_value(client, "flag", %{}, context: @context) == [1, 2]
+    end
+
+    test "surfaces disabled reason and metadata", %{client: client} do
+      expect_flag("flag", %{"enabled" => false, "reason" => %{"code" => "flag_disabled"}})
+
+      assert %{reason: :disabled, flag_metadata: %{"posthog_reason" => "flag_disabled"}} =
+               OpenFeature.Client.get_boolean_details(client, "flag", true, context: @context)
     end
 
     test "surfaces type_mismatch", %{client: client} do

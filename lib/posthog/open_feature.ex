@@ -44,15 +44,23 @@ if Code.ensure_loaded?(OpenFeature.Provider) do
 
     - Boolean flags resolve to whether the flag is enabled.
     - String flags resolve to the variant key.
-    - Number flags resolve to the variant key parsed as a number.
-    - Map flags resolve to the flag's JSON payload.
+    - Number flags resolve to the variant key parsed as a number, including
+      unsigned hexadecimal integers such as `0x10`.
+    - Map flags resolve to the flag's JSON object or array payload. The upstream
+      OpenFeature SDK requires a map default (`%{}`), even for array payloads;
+      `get_map_value/4` can return a list when the payload is an array.
 
-    Reading a disabled flag returns the default value with reason `:default`,
-    unless the flag still carries a variant (or payload, for maps). That value
-    is then returned with reason `:default`, as in the Node and Python
-    providers. Reading an enabled flag whose value doesn't fit the requested
-    type returns the default value with `error_code: :type_mismatch`. Unknown
-    flags return `:flag_not_found`.
+    For string, number, and map reads, a disabled flag returns the default value,
+    unless it still carries a variant (or object/array payload, for maps). That
+    value is then returned, as in the Node and Python providers. Boolean reads
+    return the flag's enabled state, including `false` regardless of the default.
+    Reading an enabled flag whose value doesn't fit the requested type returns
+    the default value with `error_code: :type_mismatch`. Unknown flags return
+    `:flag_not_found`.
+
+    Resolution details include `flag_metadata["posthog_reason"]` when PostHog
+    supplies an evaluation reason. Off results use `:disabled` when the server
+    explicitly reports the `flag_disabled` reason code, otherwise `:default`.
 
     The OpenFeature Elixir SDK has no error tuple for `:type_mismatch` or
     `:targeting_key_missing`, so these are returned as resolution details with
@@ -106,7 +114,7 @@ if Code.ensure_loaded?(OpenFeature.Provider) do
       with {:ok, %Result{} = result} <- evaluate(provider, key, default, context) do
         case result do
           %Result{variant: nil, enabled: false} ->
-            {:ok, default_details(default)}
+            {:ok, default_details(result, default)}
 
           %Result{variant: nil} ->
             {:ok, type_mismatch(default, "Flag '#{key}' has no string variant.")}
@@ -122,7 +130,7 @@ if Code.ensure_loaded?(OpenFeature.Provider) do
       with {:ok, %Result{} = result} <- evaluate(provider, key, default, context) do
         case result do
           %Result{variant: nil, enabled: false} ->
-            {:ok, default_details(default)}
+            {:ok, default_details(result, default)}
 
           %Result{variant: nil} ->
             {:ok, type_mismatch(default, "Flag '#{key}' has no numeric variant.")}
@@ -137,11 +145,11 @@ if Code.ensure_loaded?(OpenFeature.Provider) do
     def resolve_map_value(provider, key, default, context) do
       with {:ok, %Result{} = result} <- evaluate(provider, key, default, context) do
         case result do
-          %Result{payload: payload} when is_map(payload) ->
+          %Result{payload: payload} when is_map(payload) or is_list(payload) ->
             {:ok, details(result, payload)}
 
           %Result{enabled: false} ->
-            {:ok, default_details(default)}
+            {:ok, default_details(result, default)}
 
           %Result{} ->
             {:ok, type_mismatch(default, "Flag '#{key}' has no object/JSON payload.")}
@@ -218,13 +226,19 @@ if Code.ensure_loaded?(OpenFeature.Provider) do
     defp parse_number(variant) do
       trimmed = String.trim(variant)
 
-      if trimmed =~ ~r/\d/ do
-        case Integer.parse(trimmed) do
-          {integer, ""} -> {:ok, integer}
-          _ -> parse_float(trimmed)
-        end
-      else
-        :error
+      cond do
+        trimmed =~ ~r/\A0[xX][0-9a-fA-F]+\z/ ->
+          <<_prefix::binary-size(2), digits::binary>> = trimmed
+          {:ok, String.to_integer(digits, 16)}
+
+        trimmed =~ ~r/\d/ ->
+          case Integer.parse(trimmed) do
+            {integer, ""} -> {:ok, integer}
+            _ -> parse_float(trimmed)
+          end
+
+        true ->
+          :error
       end
     end
 
@@ -246,11 +260,25 @@ if Code.ensure_loaded?(OpenFeature.Provider) do
       %ResolutionDetails{
         value: value,
         variant: result.variant,
-        reason: if(result.enabled, do: :targeting_match, else: :default)
+        reason: resolution_reason(result),
+        flag_metadata: reason_metadata(result.reason)
       }
     end
 
-    defp default_details(default), do: %ResolutionDetails{value: default, reason: :default}
+    defp resolution_reason(%Result{enabled: true}), do: :targeting_match
+    defp resolution_reason(%Result{reason: %{"code" => "flag_disabled"}}), do: :disabled
+    defp resolution_reason(_result), do: :default
+
+    defp reason_metadata(%{"description" => description}) when is_binary(description),
+      do: %{"posthog_reason" => description}
+
+    defp reason_metadata(%{"code" => code}) when is_binary(code),
+      do: %{"posthog_reason" => code}
+
+    defp reason_metadata(reason) when is_binary(reason), do: %{"posthog_reason" => reason}
+    defp reason_metadata(_reason), do: %{}
+
+    defp default_details(result, default), do: %{details(result, default) | variant: nil}
 
     defp type_mismatch(default, message), do: error_details(default, :type_mismatch, message)
 
