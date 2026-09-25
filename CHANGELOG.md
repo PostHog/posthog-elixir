@@ -1,5 +1,15 @@
 # posthog
 
+## 2.16.0 — 2026-09-25
+
+### Minor changes
+
+- [e4dbef7](https://github.com/posthog/posthog-elixir/commit/e4dbef75b6374d1f8f9363711a2959d08ef8db91) Add `PostHog.OpenFeature.Provider`, an OpenFeature provider for the Elixir OpenFeature SDK. Add `{:open_feature, "~> 0.1"}` to your dependencies to use it. — Thanks @seanpem for your first contribution 🎉!
+
+### Patch changes
+
+- [a401bd2](https://github.com/posthog/posthog-elixir/commit/a401bd238ef1169df31b7d8d0d3d37ba6b923440) Stop leaking access tracker processes during OpenFeature flag evaluations. — Thanks @marandaneto!
+
 ## 2.15.1 — 2026-09-21
 
 ### Patch changes
