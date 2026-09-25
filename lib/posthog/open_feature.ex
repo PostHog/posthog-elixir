@@ -141,6 +141,9 @@ if Code.ensure_loaded?(OpenFeature.Provider) do
       end
     end
 
+    # open-feature/elixir-sdk 0.1.3 guards get_map_value/get_map_details defaults
+    # with is_map/1 before calling the provider, but does not restrict returned
+    # values. Array payloads work with a map default; list defaults need an upstream fix.
     @impl true
     def resolve_map_value(provider, key, default, context) do
       with {:ok, %Result{} = result} <- evaluate(provider, key, default, context) do
