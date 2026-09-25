@@ -64,7 +64,17 @@ defmodule PostHog.OpenFeature.ProviderTest do
 
         {:links, after_calls} = Process.info(self(), :links)
         retained = after_calls -- before
-        Enum.each(retained, &Agent.stop/1)
+
+        retained
+        |> Enum.filter(fn pid ->
+          is_pid(pid) and
+            match?(
+              {PostHog.FeatureFlags.Evaluations, _, _},
+              :proc_lib.translate_initial_call(pid)
+            )
+        end)
+        |> Enum.each(&Agent.stop/1)
+
         assert retained == []
       end
     end
