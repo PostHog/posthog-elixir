@@ -568,15 +568,23 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
       })
       |> put_in(["filters", "payloads"], %{"control" => ~s({"color":"blue"}), "test" => "false"})
 
-    result = evaluate(flag).results["variant"]
-    assert result.variant in ["control", "test"]
-    assert result.payload in [%{"color" => "blue"}, false]
+    context = %{distinct_id: "user-1"}
+
+    assert %Result{variant: "control", payload: %{"color" => "blue"}} =
+             evaluate(flag, context).results["variant"]
+
+    assert %Result{variant: "test", payload: false} =
+             evaluate(flag, %{distinct_id: "user"}).results["variant"]
 
     override = put_in(flag, ["filters", "groups", Access.at(0), "variant"], "test")
-    assert %Result{variant: "test", payload: false} = evaluate(override).results["variant"]
+
+    assert %Result{variant: "test", payload: false} =
+             evaluate(override, context).results["variant"]
 
     invalid = put_in(flag, ["filters", "groups", Access.at(0), "variant"], "missing")
-    assert evaluate(invalid).results["variant"].variant == result.variant
+
+    assert %Result{variant: "control", payload: %{"color" => "blue"}} =
+             evaluate(invalid, context).results["variant"]
 
     boolean = put_in(flag("boolean-payload"), ["filters", "payloads"], %{"true" => "true"})
     assert %Result{payload: true} = evaluate(boolean).results["boolean-payload"]
@@ -744,14 +752,15 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
              }).results["timezone-less"].enabled
     end
 
-    for property <- [
-          %{"key" => "x", "operator" => "unknown", "value" => 1},
-          %{"key" => "x", "operator" => "regex", "value" => "["},
-          %{"key" => "x", "operator" => "is_date_before", "value" => "never"},
-          %{"key" => "x", "operator" => "semver_eq", "value" => "01.2.3"}
+    for {property, actual} <- [
+          {%{"key" => "x", "operator" => "unknown", "value" => 1}, 1},
+          {%{"key" => "x", "operator" => "regex", "value" => "["}, "hello123"},
+          {%{"key" => "x", "operator" => "is_date_before", "value" => "never"}, "2025-01-01"},
+          {%{"key" => "x", "operator" => "semver_eq", "value" => "01.2.3"}, "1.2.3"}
         ] do
-      result = evaluate(flag("bad", [property]), %{person_properties: %{x: "bad"}})
-      assert MapSet.member?(result.unresolved, "bad")
+      result = evaluate(flag("bad", [property]), %{person_properties: %{x: actual}, now: now})
+      assert result.results == %{}
+      assert result.unresolved == MapSet.new(["bad"])
     end
   end
 

@@ -181,28 +181,35 @@ defmodule PostHog.ErrorTracking.SourcesTest do
       assert source_lines[line_number] == source_line
     end
 
-    test "excludes directories matching the default patterns" do
-      # Default patterns use ~r"/dir/" — match mid-path occurrences.
-      # Explicitly verify the custom-pattern path works correctly.
-      result =
-        Sources.load_files(
-          root_source_code_paths: [File.cwd!()],
-          source_code_exclude_patterns: [~r"/posthog/", ~r"/mix/"]
-        )
+    @tag :tmp_dir
+    test "excludes directories matching the default patterns", %{tmp_dir: root} do
+      on_exit(fn -> File.rm_rf!(root) end)
 
-      refute Enum.any?(result, fn {path, _} ->
-               String.contains?(path, "/posthog/") or String.contains?(path, "/mix/")
-             end)
+      for path <- ["lib/keep.ex", "_build/drop.ex", "priv/drop.ex", "test/drop.ex"] do
+        absolute = Path.join(root, path)
+        File.mkdir_p!(Path.dirname(absolute))
+        File.write!(absolute, "sentinel\n")
+      end
+
+      assert %{"lib/keep.ex" => %{1 => "sentinel"}} ==
+               Sources.load_files(root_source_code_paths: [root])
     end
 
-    test "respects custom exclude patterns" do
-      result =
-        Sources.load_files(
-          root_source_code_paths: [File.cwd!()],
-          source_code_exclude_patterns: [~r"/posthog/"]
-        )
+    @tag :tmp_dir
+    test "respects custom exclude patterns", %{tmp_dir: root} do
+      on_exit(fn -> File.rm_rf!(root) end)
 
-      refute Enum.any?(result, fn {path, _} -> String.contains?(path, "/posthog/") end)
+      for path <- ["lib/keep.ex", "lib/posthog/drop.ex"] do
+        absolute = Path.join(root, path)
+        File.mkdir_p!(Path.dirname(absolute))
+        File.write!(absolute, "sentinel\n")
+      end
+
+      assert %{"lib/keep.ex" => %{1 => "sentinel"}} ==
+               Sources.load_files(
+                 root_source_code_paths: [root],
+                 source_code_exclude_patterns: [~r"/posthog/"]
+               )
     end
   end
 end

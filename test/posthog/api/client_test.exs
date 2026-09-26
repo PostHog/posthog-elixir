@@ -6,7 +6,10 @@ defmodule PostHog.API.ClientTest do
   test "client/2 sets the posthog-elixir User-Agent" do
     %Client{client: req} = Client.client("phc_test", "https://us.i.posthog.com")
 
-    assert req.headers["user-agent"] == [Client.user_agent()]
+    version = Application.spec(:posthog, :vsn) |> to_string()
+    expected = "posthog-elixir/#{version}"
+    assert Client.user_agent() == expected
+    assert req.headers["user-agent"] == [expected]
   end
 
   for {case_name, response_or_exception, expected} <- [
@@ -45,7 +48,7 @@ defmodule PostHog.API.ClientTest do
           send(
             parent,
             {:request, Req.Request.fetch_option(req, :compress_body),
-             Req.Request.get_header(req, "content-encoding")}
+             Req.Request.get_header(req, "content-encoding"), req.body}
           )
 
           {req, Req.Response.new(status: 200, body: %{})}
@@ -53,7 +56,7 @@ defmodule PostHog.API.ClientTest do
       )
 
     assert {:ok, %{status: 200}} = Client.request(req, :post, "/", [])
-    assert_received {:request, {:ok, false}, []}
+    assert_received {:request, {:ok, false}, [], [123_456]}
   end
 
   test "request retries keep the compressed body reusable" do
@@ -78,6 +81,13 @@ defmodule PostHog.API.ClientTest do
     assert_received {:request, ["gzip"], first_body}
     assert_received {:request, ["gzip"], second_body}
     assert_received {:request, ["gzip"], third_body}
+
+    assert first_body |> :zlib.gunzip() |> Jason.decode!() == %{
+             "event" => "test",
+             "api_key" => nil
+           }
+
+    assert Agent.get(calls, & &1) == 3
     assert :zlib.gunzip(first_body) == :zlib.gunzip(second_body)
     assert :zlib.gunzip(second_body) == :zlib.gunzip(third_body)
   end

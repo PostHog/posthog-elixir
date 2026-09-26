@@ -183,6 +183,11 @@ defmodule PostHog.FeatureFlags.FlagDefinitionCacheProviderTest do
 
     owner = self()
 
+    stub(PostHog.API.Mock, :request, fn _client, _method, _path, _opts ->
+      send(owner, :unexpected_api_fetch)
+      {:error, :unexpected_api_fetch}
+    end)
+
     {:ok, provider} =
       Agent.start_link(fn ->
         %{owner: owner, decision: false, read: envelope("cached"), store: :ok, shutdown: :ok}
@@ -196,6 +201,7 @@ defmodule PostHog.FeatureFlags.FlagDefinitionCacheProviderTest do
     assert definitions.minimal_flag_called_events
     assert :ok = stop_supervised(__MODULE__.Cached)
     assert_receive :shutdown
+    refute_receive :unexpected_api_fetch
   end
 
   test "positive decision fetches, publishes, and stores the complete envelope" do

@@ -253,6 +253,7 @@ defmodule PostHog.SenderTest do
       [{^pid, :available}] = Registry.lookup(registry, {PostHog.Sender, 1})
 
       send(pid, {:timeout, ref, :batch_time_reached})
+      assert %{events: [], num_events: 0, timer_ref: nil} = :sys.get_state(pid)
       refute_receive :ready
     end
   end
