@@ -260,19 +260,26 @@ defmodule PostHog.FeatureFlags.DefinitionLoaderTest do
 
     for status <- statuses do
       name = Module.concat(__MODULE__, "Status#{status}")
-      start_supervised!({PostHog.Supervisor, config(name, feature_flags_poll_interval_ms: 20)})
+
+      start_supervised!(
+        {PostHog.Supervisor, config(name, feature_flags_poll_interval_ms: 60_000)}
+      )
+
       assert DefinitionLoader.ready?(name)
       capture_log(fn -> DefinitionLoader.refresh(name) end)
       assert_receive {:status_request, ^status}
 
       if status == 429 do
         assert DefinitionLoader.ready?(name)
-        refute_receive {:status_request, 429}, 100
+        loader = GenServer.whereis(PostHog.Registry.via(name, DefinitionLoader))
+        state = :sys.get_state(loader)
+        assert state.quota_backoff_ms == 120_000
+        assert Process.read_timer(state.timer_ref) > 60_000
       else
         refute DefinitionLoader.ready?(name)
       end
 
-      stop_supervised(name)
+      assert :ok = stop_supervised(name)
     end
   end
 
@@ -345,7 +352,7 @@ defmodule PostHog.FeatureFlags.DefinitionLoaderTest do
     stub_with(PostHog.API.Mock, PostHog.API.Stub)
 
     expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
-      send(owner, :definition_request_started)
+      send(owner, {:definition_request_started, self()})
       receive do: (:never -> :ok)
     end)
 
@@ -357,11 +364,14 @@ defmodule PostHog.FeatureFlags.DefinitionLoaderTest do
       )
 
     start_supervised!({PostHog.Supervisor, cfg})
-    assert_receive :definition_request_started
+    assert_receive {:definition_request_started, request_worker}
+    request_monitor = Process.monitor(request_worker)
     started = System.monotonic_time(:millisecond)
     assert :ok = stop_supervised(__MODULE__.Blocked)
     assert System.monotonic_time(:millisecond) - started < 500
     assert_receive :provider_shutdown
+    assert_receive {:DOWN, ^request_monitor, :process, ^request_worker, _reason}
+    refute Process.alive?(request_worker)
   end
 
   test "loader state and child start MFA redact secret and provider sentinels" do
@@ -449,7 +459,7 @@ defmodule PostHog.FeatureFlags.DefinitionLoaderTest do
     send(loader, {:boundary_result, make_ref(), self(), {:ok, :late}})
     send(loader, {:DOWN, make_ref(), :process, self(), :normal})
     send(loader, {:unexpected, :message})
-    Process.sleep(10)
+    assert :sys.get_state(loader).definition_generation == state.definition_generation
     assert Process.alive?(loader)
     assert DefinitionLoader.ready?(__MODULE__.LateMessages)
   end

@@ -44,10 +44,10 @@ defmodule PostHog.ContextTest do
     Context.set(:all, :all, %{hello: "world"})
     Logger.metadata(foo: "baz")
 
-    assert %{foo: "bar", hello: "world"} = Context.get(PostHog, "$exception")
-    assert %{foo: "baz", hello: "world"} = Context.get(MyPostHog, "$exception")
-    assert %{hello: "world"} = Context.get(MyPostHog, "$exception_list")
-    assert %{hello: "world"} = Context.get(FooBar, "$exception")
+    assert Context.get(PostHog, "$exception") == %{foo: "bar", hello: "world"}
+    assert Context.get(MyPostHog, "$exception") == %{foo: "baz", hello: "world"}
+    assert Context.get(MyPostHog, "$exception_list") == %{hello: "world"}
+    assert Context.get(FooBar, "$exception") == %{hello: "world"}
   end
 
   test "in case of overlapping keys prefer more specific scope" do
