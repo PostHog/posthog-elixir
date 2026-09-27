@@ -347,7 +347,7 @@ defmodule PostHog.FeatureFlags.DefinitionLoaderTest do
     assert Agent.get(activity, & &1.max) == 1
   end
 
-  test "blocked definition requests are canceled before bounded shutdown and provider cleanup" do
+  test "timed-out definition requests are killed before bounded shutdown and provider cleanup" do
     owner = self()
     stub_with(PostHog.API.Mock, PostHog.API.Stub)
 
@@ -366,12 +366,18 @@ defmodule PostHog.FeatureFlags.DefinitionLoaderTest do
     start_supervised!({PostHog.Supervisor, cfg})
     assert_receive {:definition_request_started, request_worker}
     request_monitor = Process.monitor(request_worker)
+    assert_receive {:DOWN, ^request_monitor, :process, ^request_worker, _reason}
+    refute Process.alive?(request_worker)
+
+    loader = GenServer.whereis(PostHog.Registry.via(__MODULE__.Blocked, DefinitionLoader))
+    assert :sys.get_state(loader).initial_load_complete?
+    refute DefinitionLoader.ready?(__MODULE__.Blocked)
+    refute_received :provider_shutdown
+
     started = System.monotonic_time(:millisecond)
     assert :ok = stop_supervised(__MODULE__.Blocked)
     assert System.monotonic_time(:millisecond) - started < 500
     assert_receive :provider_shutdown
-    assert_receive {:DOWN, ^request_monitor, :process, ^request_worker, _reason}
-    refute Process.alive?(request_worker)
   end
 
   test "loader state and child start MFA redact secret and provider sentinels" do
