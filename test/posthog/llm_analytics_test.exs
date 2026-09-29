@@ -406,31 +406,31 @@ defmodule Posthog.LLMAnalyticsTest do
     end
 
     test "no properties" do
-      assert {:ok, _span_id} = LLMAnalytics.capture_current_span("$ai_generation")
+      assert {:ok, span_id} = LLMAnalytics.capture_current_span("$ai_generation")
       assert [event] = all_captured()
 
       assert %{
                event: "$ai_generation",
-               properties: %{}
+               properties: %{"$ai_span_id": ^span_id}
              } = event
     end
 
     @tag config: [supervisor_name: MyPostHog]
     test "custom PostHog instance" do
       PostHog.set_context(MyPostHog, %{distinct_id: "foo"})
-      assert {:ok, _span_id} = LLMAnalytics.capture_current_span(MyPostHog, "$ai_generation")
+      assert {:ok, first_id} = LLMAnalytics.capture_current_span(MyPostHog, "$ai_generation")
 
-      assert {:ok, _span_id} =
+      assert {:ok, second_id} =
                LLMAnalytics.capture_current_span(MyPostHog, "$ai_generation", %{foo: "bar"})
 
       assert [
                %{
                  event: "$ai_generation",
-                 properties: %{foo: "bar"}
+                 properties: %{foo: "bar", "$ai_span_id": ^second_id}
                },
                %{
                  event: "$ai_generation",
-                 properties: %{}
+                 properties: %{"$ai_span_id": ^first_id}
                }
              ] = all_captured(MyPostHog)
     end
@@ -480,6 +480,8 @@ defmodule Posthog.LLMAnalyticsTest do
                event: "$ai_generation",
                properties: %{bar: "baz", "$ai_parent_id": ^current_span_id, "$ai_span_id": ^id}
              } = event
+
+      assert %{"$ai_span_id": ^current_span_id, foo: "bar"} = LLMAnalytics.pop_span()
     end
 
     test "no properties" do

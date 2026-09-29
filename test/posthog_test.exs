@@ -293,8 +293,8 @@ defmodule PostHogTest do
     end
 
     test "includes relevant event context" do
-      PostHog.set_context(%{hello: "world", distinct_id: "distinct_id"})
-      PostHog.set_event_context("case tested", %{foo: "bar"})
+      PostHog.set_context(%{hello: "world", distinct_id: "distinct_id", final: "global"})
+      PostHog.set_event_context("case tested", %{foo: "bar", final: "event"})
       PostHog.set_context(MyPostHog, %{spam: "eggs"})
       PostHog.capture("case tested", %{final: "override"})
 
@@ -310,6 +310,9 @@ defmodule PostHogTest do
                },
                timestamp: _
              } = event
+
+      refute Map.has_key?(event.properties, :spam)
+      refute Map.has_key?(event.properties, :distinct_id)
     end
   end
 

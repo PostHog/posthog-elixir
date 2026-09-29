@@ -602,6 +602,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluationIntegrationTest do
     start_instance(__MODULE__.Dependencies)
     assert {:ok, true} = FeatureFlags.check(__MODULE__.Dependencies, "dependent", "user")
 
+    PostHog.set_context(__MODULE__.Dependencies, %{"$feature/dependent" => "sentinel"})
     before_context = PostHog.get_context(__MODULE__.Dependencies)
     captured_count = length(PostHog.Test.all_captured(__MODULE__.Dependencies))
 
@@ -609,7 +610,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluationIntegrationTest do
              FeatureFlags.get_feature_flag_result(
                __MODULE__.Dependencies,
                "dependent",
-               "user",
+               "silent-user",
                send_event: false
              )
 

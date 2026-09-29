@@ -1577,6 +1577,13 @@ defmodule PostHog.HandlerTest do
                String.ends_with?(type_end, "caused shutdown")
              ])
     end
+
+    types =
+      Enum.map(events, fn %{properties: %{"$exception_list": [%{type: type}]}} -> type end)
+
+    for suffix <- ["started", "terminated", "caused shutdown"] do
+      assert Enum.count(types, &String.ends_with?(&1, suffix)) == 1
+    end
   end
 
   @tag config: [metadata: [:extra]]
@@ -1602,6 +1609,8 @@ defmodule PostHog.HandlerTest do
                ]
              }
            } = event
+
+    refute Map.has_key?(event.properties, :hello)
   end
 
   @tag config: [metadata: :all]

@@ -33,7 +33,8 @@ defmodule PostHog.IntegrationTest do
       end
     end
 
-    :logger.add_handler(:posthog, PostHog.Handler, %{config: config})
+    :ok = :logger.add_handler(:posthog, PostHog.Handler, %{config: config})
+    on_exit(fn -> :logger.remove_handler(:posthog) end)
 
     %{wait_fun: wait}
   end
@@ -98,17 +99,24 @@ defmodule PostHog.IntegrationTest do
     end
 
     test "supervisor report", %{wait_fun: wait} do
+      original =
+        Map.new([:handle_sasl_reports, :level], &{&1, Application.fetch_env(:logger, &1)})
+
+      on_exit(fn ->
+        Application.stop(:logger)
+
+        Enum.each(original, fn
+          {key, {:ok, value}} -> Application.put_env(:logger, key, value)
+          {key, :error} -> Application.delete_env(:logger, key)
+        end)
+
+        Application.start(:logger)
+      end)
+
       Application.stop(:logger)
       Application.put_env(:logger, :handle_sasl_reports, true)
       Application.put_env(:logger, :level, :info)
       Application.start(:logger)
-
-      on_exit(fn ->
-        Application.stop(:logger)
-        Application.put_env(:logger, :handle_sasl_reports, false)
-        Application.delete_env(:logger, :level)
-        Application.start(:logger)
-      end)
 
       LoggerHandlerKit.Act.supervisor_progress_report(:failed_to_start_child)
       wait.()
@@ -117,7 +125,7 @@ defmodule PostHog.IntegrationTest do
 
   describe "event capture" do
     test "captures event", %{test: test, wait_fun: wait} do
-      PostHog.capture("case tested", test, %{number: 1})
+      assert :ok = PostHog.capture("case tested", %{distinct_id: test, number: 1})
       wait.()
     end
   end

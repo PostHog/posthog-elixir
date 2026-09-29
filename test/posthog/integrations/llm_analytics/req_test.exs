@@ -94,7 +94,12 @@ defmodule PostHog.Integrations.LLMAnalytics.ReqTest do
                  "$ai_provider": "openai",
                  "$ai_request_url": "https://api.openai.com/v1/responses",
                  "$ai_is_error": true,
-                 "$ai_error": %{}
+                 "$ai_error": %{
+                   "code" => "insufficient_quota",
+                   "type" => "insufficient_quota",
+                   "message" =>
+                     "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors."
+                 }
                }
              }
            ] = all_captured(@supervisor_name)
