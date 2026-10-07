@@ -1,5 +1,11 @@
 # posthog
 
+## 2.16.1 — 2026-10-07
+
+### Patch changes
+
+- [aea1877](https://github.com/posthog/posthog-elixir/commit/aea187718d11cc7da395715738e5e050f4666821) Refactor regex schemas out of module attributes into private functions to fix Elixir 1.18 `#Reference` macro compilation crash. — Thanks @boxxxie for your first contribution 🎉!
+
 ## 2.16.0 — 2026-09-25
 
 ### Minor changes
