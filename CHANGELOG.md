@@ -1,5 +1,11 @@
 # posthog
 
+## 2.16.2 — 2026-10-08
+
+### Patch changes
+
+- [b8c77e0](https://github.com/posthog/posthog-elixir/commit/b8c77e0b9e809760aaa76a97a444cfde731b51eb) Fix `PostHog.Sender` not flushing all events on app termination. — Thanks @markovejnovic for your first contribution 🎉!
+
 ## 2.16.1 — 2026-10-07
 
 ### Patch changes
