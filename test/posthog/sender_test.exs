@@ -188,15 +188,14 @@ defmodule PostHog.SenderTest do
     end
 
     test "sends leftovers on shutdown", %{api_client: api_client} do
-      pid =
-        start_supervised!(
-          {Sender,
-           supervisor_name: @supervisor_name,
-           index: 1,
-           api_client: api_client,
-           max_batch_time_ms: 60_000,
-           max_batch_events: 100}
-        )
+      start_supervised!(
+        {Sender,
+         supervisor_name: @supervisor_name,
+         index: 1,
+         api_client: api_client,
+         max_batch_time_ms: 60_000,
+         max_batch_events: 100}
+      )
 
       expect(API.Mock, :request, fn _client, method, url, opts ->
         assert method == :post
@@ -209,7 +208,7 @@ defmodule PostHog.SenderTest do
 
       Sender.send("foo", @supervisor_name)
 
-      assert :ok = GenServer.stop(pid)
+      assert :ok = stop_supervised(Sender)
     end
 
     test "does not send empty batch", %{api_client: api_client, registry: registry} do

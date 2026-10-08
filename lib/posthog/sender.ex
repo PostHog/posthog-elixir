@@ -20,7 +20,6 @@ defmodule PostHog.Sender do
       |> PostHog.Registry.via(__MODULE__, opts[:index])
 
     callers = Process.get(:"$callers", [])
-    Process.flag(:trap_exit, true)
 
     GenServer.start_link(__MODULE__, {opts, callers}, name: name)
   end
@@ -70,6 +69,8 @@ defmodule PostHog.Sender do
 
   @impl GenServer
   def init({opts, callers}) do
+    Process.flag(:trap_exit, true)
+
     state = %__MODULE__{
       registry: PostHog.Registry.registry_name(opts[:supervisor_name]),
       index: Keyword.fetch!(opts, :index),
