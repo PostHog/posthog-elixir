@@ -26,7 +26,10 @@ defmodule PostHog.FeatureFlags.FlagDefinitionCacheProviderTest do
     end
 
     defp run(agent, key) do
-      case Agent.get(agent, &Map.fetch!(&1, key)) do
+      {owner, result} = Agent.get(agent, &{&1.owner, Map.fetch!(&1, key)})
+      send(owner, {:provider_call, key})
+
+      case result do
         {:sleep, milliseconds, result} ->
           Process.sleep(milliseconds)
           result
@@ -69,6 +72,15 @@ defmodule PostHog.FeatureFlags.FlagDefinitionCacheProviderTest do
       |> Map.put(:sender_pool_size, 1)
 
     start_supervised!({PostHog.Supervisor, cfg})
+  end
+
+  defp stub_unexpected_api_requests(owner) do
+    stub_with(PostHog.API.Mock, PostHog.API.Stub)
+
+    stub(PostHog.API.Mock, :request, fn _client, _method, _path, _opts ->
+      send(owner, :unexpected_api_fetch)
+      {:error, :unexpected_api_fetch}
+    end)
   end
 
   test "matching version round trips through providers and version-only hydration replaces results" do
@@ -116,7 +128,7 @@ defmodule PostHog.FeatureFlags.FlagDefinitionCacheProviderTest do
 
     Agent.update(provider, &%{&1 | decision: false, read: stored})
     name = __MODULE__.VersionReader
-    start_instance(name, provider)
+    start_instance(name, provider, secret_key: nil)
 
     context = %{
       distinct_id: "user",
@@ -202,6 +214,198 @@ defmodule PostHog.FeatureFlags.FlagDefinitionCacheProviderTest do
     assert :ok = stop_supervised(__MODULE__.Cached)
     assert_receive :shutdown
     refute_receive :unexpected_api_fetch
+  end
+
+  test "provider-only instances evaluate cached definitions on first use and manual refresh" do
+    owner = self()
+    stub_unexpected_api_requests(owner)
+
+    cached =
+      envelope("cached")
+      |> Map.put("property_matching_version", 2)
+      |> Map.put("flags", [
+        %{
+          "key" => "cached",
+          "active" => true,
+          "filters" => %{"groups" => [%{"properties" => [], "rollout_percentage" => 100}]}
+        }
+      ])
+
+    for {name, secret_key} <- [
+          {__MODULE__.ProviderOnly, nil},
+          {__MODULE__.BlankSecret, " \t "}
+        ] do
+      {:ok, provider} =
+        Agent.start_link(fn ->
+          %{owner: owner, decision: false, read: cached, store: :ok, shutdown: :ok}
+        end)
+
+      start_instance(name, provider, secret_key: secret_key)
+      assert {:ok, result} = PostHog.FeatureFlags.evaluate_flags(name, "user")
+      assert result.flags["cached"].enabled
+      assert result.flags["cached"].locally_evaluated
+      assert_receive {:provider_call, :decision}
+      assert_receive {:provider_call, :read}
+      definitions = DefinitionLoader.definitions(name)
+      assert definitions.flags == cached["flags"]
+      assert definitions.group_type_mapping == cached["group_type_mapping"]
+      assert definitions.cohorts == cached["cohorts"]
+      assert definitions.property_matching_version == 2
+      assert definitions.minimal_flag_called_events
+
+      Agent.update(provider, &%{&1 | read: envelope("refreshed")})
+      assert :ok = DefinitionLoader.refresh(name)
+      assert {:ok, refreshed} = PostHog.FeatureFlags.evaluate_flags(name, "user")
+      assert Map.keys(refreshed.flags) == ["refreshed"]
+      assert refreshed.flags["refreshed"].locally_evaluated
+      assert DefinitionLoader.definitions(name).property_matching_version == 1
+      assert_receive {:provider_call, :decision}
+      assert_receive {:provider_call, :read}
+      refute_received {:provider_call, :store}
+      assert :ok = stop_supervised(name)
+      assert_receive {:provider_call, :shutdown}
+      assert_receive :shutdown
+      refute_received :unexpected_api_fetch
+    end
+  end
+
+  test "provider-only polling hydrates updated shared definitions" do
+    owner = self()
+    stub_unexpected_api_requests(owner)
+
+    {:ok, provider} =
+      Agent.start_link(fn ->
+        %{owner: owner, decision: false, read: envelope("initial"), store: :ok, shutdown: :ok}
+      end)
+
+    name = __MODULE__.ProviderOnlyPolling
+    start_instance(name, provider, secret_key: nil, feature_flags_poll_interval_ms: 50)
+    assert {:ok, initial} = PostHog.FeatureFlags.evaluate_flags(name, "user")
+    assert initial.flags["initial"].locally_evaluated
+    assert_receive {:provider_call, :decision}
+    assert_receive {:provider_call, :read}
+
+    Agent.update(provider, &%{&1 | read: envelope("polled")})
+    assert_receive {:provider_call, :decision}, 500
+    assert_receive {:provider_call, :read}, 500
+    # Wait for the in-flight poll to finish without initiating a manual refresh.
+    GenServer.call(PostHog.Registry.via(name, DefinitionLoader), :definitions)
+
+    assert {:ok, polled} = PostHog.FeatureFlags.evaluate_flags(name, "user")
+    assert Map.keys(polled.flags) == ["polled"]
+    assert polled.flags["polled"].locally_evaluated
+    assert :ok = stop_supervised(name)
+    assert_receive :shutdown
+    refute_received :unexpected_api_fetch
+  end
+
+  test "provider-only API fallback warns without fetching or reading on a positive decision" do
+    owner = self()
+    stub_unexpected_api_requests(owner)
+
+    for {suffix, decision, read} <- [
+          {"Empty", false, nil},
+          {"FailedRead", false, {:raise, "unavailable"}},
+          {"TimedOutRead", false, {:sleep, 100, nil}},
+          {"MalformedRead", false, %{"flags" => []}},
+          {"FetchOwner", true, envelope("not-read")},
+          {"FailedDecision", {:raise, "unavailable"}, envelope("not-read")}
+        ] do
+      name = Module.concat(__MODULE__, suffix)
+
+      {:ok, provider} =
+        Agent.start_link(fn ->
+          %{owner: owner, decision: decision, read: read, store: :ok, shutdown: :ok}
+        end)
+
+      log =
+        capture_log(fn ->
+          start_instance(name, provider, secret_key: nil)
+          refute DefinitionLoader.ready?(name)
+        end)
+
+      assert log =~ "requires a secret_key to fetch from PostHog"
+      assert_receive {:provider_call, :decision}
+
+      if decision == false do
+        assert_receive {:provider_call, :read}
+      else
+        refute_received {:provider_call, :read}
+      end
+
+      assert :ok = stop_supervised(name)
+      assert_receive :shutdown
+      refute_received :unexpected_api_fetch
+      refute_received {:stored, _definitions}
+    end
+  end
+
+  test "provider-only refresh preserves the last snapshot when reads or fetch decisions fail" do
+    owner = self()
+    stub_unexpected_api_requests(owner)
+
+    cached = Map.put(envelope("stale"), "property_matching_version", 2)
+
+    {:ok, provider} =
+      Agent.start_link(fn ->
+        %{owner: owner, decision: false, read: cached, store: :ok, shutdown: :ok}
+      end)
+
+    name = __MODULE__.ProviderOnlyStale
+    start_instance(name, provider, secret_key: nil)
+    initial = DefinitionLoader.definitions(name)
+    assert initial.property_matching_version == 2
+
+    for {decision, read} <- [
+          {false, nil},
+          {false, {:raise, "unavailable"}},
+          {false, {:sleep, 100, nil}},
+          {false, %{"flags" => []}},
+          {true, envelope("not-read")},
+          {{:raise, "unavailable"}, envelope("not-read")}
+        ] do
+      Agent.update(provider, &%{&1 | decision: decision, read: read})
+      capture_log(fn -> assert :ok = DefinitionLoader.refresh(name) end)
+      assert DefinitionLoader.definitions(name) == initial
+      assert {:ok, result} = PostHog.FeatureFlags.evaluate_flags(name, "user")
+      assert result.flags["stale"].locally_evaluated
+      refute_received :unexpected_api_fetch
+      refute_received {:stored, _definitions}
+    end
+
+    assert :ok = stop_supervised(name)
+    assert_receive :shutdown
+  end
+
+  test "provider-only instances respect local evaluation and project-token startup controls" do
+    owner = self()
+    stub_with(PostHog.API.Mock, PostHog.API.Stub)
+
+    {:ok, provider} =
+      Agent.start_link(fn ->
+        %{owner: owner, decision: false, read: envelope("cached"), store: :ok, shutdown: :ok}
+      end)
+
+    for {name, overrides} <- [
+          {__MODULE__.ProviderLocalDisabled, [enable_local_evaluation: false]},
+          {__MODULE__.ProviderDisabled, [api_key: ""]}
+        ] do
+      capture_log(fn -> start_instance(name, provider, [secret_key: nil] ++ overrides) end)
+      assert GenServer.whereis(PostHog.Registry.via(name, DefinitionLoader)) == nil
+
+      assert GenServer.whereis(PostHog.Registry.via(name, DefinitionLoader.NegativeKnowledge)) ==
+               nil
+
+      assert {:ok, result} =
+               PostHog.FeatureFlags.evaluate_flags(name, %{
+                 distinct_id: "user",
+                 only_evaluate_locally: true
+               })
+
+      assert result.flags == %{}
+      assert :ok = stop_supervised(name)
+      refute_received {:provider_call, _callback}
+    end
   end
 
   test "positive decision fetches, publishes, and stores the complete envelope" do

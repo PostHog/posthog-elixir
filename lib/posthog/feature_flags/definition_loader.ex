@@ -410,6 +410,14 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
     end
   end
 
+  defp fetch_direct(%{config: %{secret_key: nil}} = state, _store?) do
+    warning(
+      "definition refresh requires a secret_key to fetch from PostHog; keeping stale definitions"
+    )
+
+    state
+  end
+
   defp fetch_direct(state, store?) do
     config = state.config
 

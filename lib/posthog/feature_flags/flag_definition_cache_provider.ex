@@ -10,6 +10,13 @@ defmodule PostHog.FeatureFlags.FlagDefinitionCacheProvider do
   the definitions. Only version 2 selects explicit property matching; older
   cached envelopes omitting the version use released service legacy matching.
 
+  With a project `:api_key` and local evaluation enabled, a provider can supply
+  definitions without a `:secret_key`. Each refresh consults the fetch decision
+  first and reads cached definitions only when it returns false. A secret key is
+  required to fetch definitions directly from PostHog; without one, a requested
+  fetch is skipped and any loaded definitions are preserved. Provider-backed
+  instances use the same startup, polling, and refresh lifecycle.
+
   A minimal provider can coordinate fetching and keep the complete envelope in
   an application-owned cache:
 
@@ -23,7 +30,7 @@ defmodule PostHog.FeatureFlags.FlagDefinitionCacheProvider do
       end
 
       config :posthog,
-        secret_key: System.fetch_env!("POSTHOG_SECRET_KEY"),
+        api_key: System.fetch_env!("POSTHOG_PROJECT_TOKEN"),
         flag_definition_cache_provider: {MyApp.PostHogDefinitionCache, provider_state}
   """
 
