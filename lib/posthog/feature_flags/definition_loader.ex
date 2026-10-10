@@ -363,6 +363,14 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
   defp refresh_state(%{config: %{flag_definition_cache_provider: nil}} = state),
     do: fetch_direct(state, false)
 
+  # Cache-only readers must not acquire fetch leadership from the provider.
+  defp refresh_state(
+         %{
+           config: %{secret_key: nil, flag_definition_cache_provider: {module, provider_state}}
+         } = state
+       ),
+       do: read_provider_without_fetch_ownership(state, module, provider_state)
+
   defp refresh_state(
          %{
            config: %{flag_definition_cache_provider: {module, provider_state}}
@@ -408,6 +416,14 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
     else
       state
     end
+  end
+
+  defp fetch_direct(%{config: %{secret_key: nil}} = state, _store?) do
+    warning(
+      "definition refresh requires a secret_key to fetch from PostHog; keeping stale definitions"
+    )
+
+    state
   end
 
   defp fetch_direct(state, store?) do
