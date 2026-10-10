@@ -37,10 +37,45 @@ defmodule PostHog.FeatureFlags.FlagDefinitionCacheProviderTest do
         {:raise, message} ->
           raise message
 
+        {:throw, reason} ->
+          throw(reason)
+
         value ->
           value
       end
     end
+  end
+
+  defmodule LeaseProvider do
+    @behaviour PostHog.FeatureFlags.FlagDefinitionCacheProvider
+
+    @impl true
+    def should_fetch_flag_definitions({agent, identity}) do
+      Agent.get_and_update(agent, fn state ->
+        send(state.owner, {:lease_decision, identity})
+        leader = state.leader || identity
+        {leader == identity, %{state | leader: leader}}
+      end)
+    end
+
+    @impl true
+    def get_flag_definitions({agent, identity}) do
+      Agent.get(agent, fn state ->
+        send(state.owner, {:lease_read, identity})
+        state.cached
+      end)
+    end
+
+    @impl true
+    def on_flag_definitions_received({agent, identity}, definitions) do
+      Agent.update(agent, fn state ->
+        send(state.owner, {:lease_store, identity})
+        %{state | cached: definitions}
+      end)
+    end
+
+    @impl true
+    def shutdown(_state), do: :ok
   end
 
   setup :set_mox_from_context
@@ -208,6 +243,9 @@ defmodule PostHog.FeatureFlags.FlagDefinitionCacheProviderTest do
     start_instance(__MODULE__.Cached, provider)
 
     definitions = DefinitionLoader.definitions(__MODULE__.Cached)
+    assert_receive {:provider_call, :decision}
+    assert_receive {:provider_call, :read}
+    refute_received {:provider_call, :store}
     assert definitions.flags_by_key["cached"]
     assert definitions.group_type_mapping == %{"0" => "organization"}
     assert definitions.minimal_flag_called_events
@@ -231,20 +269,23 @@ defmodule PostHog.FeatureFlags.FlagDefinitionCacheProviderTest do
         }
       ])
 
-    for {name, secret_key} <- [
-          {__MODULE__.ProviderOnly, nil},
-          {__MODULE__.BlankSecret, " \t "}
+    for {name, secret_key, decision} <- [
+          {__MODULE__.ProviderOnly, nil, false},
+          {__MODULE__.BlankSecret, " \t ", true},
+          {__MODULE__.RaisingDecision, nil, {:raise, "unavailable"}},
+          {__MODULE__.ThrowingDecision, nil, {:throw, :unavailable}},
+          {__MODULE__.HangingDecision, nil, {:sleep, 10_000, true}}
         ] do
       {:ok, provider} =
         Agent.start_link(fn ->
-          %{owner: owner, decision: false, read: cached, store: :ok, shutdown: :ok}
+          %{owner: owner, decision: decision, read: cached, store: :ok, shutdown: :ok}
         end)
 
       start_instance(name, provider, secret_key: secret_key)
       assert {:ok, result} = PostHog.FeatureFlags.evaluate_flags(name, "user")
       assert result.flags["cached"].enabled
       assert result.flags["cached"].locally_evaluated
-      assert_receive {:provider_call, :decision}
+      refute_received {:provider_call, :decision}
       assert_receive {:provider_call, :read}
       definitions = DefinitionLoader.definitions(name)
       assert definitions.flags == cached["flags"]
@@ -259,7 +300,7 @@ defmodule PostHog.FeatureFlags.FlagDefinitionCacheProviderTest do
       assert Map.keys(refreshed.flags) == ["refreshed"]
       assert refreshed.flags["refreshed"].locally_evaluated
       assert DefinitionLoader.definitions(name).property_matching_version == 1
-      assert_receive {:provider_call, :decision}
+      refute_received {:provider_call, :decision}
       assert_receive {:provider_call, :read}
       refute_received {:provider_call, :store}
       assert :ok = stop_supervised(name)
@@ -282,12 +323,12 @@ defmodule PostHog.FeatureFlags.FlagDefinitionCacheProviderTest do
     start_instance(name, provider, secret_key: nil, feature_flags_poll_interval_ms: 50)
     assert {:ok, initial} = PostHog.FeatureFlags.evaluate_flags(name, "user")
     assert initial.flags["initial"].locally_evaluated
-    assert_receive {:provider_call, :decision}
+    refute_received {:provider_call, :decision}
     assert_receive {:provider_call, :read}
 
     Agent.update(provider, &%{&1 | read: envelope("polled")})
-    assert_receive {:provider_call, :decision}, 500
     assert_receive {:provider_call, :read}, 500
+    refute_received {:provider_call, :decision}
     # Wait for the in-flight poll to finish without initiating a manual refresh.
     GenServer.call(PostHog.Registry.via(name, DefinitionLoader), :definitions)
 
@@ -296,10 +337,12 @@ defmodule PostHog.FeatureFlags.FlagDefinitionCacheProviderTest do
     assert polled.flags["polled"].locally_evaluated
     assert :ok = stop_supervised(name)
     assert_receive :shutdown
+    refute_received {:provider_call, :decision}
+    refute_received {:provider_call, :store}
     refute_received :unexpected_api_fetch
   end
 
-  test "provider-only API fallback warns without fetching or reading on a positive decision" do
+  test "provider-only cache misses and read failures warn without fetching or publishing" do
     owner = self()
     stub_unexpected_api_requests(owner)
 
@@ -308,8 +351,8 @@ defmodule PostHog.FeatureFlags.FlagDefinitionCacheProviderTest do
           {"FailedRead", false, {:raise, "unavailable"}},
           {"TimedOutRead", false, {:sleep, 100, nil}},
           {"MalformedRead", false, %{"flags" => []}},
-          {"FetchOwner", true, envelope("not-read")},
-          {"FailedDecision", {:raise, "unavailable"}, envelope("not-read")}
+          {"FetchOwner", true, nil},
+          {"FailedDecision", {:raise, "unavailable"}, nil}
         ] do
       name = Module.concat(__MODULE__, suffix)
 
@@ -325,13 +368,8 @@ defmodule PostHog.FeatureFlags.FlagDefinitionCacheProviderTest do
         end)
 
       assert log =~ "requires a secret_key to fetch from PostHog"
-      assert_receive {:provider_call, :decision}
-
-      if decision == false do
-        assert_receive {:provider_call, :read}
-      else
-        refute_received {:provider_call, :read}
-      end
+      refute_received {:provider_call, :decision}
+      assert_receive {:provider_call, :read}
 
       assert :ok = stop_supervised(name)
       assert_receive :shutdown
@@ -340,7 +378,7 @@ defmodule PostHog.FeatureFlags.FlagDefinitionCacheProviderTest do
     end
   end
 
-  test "provider-only refresh preserves the last snapshot when reads or fetch decisions fail" do
+  test "provider-only refresh preserves the last snapshot when cache reads fail" do
     owner = self()
     stub_unexpected_api_requests(owner)
 
@@ -361,20 +399,87 @@ defmodule PostHog.FeatureFlags.FlagDefinitionCacheProviderTest do
           {false, {:raise, "unavailable"}},
           {false, {:sleep, 100, nil}},
           {false, %{"flags" => []}},
-          {true, envelope("not-read")},
-          {{:raise, "unavailable"}, envelope("not-read")}
+          {true, nil},
+          {{:raise, "unavailable"}, nil}
         ] do
       Agent.update(provider, &%{&1 | decision: decision, read: read})
       capture_log(fn -> assert :ok = DefinitionLoader.refresh(name) end)
       assert DefinitionLoader.definitions(name) == initial
       assert {:ok, result} = PostHog.FeatureFlags.evaluate_flags(name, "user")
       assert result.flags["stale"].locally_evaluated
+      refute_received {:provider_call, :decision}
       refute_received :unexpected_api_fetch
       refute_received {:stored, _definitions}
     end
 
     assert :ok = stop_supervised(name)
     assert_receive :shutdown
+  end
+
+  test "cache-only readers cannot claim shared leadership before a keyed publisher refreshes" do
+    owner = self()
+    stub_unexpected_api_requests(owner)
+
+    {:ok, provider} =
+      Agent.start_link(fn ->
+        %{owner: owner, leader: nil, cached: envelope("initial")}
+      end)
+
+    reader = __MODULE__.LeaseReader
+    publisher = __MODULE__.LeasePublisher
+
+    start_instance(reader, provider,
+      secret_key: nil,
+      flag_definition_cache_provider: {LeaseProvider, {provider, :reader}}
+    )
+
+    initial = DefinitionLoader.definitions(reader)
+    assert Agent.get(provider, & &1.leader) == nil
+    assert initial.flags_by_key["initial"]
+    assert_receive {:lease_read, :reader}
+    refute_received {:lease_decision, :reader}
+
+    expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+      {:ok, %{status: 200, body: envelope("published"), headers: %{}}}
+    end)
+
+    start_instance(publisher, provider,
+      flag_definition_cache_provider: {LeaseProvider, {provider, :publisher}}
+    )
+
+    assert DefinitionLoader.definitions(publisher).flags_by_key["published"]
+    assert_receive {:lease_decision, :publisher}
+    assert_receive {:lease_store, :publisher}
+    assert Agent.get(provider, & &1.leader) == :publisher
+
+    # Expire the lease, then refresh the reader before the publisher can reacquire it.
+    Agent.update(provider, &%{&1 | leader: nil})
+    assert :ok = DefinitionLoader.refresh(reader)
+    assert DefinitionLoader.definitions(reader).flags_by_key["published"]
+    assert_receive {:lease_read, :reader}
+
+    loader = GenServer.whereis(PostHog.Registry.via(reader, DefinitionLoader))
+    send(loader, {:refresh, :sys.get_state(loader).timer_generation})
+    GenServer.call(loader, :definitions)
+    assert_receive {:lease_read, :reader}
+    assert Agent.get(provider, & &1.leader) == nil
+
+    expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+      {:ok, %{status: 200, body: envelope("updated"), headers: %{}}}
+    end)
+
+    assert :ok = DefinitionLoader.refresh(publisher)
+    assert DefinitionLoader.definitions(publisher).flags_by_key["updated"]
+    assert_receive {:lease_decision, :publisher}
+    assert_receive {:lease_store, :publisher}
+    assert :ok = DefinitionLoader.refresh(reader)
+    assert DefinitionLoader.definitions(reader).flags_by_key["updated"]
+    assert_receive {:lease_read, :reader}
+    refute_received {:lease_decision, :reader}
+    refute_received {:lease_store, :reader}
+    refute_received :unexpected_api_fetch
+    assert :ok = stop_supervised(reader)
+    assert :ok = stop_supervised(publisher)
   end
 
   test "provider-only instances respect local evaluation and project-token startup controls" do
@@ -425,6 +530,9 @@ defmodule PostHog.FeatureFlags.FlagDefinitionCacheProviderTest do
     start_instance(__MODULE__.Fresh, provider)
 
     assert DefinitionLoader.definitions(__MODULE__.Fresh).flags_by_key["fresh"]
+    assert_receive {:provider_call, :decision}
+    refute_received {:provider_call, :read}
+    assert_receive {:provider_call, :store}
     assert_receive {:stored, stored}
     assert stored["flags"] != []
     assert stored["group_type_mapping"] == %{"0" => "organization"}
