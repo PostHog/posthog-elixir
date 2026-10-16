@@ -11,6 +11,127 @@ defmodule PostHog.HandlerTest do
   setup :setup_supervisor
   setup :setup_logger_handler
 
+  for {name, trace_id, span_id, flags, properties} <- [
+        {"sampled", 0x123456789ABCDEF0123456789ABCDEF0, 0x123456789ABCDEF0, 1, %{}},
+        {"unsampled", 0x123456789ABCDEF0123456789ABCDEF0, 0x123456789ABCDEF0, 0, %{}},
+        {"leading zeros", 3, 4, 0, %{}},
+        {"caller trace ID", 3, 4, 1, %{"$trace_id": "caller-trace"}},
+        {"caller span ID", 3, 4, 1, %{"$span_id": "caller-span"}}
+      ] do
+    @trace_id trace_id
+    @span_id span_id
+    @trace_flags flags
+    @trace_properties properties
+
+    test "adds active trace context to exceptions: #{name}", %{
+      handler_ref: ref,
+      config: %{supervisor_name: supervisor_name}
+    } do
+      span = :otel_tracer.non_recording_span(@trace_id, @span_id, @trace_flags)
+      context = :otel_tracer.set_current_span(:otel_ctx.new(), span)
+      token = :otel_ctx.attach(context)
+      PostHog.set_event_context(supervisor_name, "$exception", @trace_properties)
+
+      try do
+        Logger.error("Example failure", distinct_id: "example-user")
+        LoggerHandlerKit.Assert.assert_logged(ref)
+      after
+        :otel_ctx.detach(token)
+      end
+
+      assert [%{event: "$exception", properties: properties}] = all_captured(supervisor_name)
+
+      expected =
+        Map.merge(
+          %{
+            "$trace_id": Base.encode16(<<@trace_id::128>>, case: :lower),
+            "$span_id": Base.encode16(<<@span_id::64>>, case: :lower)
+          },
+          @trace_properties
+        )
+
+      assert Map.take(properties, [:"$trace_id", :"$span_id"]) == expected
+
+      Logger.error("Outside the span", distinct_id: "example-user")
+      LoggerHandlerKit.Assert.assert_logged(ref)
+
+      assert [%{properties: outside_properties}, _] = all_captured(supervisor_name)
+      assert Map.take(outside_properties, [:"$trace_id", :"$span_id"]) == @trace_properties
+    end
+  end
+
+  for {name, source, properties} <- [
+        {"atom event context", :context,
+         %{"$trace_id": "caller-trace", "$span_id": "caller-span"}},
+        {"string event context", :context,
+         %{"$trace_id" => "caller-trace", "$span_id" => "caller-span"}},
+        {"atom log metadata", :metadata,
+         %{"$trace_id": "caller-trace", "$span_id": "caller-span"}},
+        {"string log metadata", :metadata,
+         %{"$trace_id" => "caller-trace", "$span_id" => "caller-span"}},
+        {"atom global properties", :global,
+         %{"$trace_id": "caller-trace", "$span_id": "caller-span"}}
+      ] do
+    @source source
+    @properties properties
+    @tag config: [
+           metadata: :all,
+           global_properties: if(source == :global, do: properties, else: %{})
+         ]
+
+    test "preserves trace IDs from #{name}", %{
+      handler_ref: ref,
+      config: %{supervisor_name: supervisor_name}
+    } do
+      span = :otel_tracer.non_recording_span(3, 4, 1)
+      token = :otel_ctx.attach(:otel_tracer.set_current_span(:otel_ctx.new(), span))
+
+      if @source == :context do
+        PostHog.set_event_context(supervisor_name, "$exception", @properties)
+      end
+
+      metadata = if @source == :metadata, do: @properties, else: %{}
+
+      try do
+        :logger.log(:error, "Example failure", metadata)
+        LoggerHandlerKit.Assert.assert_logged(ref)
+      after
+        :otel_ctx.detach(token)
+      end
+
+      assert [%{properties: captured}] = all_captured(supervisor_name)
+      trace_keys = [:"$trace_id", :"$span_id", "$trace_id", "$span_id"]
+      assert Map.take(captured, trace_keys) == @properties
+    end
+  end
+
+  for {name, span} <- [
+        {"no active span", :undefined},
+        {"zero trace ID", :otel_tracer.non_recording_span(0, 4, 1)},
+        {"zero span ID", :otel_tracer.non_recording_span(3, 0, 1)}
+      ] do
+    @span span
+
+    test "omits invalid ambient trace context: #{name}", %{
+      handler_ref: ref,
+      config: %{supervisor_name: supervisor_name}
+    } do
+      context = :otel_tracer.set_current_span(:otel_ctx.new(), @span)
+      token = :otel_ctx.attach(context)
+
+      try do
+        Logger.error("Example failure", distinct_id: "example-user")
+        LoggerHandlerKit.Assert.assert_logged(ref)
+      after
+        :otel_ctx.detach(token)
+      end
+
+      assert [%{event: "$exception", properties: properties}] = all_captured(supervisor_name)
+      refute Map.has_key?(properties, :"$trace_id")
+      refute Map.has_key?(properties, :"$span_id")
+    end
+  end
+
   test "takes distinct_id from metadata", %{
     handler_ref: ref,
     config: %{supervisor_name: supervisor_name}
