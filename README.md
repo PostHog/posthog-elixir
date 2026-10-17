@@ -11,6 +11,7 @@ SDK usage examples and code snippets live in the official documentation so they 
 
 - [Elixir library docs](https://posthog.com/docs/libraries/elixir)
 - [Phoenix framework docs](https://posthog.com/docs/libraries/phoenix)
+- [OpenTelemetry span context (HexDocs)](https://hexdocs.pm/posthog/PostHog.OpenTelemetry.ContextSpanProcessor.html)
 - [API reference (HexDocs)](https://hexdocs.pm/posthog)
 
 ## Contributing
