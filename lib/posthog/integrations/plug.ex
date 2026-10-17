@@ -20,6 +20,8 @@ defmodule PostHog.Integrations.Plug do
       end
   """
 
+  alias PostHog.TracingHeaders
+
   @doc false
   def init(opts), do: opts
 
@@ -35,8 +37,6 @@ defmodule PostHog.Integrations.Plug do
     {"x-posthog-distinct-id", :distinct_id},
     {"x-posthog-session-id", :"$session_id"}
   ]
-  @max_header_value_length 1000
-  @control_chars_regex ~r/[\x{00}-\x{1F}\x{7F}-\x{9F}]/u
 
   @doc false
   def conn_to_context(conn) when is_struct(conn, Plug.Conn) do
@@ -68,7 +68,7 @@ defmodule PostHog.Integrations.Plug do
 
   defp header_value(conn, header_name) when is_struct(conn, Plug.Conn) do
     case req_header_values(conn, header_name) do
-      [value | _] when is_binary(value) -> sanitize_value(value)
+      [value | _] when is_binary(value) -> TracingHeaders.sanitize_value(value)
       _ -> nil
     end
   end
@@ -96,16 +96,6 @@ defmodule PostHog.Integrations.Plug do
       values ->
         values
     end
-  end
-
-  defp sanitize_value(value) when is_binary(value) do
-    value =
-      value
-      |> String.replace(@control_chars_regex, "")
-      |> String.trim()
-      |> String.slice(0, @max_header_value_length)
-
-    if value == "", do: nil, else: value
   end
 
   defp put_if_present(map, _key, nil), do: map

@@ -14,10 +14,18 @@ if Code.ensure_loaded?(:otel_span_processor) do
     Existing attributes with these names take precedence, with atom or string
     keys. Empty and non-string IDs are omitted.
 
-    Place `PostHog.Integrations.Plug` before an application tracing plug if that
-    tracing plug starts the request span. This processor cannot update a span
-    that started before PostHog extracted the headers. This includes request
-    spans that Phoenix instrumentation starts before the endpoint's plugs.
+    Initial span attributes named `http.request.header.x-posthog-session-id`
+    and `http.request.header.x-posthog-distinct-id` provide fallback IDs when
+    process context has none. The processor sanitizes those values with the
+    same rules as the PostHog plug. Existing canonical attributes take precedence,
+    followed by process context, then captured header attributes.
+
+    With Cowboy, explicitly allow only `x-posthog-session-id` and
+    `x-posthog-distinct-id` in the application's OpenTelemetry `request_headers`
+    option to cover its early request span. This processor does not enable
+    header capture. Keep `PostHog.Integrations.Plug` before the router for child
+    spans. A span that starts without context or captured headers remains
+    unchanged, even if PostHog extracts headers later.
 
     Context has the same lifetime as existing PostHog process metadata. A
     standard request process loses its context when it exits. Reusing a process
@@ -28,6 +36,8 @@ if Code.ensure_loaded?(:otel_span_processor) do
 
     @behaviour :otel_span_processor
 
+    alias PostHog.TracingHeaders
+
     require Record
 
     Record.defrecordp(
@@ -36,8 +46,8 @@ if Code.ensure_loaded?(:otel_span_processor) do
     )
 
     @context_attributes [
-      {"sessionId", :sessionId, :"$session_id"},
-      {"posthogDistinctId", :posthogDistinctId, :distinct_id}
+      {:sessionId, :"$session_id", :"http.request.header.x-posthog-session-id"},
+      {:posthogDistinctId, :distinct_id, :"http.request.header.x-posthog-distinct-id"}
     ]
 
     @impl true
@@ -48,13 +58,14 @@ if Code.ensure_loaded?(:otel_span_processor) do
       existing = :otel_attributes.map(attributes)
 
       attributes =
-        Enum.reduce(@context_attributes, attributes, fn {key, atom_key, context_key},
+        Enum.reduce(@context_attributes, attributes, fn {key, context_key, header_key},
                                                         attributes ->
-          value = Map.get(context, context_key)
+          name = Atom.to_string(key)
+          value = context_id(context, context_key, existing, header_key)
 
           if is_binary(value) and value != "" and
-               not (Map.has_key?(existing, key) or Map.has_key?(existing, atom_key)) do
-            :otel_attributes.set(key, value, attributes)
+               not (Map.has_key?(existing, name) or Map.has_key?(existing, key)) do
+            :otel_attributes.set(name, value, attributes)
           else
             attributes
           end
@@ -65,6 +76,21 @@ if Code.ensure_loaded?(:otel_span_processor) do
       _ -> current_span
     catch
       _, _ -> current_span
+    end
+
+    defp context_id(context, context_key, attributes, header_key) do
+      case Map.get(context, context_key) do
+        value when is_binary(value) and value != "" -> value
+        _ -> header_id(attributes, header_key)
+      end
+    end
+
+    defp header_id(attributes, key) do
+      case Map.get(attributes, Atom.to_string(key), Map.get(attributes, key)) do
+        [value | _] when is_binary(value) -> TracingHeaders.sanitize_value(value)
+        value when is_binary(value) -> TracingHeaders.sanitize_value(value)
+        _ -> nil
+      end
     end
 
     @impl true

@@ -147,6 +147,66 @@ defmodule PostHog.OpenTelemetry.ContextSpanProcessorTest do
            }
   end
 
+  for {label, raw, expected} <- [
+        {"trim and controls", [" \0session\n-\u0085123\r\t "], "session-123"},
+        {"first value", ["first", "second"], "first"},
+        {"single string", "single", "single"},
+        {"empty", [" \n\t "], nil},
+        {"empty array", [], nil},
+        {"wrong type", true, nil},
+        {"length limit", [String.duplicate("a", 1001)], String.duplicate("a", 1000)}
+      ],
+      key_type <- [:atom, :string] do
+    @raw raw
+    @expected expected
+    @key_type key_type
+    test "uses initial #{key_type} header attributes: #{label}", %{tracer: tracer} do
+      header = :"http.request.header.x-posthog-session-id"
+      key = if @key_type == :string, do: Atom.to_string(header), else: header
+      finish_span(tracer, "request", %{attributes: %{key => @raw}})
+      assert attributes()["sessionId"] == @expected
+    end
+  end
+
+  for {label, context, explicit, expected} <- [
+        {"header fallback", %{}, %{},
+         %{"sessionId" => "header-session", "posthogDistinctId" => "header-person"}},
+        {"application context",
+         %{distinct_id: "application-person", "$session_id": "application-session"}, %{},
+         %{"sessionId" => "application-session", "posthogDistinctId" => "application-person"}},
+        {"explicit canonical attributes", %{distinct_id: "application-person"},
+         %{"sessionId" => "explicit-session", "posthogDistinctId" => "explicit-person"},
+         %{"sessionId" => "explicit-session", "posthogDistinctId" => "explicit-person"}}
+      ] do
+    @context context
+    @explicit explicit
+    @expected expected
+    test "initial header fallback respects #{label}", %{tracer: tracer} do
+      PostHog.set_context(:span_context_test, @context)
+
+      initial =
+        Map.merge(
+          %{
+            :"http.request.header.x-posthog-session-id" => ["header-session"],
+            :"http.request.header.x-posthog-distinct-id" => ["header-person"]
+          },
+          @explicit
+        )
+
+      finish_span(tracer, "request", %{attributes: initial})
+      actual = attributes()
+      assert Map.take(actual, ["sessionId", "posthogDistinctId"]) == @expected
+      for {key, value} <- initial, do: assert(actual[key] == value)
+    end
+  end
+
+  @tag attribute_limit: 1
+  test "header fallback does not evict captured header attributes", %{tracer: tracer} do
+    initial = %{:"http.request.header.x-posthog-session-id" => ["header-session"]}
+    finish_span(tracer, "request", %{attributes: initial})
+    assert attributes() == initial
+  end
+
   test "keeps an earlier incoming span unchanged", %{tracer: tracer} do
     :otel_tracer.with_span(tracer, "existing-request", %{kind: :server}, fn _ ->
       Plug.Test.conn(:get, "/")
