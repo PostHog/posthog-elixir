@@ -23,10 +23,17 @@ defmodule PostHog.OpenTelemetry.ContextSpanProcessorTest do
     Application.stop(:opentelemetry)
     previous = Application.get_all_env(:opentelemetry)
 
-    Application.put_env(:opentelemetry, :processors, [
-      {ContextSpanProcessor, %{supervisor_name: :span_context_test}},
-      {CaptureProcessor, %{pid: self()}}
-    ])
+    Mox.stub_with(PostHog.API.Mock, PostHog.API.Stub)
+    start_posthog(:span_context_test, "my_api_key")
+    instances = context[:processor_instances] || [:span_context_test]
+    if :span_context_disabled in instances, do: start_posthog(:span_context_disabled, "")
+    processors = for name <- instances, do: {ContextSpanProcessor, %{supervisor_name: name}}
+
+    Application.put_env(
+      :opentelemetry,
+      :processors,
+      processors ++ [{CaptureProcessor, %{pid: self()}}]
+    )
 
     Application.put_env(:opentelemetry, :sampler, context[:sampler] || :always_on)
     Application.put_env(:opentelemetry, :attribute_count_limit, context[:attribute_limit] || 128)
@@ -245,6 +252,58 @@ defmodule PostHog.OpenTelemetry.ContextSpanProcessorTest do
     refute :otel_span.is_recording(active)
     :otel_span.end_span(active)
     refute_receive {:finished_span, _}, 0
+  end
+
+  @headers %{
+    :"http.request.header.x-posthog-session-id" => ["header-session"],
+    :"http.request.header.x-posthog-distinct-id" => ["header-person"]
+  }
+
+  for {label, instances, context_instances, initial, expected} <- [
+        {"missing instance", [:span_context_missing], [:span_context_missing], %{}, %{}},
+        {"disabled instance with process context", [:span_context_disabled],
+         [:span_context_disabled], %{}, %{}},
+        {"disabled instance with header fallback", [:span_context_disabled], [], @headers,
+         @headers},
+        {"enabled test-mode instance", [:span_context_test], [:span_context_test], %{},
+         %{
+           "sessionId" => "span_context_test-session",
+           "posthogDistinctId" => "span_context_test-person"
+         }},
+        {"enabled instance beside a disabled one", [:span_context_disabled, :span_context_test],
+         [:span_context_disabled, :span_context_test], %{},
+         %{
+           "sessionId" => "span_context_test-session",
+           "posthogDistinctId" => "span_context_test-person"
+         }}
+      ] do
+    @context_instances context_instances
+    @initial initial
+    @expected expected
+    @tag processor_instances: instances
+    test "selected instance state controls enrichment: #{label}", %{tracer: tracer} do
+      for name <- @context_instances do
+        PostHog.set_context(name, %{
+          distinct_id: "#{name}-person",
+          "$session_id": "#{name}-session"
+        })
+      end
+
+      finish_span(tracer, "request", %{attributes: @initial})
+      assert attributes() == @expected
+    end
+  end
+
+  defp start_posthog(name, api_key) do
+    config =
+      PostHog.Config.validate!(
+        api_key: api_key,
+        api_client_module: PostHog.API.Mock,
+        supervisor_name: name,
+        test_mode: true
+      )
+
+    start_supervised!({PostHog.Supervisor, config}, id: name)
   end
 
   defp finish_span(tracer, name, options \\ %{}) do

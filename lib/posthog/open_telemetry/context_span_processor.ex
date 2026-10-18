@@ -9,7 +9,8 @@ if Code.ensure_loaded?(:otel_span_processor) do
     configuration. Keep the application's provider, exporter, and sampler.
 
     The processor reads the current process's PostHog context. `:supervisor_name`
-    selects a named PostHog instance and defaults to `PostHog`. It adds the
+    selects a named PostHog instance and defaults to `PostHog`. Spans stay
+    unchanged when that instance is disabled or not started. It adds the
     `sessionId` and `posthogDistinctId` attributes when their values are present.
     Existing attributes with these names take precedence, with atom or string
     keys. Empty and non-string IDs are omitted.
@@ -53,7 +54,19 @@ if Code.ensure_loaded?(:otel_span_processor) do
     @impl true
     @doc false
     def on_start(_parent_context, current_span, config) do
-      context = PostHog.Context.get(Map.get(config, :supervisor_name, PostHog))
+      name = Map.get(config, :supervisor_name, PostHog)
+
+      case PostHog.config(name) do
+        %{enabled: true} -> add_context(current_span, PostHog.Context.get(name))
+        _ -> current_span
+      end
+    rescue
+      _ -> current_span
+    catch
+      _, _ -> current_span
+    end
+
+    defp add_context(current_span, context) do
       attributes = span(current_span, :attributes)
       existing = :otel_attributes.map(attributes)
 
@@ -72,10 +85,6 @@ if Code.ensure_loaded?(:otel_span_processor) do
         end)
 
       span(current_span, attributes: attributes)
-    rescue
-      _ -> current_span
-    catch
-      _, _ -> current_span
     end
 
     defp context_id(context, context_key, attributes, header_key) do
