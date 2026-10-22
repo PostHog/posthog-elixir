@@ -44,14 +44,15 @@ defmodule PostHog.Config.Schema do
         default: nil,
         doc: """
         A privileged project secret (`phs_`) or appropriately scoped personal API key (`phx_`)
-        used only to load definitions for local feature flag evaluation. Local evaluation is inert
-        and starts no poller when this value is absent or blank.
+        required only to fetch local feature flag definitions directly from PostHog. A configured
+        `flag_definition_cache_provider` can supply definitions without this key.
         """
       ],
       enable_local_evaluation: [
         type: :boolean,
         default: true,
-        doc: "Enable local feature flag evaluation when a non-empty `secret_key` is configured."
+        doc:
+          "Enable local feature flag evaluation when a non-empty `secret_key` or a `flag_definition_cache_provider` is configured."
       ],
       feature_flags_poll_interval_ms: [
         type: :pos_integer,

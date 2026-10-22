@@ -72,11 +72,12 @@ defmodule PostHog.Supervisor do
          %{
            enabled: true,
            enable_local_evaluation: true,
-           secret_key: %PostHog.Config.Secret{value: secret_key}
+           secret_key: secret_key,
+           flag_definition_cache_provider: provider
          } = config,
          callers
        )
-       when is_binary(secret_key) and secret_key != "" do
+       when not is_nil(secret_key) or not is_nil(provider) do
     [
       {PostHog.FeatureFlags.DefinitionLoader.NegativeKnowledge,
        supervisor_name: config.supervisor_name},
