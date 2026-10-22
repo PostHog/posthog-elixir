@@ -1,5 +1,11 @@
 # posthog
 
+## 2.16.3 — 2026-10-22
+
+### Patch changes
+
+- [108b005](https://github.com/posthog/posthog-elixir/commit/108b0050769d908794b8d2ad467f41a011324571) Allow shared flag definition cache providers to support local evaluation without a secret key. — Thanks @dustinbyrne!
+
 ## 2.16.2 — 2026-10-08
 
 ### Patch changes
