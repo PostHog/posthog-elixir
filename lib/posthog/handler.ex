@@ -1,6 +1,14 @@
 defmodule PostHog.Handler do
   @moduledoc """
   A [`logger handler`](https://www.erlang.org/doc/apps/kernel/logger_chapter.html#handlers).
+
+  When the application provides OpenTelemetry, exception events include the active
+  span's `$trace_id` and `$span_id`. The handler reads the span in the process that
+  logs the exception, including spans that are not sampled. Event context, log
+  metadata, and global properties take precedence over these derived IDs.
+
+  OpenTelemetry is not required. Missing or unreadable trace context does not
+  prevent exception capture.
   """
   if System.otp_release() |> String.to_integer() >= 27 do
     @behaviour :logger_handler
@@ -8,6 +16,8 @@ defmodule PostHog.Handler do
 
   alias PostHog.Context
   alias PostHog.ErrorTracking.Sources
+
+  @compile {:no_warn_undefined, [:otel_tracer, :otel_span]}
 
   # credo:disable-for-next-line Credo.Check.Design.TagTODO
   # TODO: add @impl :logger_handler once we drop support for OTP < 27
@@ -42,6 +52,26 @@ defmodule PostHog.Handler do
     :ok
   end
 
+  defp trace_properties do
+    with true <- Code.ensure_loaded?(:otel_tracer),
+         span <- :otel_tracer.current_span_ctx(),
+         true <- :otel_span.is_valid(span),
+         trace_id when trace_id in 1..0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF <-
+           :otel_span.trace_id(span),
+         span_id when span_id in 1..0xFFFFFFFFFFFFFFFF <- :otel_span.span_id(span) do
+      %{
+        "$trace_id": Base.encode16(<<trace_id::128>>, case: :lower),
+        "$span_id": Base.encode16(<<span_id::64>>, case: :lower)
+      }
+    else
+      _ -> %{}
+    end
+  rescue
+    _ -> %{}
+  catch
+    _, _ -> %{}
+  end
+
   defp properties(log_event, config) do
     exceptions = exceptions(log_event, config)
 
@@ -69,6 +99,18 @@ defmodule PostHog.Handler do
     |> enrich_context(log_event)
     |> Map.put(:"$exception_list", exceptions)
     |> Map.merge(metadata)
+    |> add_trace_properties(config.global_properties)
+  end
+
+  defp add_trace_properties(properties, global_properties) do
+    supplied = Map.merge(properties, global_properties)
+
+    trace_properties()
+    |> Enum.reject(fn {key, _} ->
+      Map.has_key?(supplied, key) or Map.has_key?(supplied, Atom.to_string(key))
+    end)
+    |> Map.new()
+    |> Map.merge(properties)
   end
 
   if Version.match?(System.version(), ">= 1.19.0") and

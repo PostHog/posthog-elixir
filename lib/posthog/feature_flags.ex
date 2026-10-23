@@ -108,7 +108,8 @@ defmodule PostHog.FeatureFlags do
   Evaluates feature flags for a `distinct_id` and returns a snapshot.
 
   Returns `{:ok, %PostHog.FeatureFlags.Evaluations{}}` on success. Definitions
-  are evaluated locally first when privileged local evaluation is configured;
+  are evaluated locally first when local evaluation is configured with a
+  privileged key or a shared definition cache provider;
   unresolved flags are filled by at most one `/flags` call. If that fallback
   fails after some flags resolved locally, the successful local subset is
   returned as a partial snapshot. If nothing resolved, the remote error is

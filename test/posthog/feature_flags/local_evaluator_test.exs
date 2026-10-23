@@ -754,7 +754,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
 
     for {property, actual} <- [
           {%{"key" => "x", "operator" => "unknown", "value" => 1}, 1},
-          {%{"key" => "x", "operator" => "regex", "value" => "["}, "hello123"},
+          {%{"key" => "x", "operator" => "regex", "value" => "(?<=a+)b"}, "aab"},
           {%{"key" => "x", "operator" => "is_date_before", "value" => "never"}, "2025-01-01"},
           {%{"key" => "x", "operator" => "semver_eq", "value" => "01.2.3"}, "1.2.3"}
         ] do

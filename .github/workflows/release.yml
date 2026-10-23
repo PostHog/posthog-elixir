@@ -76,7 +76,7 @@ jobs:
 
       - name: Get GitHub App token
         id: releaser
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ secrets.GH_APP_POSTHOG_ELIXIR_RELEASER_APP_ID }}
           private-key: ${{ secrets.GH_APP_POSTHOG_ELIXIR_RELEASER_PRIVATE_KEY }}
@@ -95,7 +95,7 @@ jobs:
           otp-version: 27.3
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: 1.91.1
           components: cargo

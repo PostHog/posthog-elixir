@@ -1,7 +1,7 @@
 defmodule PostHog.MixProject do
   use Mix.Project
 
-  @version "2.16.2"
+  @version "2.17.0"
   @source_url "https://github.com/posthog/posthog-elixir"
 
   def project do
@@ -71,6 +71,7 @@ defmodule PostHog.MixProject do
       {:uuid_v7, "~> 0.6"},
       {:open_feature, "~> 0.1", optional: true},
       {:opentelemetry, "~> 1.7", optional: true, runtime: false},
+      {:opentelemetry_api, "~> 1.5", optional: true, runtime: false},
       # Development tools
       {:ex_doc, "~> 0.37", only: :dev, runtime: false},
       {:logger_handler_kit, "~> 0.4", only: :test},
