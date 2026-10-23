@@ -1,5 +1,11 @@
 # posthog
 
+## 2.17.0 — 2026-10-23
+
+### Minor changes
+
+- [9705c66](https://github.com/posthog/posthog-elixir/commit/9705c6669ebc86dd40ff63dfe058bad32703bcd1) Add the active OpenTelemetry trace and span IDs to exception events when the application provides OpenTelemetry. — Thanks @pauldambra for your first contribution 🎉!
+
 ## 2.16.4 — 2026-10-23
 
 ### Patch changes
