@@ -50,6 +50,184 @@ defmodule PostHog.FeatureFlags.LocalEvaluationIntegrationTest do
     start_supervised!({PostHog.Supervisor, config})
   end
 
+  for operator <- ["regex", "not_regex"] do
+    @verb_operator operator
+    test "#{operator} PCRE verb reaches remote fallback and stays unresolved locally" do
+      condition = %{"key" => "prop", "operator" => @verb_operator, "value" => "(*FAIL)"}
+
+      expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+        {:ok, %{status: 200, body: envelope([flag("verb", [condition])]), headers: %{}}}
+      end)
+
+      name = __MODULE__.RegexVerb
+      start_instance(name)
+      context = %{distinct_id: "user", person_properties: %{prop: "a"}}
+
+      assert {:ok, local_only} =
+               FeatureFlags.evaluate_flags(name, Map.put(context, :only_evaluate_locally, true))
+
+      assert Evaluations.keys(local_only) == []
+
+      for properties <- [context.person_properties, %{}] do
+        expect(PostHog.API.Mock, :request, fn :stub_client, :post, "/flags", opts ->
+          assert opts[:json].person_properties == properties
+          {:ok, %{status: 200, body: %{"flags" => %{"verb" => %{"enabled" => false}}}}}
+        end)
+
+        assert {:ok, remote} =
+                 FeatureFlags.evaluate_flags(name, %{context | person_properties: properties})
+
+        refute remote.flags["verb"].enabled
+        refute remote.flags["verb"].locally_evaluated
+      end
+    end
+
+    @execution_operator operator
+    test "#{operator} match-limit failure falls back without losing invalid local results" do
+      condition = %{
+        "key" => "prop",
+        "operator" => @execution_operator,
+        "value" => "^(a+)+$|^a+\\n$"
+      }
+
+      invalid = %{condition | "value" => "["}
+
+      expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+        {:ok,
+         %{
+           status: 200,
+           body: envelope([flag("execution", [condition]), flag("invalid", [invalid])]),
+           headers: %{}
+         }}
+      end)
+
+      name = __MODULE__.RegexExecutionError
+      start_instance(name)
+
+      context = %{
+        distinct_id: "user",
+        person_properties: %{prop: String.duplicate("a", 30) <> "\n"}
+      }
+
+      assert {:ok, local_only} =
+               FeatureFlags.evaluate_flags(name, Map.put(context, :only_evaluate_locally, true))
+
+      assert Evaluations.keys(local_only) == ["invalid"]
+      refute local_only.flags["invalid"].enabled
+      assert local_only.flags["invalid"].locally_evaluated
+
+      expected = @execution_operator == "regex"
+
+      for properties <- [context.person_properties, %{}] do
+        expect(PostHog.API.Mock, :request, fn :stub_client, :post, "/flags", opts ->
+          assert opts[:json].person_properties == properties
+          {:ok, %{status: 200, body: %{"flags" => %{"execution" => %{"enabled" => expected}}}}}
+        end)
+
+        assert {:ok, remote} =
+                 FeatureFlags.evaluate_flags(name, %{context | person_properties: properties})
+
+        assert remote.flags["execution"].enabled == expected
+        refute remote.flags["execution"].locally_evaluated
+      end
+
+      # A short matching alternative and an ordinary miss need no remote request.
+      for {input, matches?} <- [{"a\n", true}, {"b", false}] do
+        assert {:ok, local} =
+                 FeatureFlags.evaluate_flags(name, %{context | person_properties: %{prop: input}})
+
+        expected = if @execution_operator == "regex", do: matches?, else: not matches?
+        assert local.flags["execution"].enabled == expected
+        assert local.flags["execution"].locally_evaluated
+        refute local.flags["invalid"].enabled
+        assert local.flags["invalid"].locally_evaluated
+      end
+    end
+
+    for pattern <- ["\\v", "^\\v$", "[\\v]", "^[\\v]$"] do
+      @vertical_pattern pattern
+      @vertical_operator operator
+      test "#{operator} vertical escape #{inspect(pattern)} reaches remote fallback" do
+        condition = %{
+          "key" => "prop",
+          "operator" => @vertical_operator,
+          "value" => @vertical_pattern
+        }
+
+        expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+          {:ok, %{status: 200, body: envelope([flag("vertical", [condition])]), headers: %{}}}
+        end)
+
+        name = __MODULE__.VerticalEscape
+        start_instance(name)
+        context = %{distinct_id: "user", person_properties: %{prop: "\n"}}
+
+        assert {:ok, local_only} =
+                 FeatureFlags.evaluate_flags(name, Map.put(context, :only_evaluate_locally, true))
+
+        assert Evaluations.keys(local_only) == []
+
+        # Missing context independently verifies the HTTP interception for this flag.
+        for properties <- [%{prop: "\n"}, %{}] do
+          expected = @vertical_operator == "not_regex"
+
+          expect(PostHog.API.Mock, :request, fn :stub_client, :post, "/flags", opts ->
+            assert opts[:json].person_properties == properties
+            {:ok, %{status: 200, body: %{"flags" => %{"vertical" => %{"enabled" => expected}}}}}
+          end)
+
+          assert {:ok, remote} =
+                   FeatureFlags.evaluate_flags(name, %{context | person_properties: properties})
+
+          assert remote.flags["vertical"].enabled == expected
+          refute remote.flags["vertical"].locally_evaluated
+        end
+      end
+    end
+
+    @regex_operator operator
+    test "#{operator} compatibility gates remote fallback and local-only snapshots" do
+      condition = %{"key" => "prop", "operator" => @regex_operator, "value" => "^\\w+$"}
+
+      expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+        {:ok, %{status: 200, body: envelope([flag("regex", [condition])]), headers: %{}}}
+      end)
+
+      name = __MODULE__.RegexCompatibility
+      start_instance(name)
+      context = %{distinct_id: "user", person_properties: %{prop: "é"}}
+
+      assert {:ok, local_only} =
+               FeatureFlags.evaluate_flags(name, Map.put(context, :only_evaluate_locally, true))
+
+      assert Evaluations.keys(local_only) == []
+
+      # Missing context is an independent positive control for the same HTTP interception.
+      for properties <- [%{prop: "é"}, %{}] do
+        expect(PostHog.API.Mock, :request, fn :stub_client, :post, "/flags", opts ->
+          assert opts[:json].person_properties == properties
+          {:ok, %{status: 200, body: %{"flags" => %{"regex" => %{"enabled" => true}}}}}
+        end)
+
+        assert {:ok, remote} =
+                 FeatureFlags.evaluate_flags(name, %{context | person_properties: properties})
+
+        assert remote.flags["regex"].enabled
+        refute remote.flags["regex"].locally_evaluated
+      end
+
+      # No /flags expectation: a shared ASCII search must not fall back.
+      assert {:ok, local} =
+               FeatureFlags.evaluate_flags(name, %{
+                 context
+                 | person_properties: %{prop: "abc_123"}
+               })
+
+      assert local.flags["regex"].enabled == (@regex_operator == "regex")
+      assert local.flags["regex"].locally_evaluated
+    end
+  end
+
   test "HTTP version-only refreshes replace matching atomically and preserve frozen results" do
     definitions = envelope([flag("versioned", [%{"key" => "prop", "value" => false}])])
 

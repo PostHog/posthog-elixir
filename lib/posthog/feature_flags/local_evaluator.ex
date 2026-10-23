@@ -430,7 +430,16 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
     end)
   end
 
-  defp match_typed_property(property, property_values, definitions, context, cache)
+  defp match_typed_property(
+         property,
+         property_values,
+         definitions,
+         context,
+         cache,
+         cohort? \\ false
+       )
+
+  defp match_typed_property(property, property_values, definitions, context, cache, cohort?)
        when is_map(property) do
     {result, cache} =
       case value(property, "type") do
@@ -449,10 +458,16 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
            ), cache}
       end
 
-    {apply_negation(result, value(property, "negation") == true), cache}
+    if result == :invalid_regex do
+      # A cohort may be negated again at any outer group/reference. Keep malformed leaves
+      # inconclusive there so an invalid search can never become a successful comparison.
+      {if(cohort?, do: :inconclusive, else: :no_match), cache}
+    else
+      {apply_negation(result, value(property, "negation") == true), cache}
+    end
   end
 
-  defp match_typed_property(_property, _values, _definitions, _context, cache),
+  defp match_typed_property(_property, _values, _definitions, _context, cache, _cohort?),
     do: {:inconclusive, cache}
 
   defp apply_negation(:match, true), do: :no_match
@@ -585,7 +600,9 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
           |> match_property_group(properties, definitions, context, cache)
           |> apply_negation(value(entry, "negation") == true)
         else
-          {result, _cache} = match_typed_property(entry, properties, definitions, context, cache)
+          {result, _cache} =
+            match_typed_property(entry, properties, definitions, context, cache, true)
+
           result
         end
       end)
@@ -661,13 +678,15 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   end
 
   defp apply_operator(operator, property, filter, _now) when operator in ["regex", "not_regex"] do
-    case Regex.compile(to_string(filter)) do
-      {:ok, regex} ->
-        matched = Regex.match?(regex, to_string(property))
+    pattern = to_string(filter)
+    input = to_string(property)
+
+    case regex_match(pattern, input) do
+      matched when is_boolean(matched) ->
         boolean_result(if(operator == "regex", do: matched, else: not matched))
 
-      {:error, _reason} ->
-        :inconclusive
+      result ->
+        result
     end
   end
 
@@ -699,6 +718,188 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   end
 
   defp apply_operator(_operator, _property, _filter, _now), do: :inconclusive
+
+  defp regex_match("", _input), do: true
+
+  defp regex_match(pattern, input) do
+    # PCRE's Unicode tables and set syntax differ from the service. Keep the shared ASCII
+    # subset local, without changing POSIX classes by blindly enabling Unicode mode.
+    if portable_regex?(pattern, :outside, :start) do
+      case Regex.compile(pattern, [:dollar_endonly]) do
+        {:ok, regex} ->
+          # Make $ strict at the end of the input, rather than before a final LF.
+          if ascii_regex_input?(input) do
+            # Regex.match? hides match-limit errors as misses.
+            case :re.run(input, Regex.re_pattern(regex), [:report_errors, {:capture, :none}]) do
+              :match -> true
+              :nomatch -> false
+              {:error, _reason} -> :inconclusive
+            end
+          else
+            :inconclusive
+          end
+
+        {:error, {reason, _offset}} ->
+          invalid_regex_result(reason)
+
+        _ ->
+          :inconclusive
+      end
+    else
+      :inconclusive
+    end
+  end
+
+  # Only proven shared syntax errors are definitive. Other compiler failures, including
+  # engine limits, remain inconclusive. PCRE1 and PCRE2 spell some syntax errors differently.
+  defp invalid_regex_result(reason) do
+    if to_string(reason) in [
+         "missing terminating ] for character class",
+         "missing closing parenthesis",
+         "missing )",
+         "unmatched closing parenthesis",
+         "unmatched parentheses",
+         "quantifier does not follow a repeatable item",
+         "nothing to repeat",
+         "range out of order in character class",
+         "numbers out of order in {} quantifier"
+       ],
+       do: :invalid_regex,
+       else: :inconclusive
+  end
+
+  defp ascii_regex_input?(""), do: true
+
+  defp ascii_regex_input?(<<byte, rest::binary>>) when byte < 128,
+    do: ascii_regex_input?(rest)
+
+  defp ascii_regex_input?(<<_byte, _rest::binary>>), do: false
+
+  defp portable_regex?("", _class, _previous), do: true
+
+  defp portable_regex?(<<character, _rest::binary>>, _class, _previous)
+       when character > 127,
+       do: false
+
+  defp portable_regex?(<<"\\x", a, b, rest::binary>>, class, _previous)
+       when a in ?0..?9 or a in ?a..?f or a in ?A..?F do
+    if b in ?0..?9 or b in ?a..?f or b in ?A..?F,
+      do: portable_regex?(rest, class_content(class), :literal),
+      else: false
+  end
+
+  defp portable_regex?(<<"\\", escaped, rest::binary>>, class, _previous) do
+    cond do
+      # Even short ASCII word-boundary searches can exceed the service backtracking budget.
+      class == :outside and escaped in ~c"bB" ->
+        false
+
+      escaped in ~c"dDsSwW" ->
+        portable_regex?(rest, class_content(class), :shorthand)
+
+      # PCRE's \v includes LF/CR/FF, whereas the service matches only vertical tab.
+      escaped in ~c"fnrt" or (class != :outside and escaped == ?b) ->
+        portable_regex?(rest, class_content(class), :literal)
+
+      class != :outside and escaped in ~c"\\.^$|?*+()[]{}-" ->
+        portable_regex?(rest, :inside, :literal)
+
+      class == :outside and
+          (escaped in 32..47 or escaped in ~c":;=?@" or escaped in 91..96 or
+             escaped in 123..126) ->
+        portable_regex?(rest, class, :literal)
+
+      true ->
+        false
+    end
+  end
+
+  defp portable_regex?(<<"[", rest::binary>>, :outside, _previous),
+    do: portable_regex?(rest, :class_start, :start)
+
+  defp portable_regex?(<<"^", rest::binary>>, :class_start, _previous),
+    do: portable_regex?(rest, :negated_start, :start)
+
+  defp portable_regex?(<<"]", _rest::binary>>, class, _previous)
+       when class in [:class_start, :negated_start],
+       do: false
+
+  defp portable_regex?(<<"]", rest::binary>>, :inside, _previous),
+    do: portable_regex?(rest, :outside, :literal)
+
+  defp portable_regex?(<<character, rest::binary>>, class, previous) when class != :outside do
+    cond do
+      character == ?[ -> false
+      character in ~c"&-~" and String.starts_with?(rest, <<character>>) -> false
+      character == ?- and previous == :shorthand and not String.starts_with?(rest, "]") -> false
+      character == ?- and shorthand_start?(rest) -> false
+      true -> portable_regex?(rest, :inside, :literal)
+    end
+  end
+
+  defp portable_regex?(<<"(?:", rest::binary>>, :outside, _previous),
+    do: portable_regex?(rest, :outside, :open)
+
+  defp portable_regex?(<<"(?", _rest::binary>>, :outside, _previous), do: false
+
+  defp portable_regex?(<<"{", _rest::binary>> = pattern, :outside, previous) do
+    case Regex.run(~r/^\{([0-9]+)(?:,([0-9]*))?\}/, pattern) do
+      [repetition | counts]
+      when previous not in [:start, :open, :alternation, :assertion, :empty, :repeat] ->
+        if Enum.all?(counts, &(&1 == "" or String.to_integer(&1) <= 65_535)) do
+          rest =
+            binary_part(
+              pattern,
+              byte_size(repetition),
+              byte_size(pattern) - byte_size(repetition)
+            )
+
+          not String.starts_with?(rest, "+") and portable_regex?(rest, :outside, :repeat)
+        else
+          false
+        end
+
+      _ ->
+        false
+    end
+  end
+
+  defp portable_regex?(<<character, rest::binary>>, :outside, previous) do
+    cond do
+      character in ~c"*+?" and previous in [:start, :open, :alternation, :assertion, :empty] ->
+        false
+
+      character in ~c"*+?" and String.starts_with?(rest, ["+", "{"]) ->
+        false
+
+      character in ~c"*+?" ->
+        portable_regex?(rest, :outside, :repeat)
+
+      character in ~c"^$" ->
+        portable_regex?(rest, :outside, :assertion)
+
+      character == ?( ->
+        portable_regex?(rest, :outside, :open)
+
+      character == ?) and previous in [:open, :empty] ->
+        portable_regex?(rest, :outside, :empty)
+
+      character == ?| ->
+        portable_regex?(rest, :outside, :alternation)
+
+      character == ?} ->
+        false
+
+      true ->
+        portable_regex?(rest, :outside, :literal)
+    end
+  end
+
+  defp class_content(:outside), do: :outside
+  defp class_content(_class), do: :inside
+
+  defp shorthand_start?(<<"\\", character, _rest::binary>>), do: character in ~c"dDsSwW"
+  defp shorthand_start?(_rest), do: false
 
   defp matching_value(flag, condition, bucketing) do
     variants = variants(flag)
