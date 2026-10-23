@@ -1,5 +1,11 @@
 # posthog
 
+## 2.16.4 — 2026-10-23
+
+### Patch changes
+
+- [5c2e74f](https://github.com/posthog/posthog-elixir/commit/5c2e74ff85b91a08246fb86e7fdba71cde70751a) Fall back to remote feature flag evaluation for regex syntax and Unicode semantics that differ from the flags service, and preserve safe invalid-pattern handling. — Thanks @marandaneto!
+
 ## 2.16.3 — 2026-10-22
 
 ### Patch changes
