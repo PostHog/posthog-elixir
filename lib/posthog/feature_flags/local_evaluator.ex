@@ -759,9 +759,12 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
        else: :inconclusive
   end
 
-  defp ascii_regex_input?(input) do
-    input |> :binary.bin_to_list() |> Enum.all?(&(&1 < 128))
-  end
+  defp ascii_regex_input?(""), do: true
+
+  defp ascii_regex_input?(<<byte, rest::binary>>) when byte < 128,
+    do: ascii_regex_input?(rest)
+
+  defp ascii_regex_input?(<<_byte, _rest::binary>>), do: false
 
   defp portable_regex?("", _class, _previous), do: true
 

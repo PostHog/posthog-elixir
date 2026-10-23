@@ -143,6 +143,46 @@ defmodule PostHog.FeatureFlags.RegexCompatibilityTest do
       end
     end
 
+    test "#{operator} keeps empty and full-range ASCII input local" do
+      for {input, matches?} <- [
+            {"", false},
+            {<<0>>, false},
+            {<<127>>, false},
+            {:binary.list_to_bin(Enum.to_list(0..127)), true},
+            {String.duplicate("a", 65_536), true}
+          ] do
+        result = evaluate("a", %{"prop" => input}, @operator, direct?: true)
+        expected = if @operator == "regex", do: matches?, else: not matches?
+        assert %Result{enabled: ^expected, locally_evaluated: true} = result.results["regex"]
+        assert MapSet.size(result.unresolved) == 0
+      end
+    end
+
+    test "#{operator} preserves fallback and special patterns for non-ASCII binary edges" do
+      ascii = String.duplicate("a", 65_536)
+
+      for input <- [<<128>> <> ascii, ascii <> <<255>>, "é" <> ascii, ascii <> "é"] do
+        result = evaluate("a", %{"prop" => input}, @operator, direct?: true)
+        assert result.results == %{}
+        assert result.unresolved == MapSet.new(["regex"])
+
+        empty = evaluate("", %{"prop" => input}, @operator, direct?: true)
+        expected = @operator == "regex"
+        assert %Result{enabled: ^expected} = empty.results["regex"]
+        assert MapSet.size(empty.unresolved) == 0
+
+        invalid = evaluate("[", %{"prop" => input}, @operator, direct?: true)
+        assert %Result{enabled: false} = invalid.results["regex"]
+        assert MapSet.size(invalid.unresolved) == 0
+      end
+    end
+
+    test "#{operator} preserves fallback for property stringification failures" do
+      result = evaluate("a", %{"prop" => %{}}, @operator, direct?: true)
+      assert result.results == %{}
+      assert result.unresolved == MapSet.new(["regex"])
+    end
+
     test "#{operator} keeps shared searches local" do
       for {pattern, input, matches?} <- [
             {"pro", "a pro plan", true},
