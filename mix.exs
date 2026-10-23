@@ -74,7 +74,8 @@ defmodule PostHog.MixProject do
       {:ex_doc, "~> 0.37", only: :dev, runtime: false},
       {:logger_handler_kit, "~> 0.4", only: :test},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:mox, "~> 1.1", only: :test}
+      {:mox, "~> 1.1", only: :test},
+      {:opentelemetry_api, "~> 1.5", only: :test, runtime: false}
     ]
   end
 
