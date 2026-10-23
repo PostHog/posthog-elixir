@@ -70,12 +70,13 @@ defmodule PostHog.MixProject do
       {:nimble_ownership, "~> 1.0"},
       {:uuid_v7, "~> 0.6"},
       {:open_feature, "~> 0.1", optional: true},
+      {:opentelemetry, "~> 1.7", optional: true, runtime: false},
+      {:opentelemetry_api, "~> 1.5", optional: true, runtime: false},
       # Development tools
       {:ex_doc, "~> 0.37", only: :dev, runtime: false},
       {:logger_handler_kit, "~> 0.4", only: :test},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:mox, "~> 1.1", only: :test},
-      {:opentelemetry_api, "~> 1.5", only: :test, runtime: false}
+      {:mox, "~> 1.1", only: :test}
     ]
   end
 

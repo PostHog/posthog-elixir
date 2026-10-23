@@ -217,6 +217,13 @@ PostHog.OpenFeature.Provider
   macros:
     (none)
 
+PostHog.OpenTelemetry.ContextSpanProcessor
+  module_doc: documented
+  functions:
+    (none)
+  macros:
+    (none)
+
 PostHog.Supervisor
   module_doc: documented
   functions:
