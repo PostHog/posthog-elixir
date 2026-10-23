@@ -1,5 +1,11 @@
 # posthog
 
+## 2.18.0 — 2026-10-23
+
+### Minor changes
+
+- [fdeb312](https://github.com/posthog/posthog-elixir/commit/fdeb3127a12cb9503ba0de11416d90a5d71de5a3) Add an optional OpenTelemetry processor that adds session and person IDs to new application spans from the active process context or PostHog header attributes already captured by application instrumentation. — Thanks @pauldambra!
+
 ## 2.17.0 — 2026-10-23
 
 ### Minor changes
