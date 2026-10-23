@@ -51,6 +51,68 @@ defmodule PostHog.FeatureFlags.LocalEvaluationIntegrationTest do
   end
 
   for operator <- ["regex", "not_regex"] do
+    @execution_operator operator
+    test "#{operator} match-limit failure falls back without losing invalid local results" do
+      condition = %{
+        "key" => "prop",
+        "operator" => @execution_operator,
+        "value" => "^(a+)+$|^a+\\n$"
+      }
+
+      invalid = %{condition | "value" => "["}
+
+      expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+        {:ok,
+         %{
+           status: 200,
+           body: envelope([flag("execution", [condition]), flag("invalid", [invalid])]),
+           headers: %{}
+         }}
+      end)
+
+      name = __MODULE__.RegexExecutionError
+      start_instance(name)
+
+      context = %{
+        distinct_id: "user",
+        person_properties: %{prop: String.duplicate("a", 30) <> "\n"}
+      }
+
+      assert {:ok, local_only} =
+               FeatureFlags.evaluate_flags(name, Map.put(context, :only_evaluate_locally, true))
+
+      assert Evaluations.keys(local_only) == ["invalid"]
+      refute local_only.flags["invalid"].enabled
+      assert local_only.flags["invalid"].locally_evaluated
+
+      expected = @execution_operator == "regex"
+
+      for properties <- [context.person_properties, %{}] do
+        expect(PostHog.API.Mock, :request, fn :stub_client, :post, "/flags", opts ->
+          assert opts[:json].person_properties == properties
+          {:ok, %{status: 200, body: %{"flags" => %{"execution" => %{"enabled" => expected}}}}}
+        end)
+
+        assert {:ok, remote} =
+                 FeatureFlags.evaluate_flags(name, %{context | person_properties: properties})
+
+        assert remote.flags["execution"].enabled == expected
+        refute remote.flags["execution"].locally_evaluated
+      end
+
+      # A short matching alternative and an ordinary miss need no remote request.
+      for {input, matches?} <- [{"a\n", true}, {"b", false}] do
+        assert {:ok, local} =
+                 FeatureFlags.evaluate_flags(name, %{context | person_properties: %{prop: input}})
+
+        expected = if @execution_operator == "regex", do: matches?, else: not matches?
+        assert local.flags["execution"].enabled == expected
+        assert local.flags["execution"].locally_evaluated
+        refute local.flags["invalid"].enabled
+        assert local.flags["invalid"].locally_evaluated
+      end
+    end
+
     for pattern <- ["\\v", "^\\v$", "[\\v]", "^[\\v]$"] do
       @vertical_pattern pattern
       @vertical_operator operator

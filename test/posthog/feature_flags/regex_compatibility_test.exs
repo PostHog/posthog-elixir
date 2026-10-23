@@ -123,6 +123,29 @@ defmodule PostHog.FeatureFlags.RegexCompatibilityTest do
       end
     end
 
+    test "#{operator} keeps match-limit errors inconclusive through negation" do
+      pattern = "^(a+)+$|^a+\\n$"
+      input = String.duplicate("a", 30) <> "\n"
+      {:ok, compiled} = Regex.compile(pattern, [:dollar_endonly])
+
+      assert {:error, :match_limit} =
+               :re.run(input, Regex.re_pattern(compiled), [:report_errors, {:capture, :none}])
+
+      for options <- [
+            [direct?: true],
+            [direct?: true, negated?: true],
+            [],
+            [negated?: true],
+            [reference_negated?: true],
+            [group_negated?: true],
+            [not_in?: true]
+          ] do
+        result = evaluate(pattern, %{"prop" => input}, @operator, options)
+        assert result.results == %{}
+        assert result.unresolved == MapSet.new(["regex"])
+      end
+    end
+
     test "#{operator} keeps literal and hexadecimal vertical tab local" do
       for pattern <- [
             "\u000b",

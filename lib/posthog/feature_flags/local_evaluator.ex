@@ -728,7 +728,16 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
       case Regex.compile(pattern, [:dollar_endonly]) do
         {:ok, regex} ->
           # Make $ strict at the end of the input, rather than before a final LF.
-          if ascii_regex_input?(input), do: Regex.match?(regex, input), else: :inconclusive
+          if ascii_regex_input?(input) do
+            # Regex.match? hides match-limit errors as misses.
+            case :re.run(input, Regex.re_pattern(regex), [:report_errors, {:capture, :none}]) do
+              :match -> true
+              :nomatch -> false
+              {:error, _reason} -> :inconclusive
+            end
+          else
+            :inconclusive
+          end
 
         {:error, {reason, _offset}} ->
           invalid_regex_result(reason)
