@@ -866,15 +866,32 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
 
   defp portable_regex?(<<character, rest::binary>>, :outside, previous) do
     cond do
-      character in ~c"*+?" and previous in [:assertion, :empty] -> false
-      character in ~c"*+?" and String.starts_with?(rest, ["+", "{"]) -> false
-      character in ~c"*+?" -> portable_regex?(rest, :outside, :repeat)
-      character in ~c"^$" -> portable_regex?(rest, :outside, :assertion)
-      character == ?( -> portable_regex?(rest, :outside, :open)
-      character == ?) and previous in [:open, :empty] -> portable_regex?(rest, :outside, :empty)
-      character == ?| -> portable_regex?(rest, :outside, :alternation)
-      character == ?} -> false
-      true -> portable_regex?(rest, :outside, :literal)
+      character in ~c"*+?" and previous in [:start, :open, :alternation, :assertion, :empty] ->
+        false
+
+      character in ~c"*+?" and String.starts_with?(rest, ["+", "{"]) ->
+        false
+
+      character in ~c"*+?" ->
+        portable_regex?(rest, :outside, :repeat)
+
+      character in ~c"^$" ->
+        portable_regex?(rest, :outside, :assertion)
+
+      character == ?( ->
+        portable_regex?(rest, :outside, :open)
+
+      character == ?) and previous in [:open, :empty] ->
+        portable_regex?(rest, :outside, :empty)
+
+      character == ?| ->
+        portable_regex?(rest, :outside, :alternation)
+
+      character == ?} ->
+        false
+
+      true ->
+        portable_regex?(rest, :outside, :literal)
     end
   end
 

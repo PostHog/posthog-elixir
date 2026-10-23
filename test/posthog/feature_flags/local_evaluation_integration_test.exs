@@ -51,6 +51,37 @@ defmodule PostHog.FeatureFlags.LocalEvaluationIntegrationTest do
   end
 
   for operator <- ["regex", "not_regex"] do
+    @verb_operator operator
+    test "#{operator} PCRE verb reaches remote fallback and stays unresolved locally" do
+      condition = %{"key" => "prop", "operator" => @verb_operator, "value" => "(*FAIL)"}
+
+      expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+        {:ok, %{status: 200, body: envelope([flag("verb", [condition])]), headers: %{}}}
+      end)
+
+      name = __MODULE__.RegexVerb
+      start_instance(name)
+      context = %{distinct_id: "user", person_properties: %{prop: "a"}}
+
+      assert {:ok, local_only} =
+               FeatureFlags.evaluate_flags(name, Map.put(context, :only_evaluate_locally, true))
+
+      assert Evaluations.keys(local_only) == []
+
+      for properties <- [context.person_properties, %{}] do
+        expect(PostHog.API.Mock, :request, fn :stub_client, :post, "/flags", opts ->
+          assert opts[:json].person_properties == properties
+          {:ok, %{status: 200, body: %{"flags" => %{"verb" => %{"enabled" => false}}}}}
+        end)
+
+        assert {:ok, remote} =
+                 FeatureFlags.evaluate_flags(name, %{context | person_properties: properties})
+
+        refute remote.flags["verb"].enabled
+        refute remote.flags["verb"].locally_evaluated
+      end
+    end
+
     @execution_operator operator
     test "#{operator} match-limit failure falls back without losing invalid local results" do
       condition = %{

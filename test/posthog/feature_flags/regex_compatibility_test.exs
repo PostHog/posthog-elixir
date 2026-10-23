@@ -110,6 +110,43 @@ defmodule PostHog.FeatureFlags.RegexCompatibilityTest do
       end
     end
 
+    for pattern <- [
+          "(*FAIL)",
+          "(*ACCEPT)",
+          "(*COMMIT)",
+          "(*LIMIT_MATCH=1)a",
+          "*",
+          "?*",
+          "*a",
+          "+a",
+          "?a",
+          "a|*b",
+          "a|+b",
+          "a|?b",
+          "(*a)",
+          "(+a)",
+          "(?:*a)",
+          "(?:+a)",
+          "(?:?a)"
+        ] do
+      @pattern pattern
+      test "#{operator} defers nonportable quantifier #{inspect(pattern)} through negation" do
+        for options <- [
+              [direct?: true],
+              [direct?: true, negated?: true],
+              [],
+              [negated?: true],
+              [reference_negated?: true],
+              [group_negated?: true],
+              [not_in?: true]
+            ] do
+          result = evaluate(@pattern, %{"prop" => "a"}, @operator, options)
+          assert result.results == %{}
+          assert result.unresolved == MapSet.new(["regex"])
+        end
+      end
+    end
+
     for pattern <- ["\\v", "^\\v$", "[\\v]", "^[\\v]$"],
         {name, input} <- [{"LF", "\n"}, {"CR", "\r"}, {"FF", "\f"}, {"VT", "\u000b"}] do
       @pattern pattern
@@ -214,6 +251,12 @@ defmodule PostHog.FeatureFlags.RegexCompatibilityTest do
             {"^\\d+$", "123", true},
             {"^[\\w.+-]+@example\\.com$", "a.b+tag@example.com", true},
             {"^(?:ab|cd){2,3}$", "abcdab", true},
+            {"^a*$", "", true},
+            {"^a+$", "aa", true},
+            {"^a?$", "", true},
+            {"^(a)+$", "aa", true},
+            {"^(?:a)*$", "aa", true},
+            {"^a+?$", "aa", true},
             {"^\\\\p\\{L\\}$", "\\p{L}", true},
             {"^\\(\\?i\\)$", "(?i)", true},
             {"^\\x41+$", "AA", true},
@@ -250,7 +293,7 @@ defmodule PostHog.FeatureFlags.RegexCompatibilityTest do
     end
 
     test "#{operator} does not negate proven invalid syntax" do
-      for pattern <- ["[", "(", "*", "?*", "[abc", "(abc", "abc)", "[z-a]", "a{2,1}"],
+      for pattern <- ["[", "(", "[abc", "(abc", "abc)", "[z-a]", "a{2,1}"],
           input <- ["value", "é", "\r"],
           negated? <- [false, true] do
         result =
