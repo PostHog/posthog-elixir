@@ -52,6 +52,29 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
     }
   end
 
+  describe "access tracker lifetime" do
+    for reason <- [:normal, :shutdown, {:shutdown, :closed}] do
+      @reason reason
+      test "stops when the creating process exits with #{inspect(reason)}" do
+        test_pid = self()
+
+        {creator, creator_ref} =
+          spawn_monitor(fn ->
+            send(test_pid, {:snapshot, Evaluations.empty(PostHog)})
+            receive do: (:exit -> exit(@reason))
+          end)
+
+        assert_receive {:snapshot, %Evaluations{accessed_pid: agent}}
+        agent_ref = Process.monitor(agent)
+
+        send(creator, :exit)
+
+        assert_receive {:DOWN, ^creator_ref, :process, ^creator, _}
+        assert_receive {:DOWN, ^agent_ref, :process, ^agent, _}
+      end
+    end
+  end
+
   describe "evaluate_flags/2" do
     test "returns a snapshot containing every evaluated flag" do
       expect(API.Mock, :request, fn _client, :post, "/flags", _opts ->
