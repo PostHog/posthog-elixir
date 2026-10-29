@@ -280,6 +280,7 @@ defmodule PostHog.FeatureFlags.Evaluations do
     # Without it, a :normal exit signal is ignored and the Agent is orphaned.
     {:ok, pid} =
       Agent.start_link(fn ->
+        Logger.metadata(posthog_skip_capture: true)
         Process.flag(:trap_exit, true)
         MapSet.new()
       end)
