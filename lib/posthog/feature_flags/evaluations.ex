@@ -9,7 +9,9 @@ defmodule PostHog.FeatureFlags.Evaluations do
 
   Each snapshot owns a small `Agent` linked to the calling process that tracks
   which flags were accessed via `enabled?/2` and `get_flag/2`. The Agent exits
-  with the calling process — no manual cleanup is required.
+  with the calling process, whatever the exit reason — no manual cleanup is
+  required. A snapshot is therefore only usable while the process that created
+  it is alive; don't hand it to a process that outlives its creator.
 
   ## Querying
 
@@ -274,7 +276,15 @@ defmodule PostHog.FeatureFlags.Evaluations do
   end
 
   defp start_accessed_agent do
-    {:ok, pid} = Agent.start_link(fn -> MapSet.new() end)
+    # Trap exits so the Agent also stops when the caller exits with :normal.
+    # Without it, a :normal exit signal is ignored and the Agent is orphaned.
+    {:ok, pid} =
+      Agent.start_link(fn ->
+        Logger.metadata(posthog_skip_capture: true)
+        Process.flag(:trap_exit, true)
+        MapSet.new()
+      end)
+
     pid
   end
 

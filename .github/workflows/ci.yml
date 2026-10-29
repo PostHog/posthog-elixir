@@ -19,7 +19,7 @@ concurrency:
 jobs:
   test:
     name: Build and test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     # This is a complicated set of strategies, but Elixir has a complicated set of supported versions.
     # See https://hexdocs.pm/elixir/compatibility-and-deprecations.html
