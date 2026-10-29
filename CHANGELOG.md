@@ -1,5 +1,11 @@
 # posthog
 
+## 2.18.1 — 2026-10-29
+
+### Patch changes
+
+- [8d9eb85](https://github.com/posthog/posthog-elixir/commit/8d9eb85779a249d77af99d62c31fde5a726f8e7e) Stop the feature flag evaluations access-tracking Agent when the process that created the snapshot exits normally, instead of leaving it running for the life of the node. — Thanks @matthewlehner for your first contribution 🎉!
+
 ## 2.18.0 — 2026-10-23
 
 ### Minor changes
