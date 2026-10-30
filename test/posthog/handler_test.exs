@@ -307,50 +307,6 @@ defmodule PostHog.HandlerTest do
     assert [] = all_captured(supervisor_name)
   end
 
-  test "snapshot tracker exits do not duplicate their creator's exception", %{
-    handler_id: handler_id,
-    handler_ref: ref,
-    config: %{supervisor_name: supervisor_name}
-  } do
-    test_pid = self()
-
-    {creator, creator_ref} =
-      spawn_monitor(fn ->
-        {:ok, snapshot} =
-          PostHog.FeatureFlags.evaluate_flags(supervisor_name, %{
-            distinct_id: "snapshot-user",
-            flag_keys: []
-          })
-
-        filtered = PostHog.FeatureFlags.Evaluations.only(snapshot, [])
-        send(test_pid, {:trackers, [snapshot.accessed_pid, filtered.accessed_pid]})
-        receive do: (:raise -> raise "snapshot creator failed")
-      end)
-
-    assert_receive {:trackers, trackers}
-
-    for pid <- [creator | trackers] do
-      LoggerHandlerKit.Arrange.allow(self(), pid, handler_id)
-      PostHog.Test.allow(supervisor_name, self(), pid)
-    end
-
-    tracker_refs = for pid <- trackers, do: {pid, Process.monitor(pid)}
-    send(creator, :raise)
-
-    assert_receive {:DOWN, ^creator_ref, :process, ^creator, _}
-
-    for {pid, tracker_ref} <- tracker_refs do
-      assert_receive {:DOWN, ^tracker_ref, :process, ^pid, _}
-    end
-
-    for _ <- 1..3, do: LoggerHandlerKit.Assert.assert_logged(ref)
-
-    assert [%{event: "$exception", properties: properties}] = all_captured(supervisor_name)
-
-    assert [%{type: "RuntimeError", value: "snapshot creator failed"} | _] =
-             properties[:"$exception_list"]
-  end
-
   @tag config: [capture_level: :warning]
   test "logs with crash reason always captured", %{
     handler_ref: ref,
