@@ -1,5 +1,16 @@
 # posthog
 
+## 2.18.2 — 2026-10-30
+
+### Patch changes
+
+- [747c160](https://github.com/posthog/posthog-elixir/commit/747c160b0ad1e1cf6a6a131a9eac737aef5b47ce) Fix a process leak in feature flag snapshots. Snapshots no longer start a process to track accessed flags, so they need no cleanup and can be used from any process.
+  
+  Behaviour changes:
+  
+  - `PostHog.FeatureFlags.Evaluations`'s `accessed_pid` field is deprecated and always `nil`. Remove any `Agent.stop/1` call on it.
+  - `PostHog.FeatureFlags.Evaluations.accessed/1` no longer returns keys that were read but are missing from the snapshot. — Thanks @marandaneto!
+
 ## 2.18.1 — 2026-10-29
 
 ### Patch changes
