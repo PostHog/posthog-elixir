@@ -8,5 +8,5 @@ Snapshots now track access with `:atomics`, which are freed together with the sn
 
 Behaviour changes:
 
-- The `accessed_pid` field of `PostHog.FeatureFlags.Evaluations` was removed and replaced by an opaque `accessed` field. Code that read `accessed_pid`, for example to call `Agent.stop/1` on it, must drop that code. No cleanup is needed anymore.
+- The `accessed_pid` field of `PostHog.FeatureFlags.Evaluations` is deprecated and is now always `nil`. It was internal tracking state. Code that reads or matches it keeps compiling, but code that passes it to `Agent.stop/1` or other process functions must remove that call. No cleanup is needed anymore.
 - `PostHog.FeatureFlags.Evaluations.accessed/1` now only returns accessed keys that are present in the snapshot. Keys that were read but missing from the snapshot are no longer included. `only_accessed/1` already ignored these keys, so its result is unchanged, and reading a missing key still sends `$feature_flag_called` with the `flag_missing` error.

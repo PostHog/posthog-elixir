@@ -70,6 +70,12 @@ defmodule PostHog.FeatureFlags.Evaluations do
     `$feature_flag_error` property.
   - `:accessed` - internal access-tracking state. Use `accessed/1` instead of
     reading it directly.
+  - `:accessed_pid` - deprecated and always `nil`. It held the pid of an
+    internal Agent that tracked accessed keys. Snapshots no longer start a
+    process, so there is nothing to stop or clean up, and the process leak this
+    Agent caused no longer happens. Kept only so existing code that reads or
+    matches the field still compiles. It will be removed in the next major
+    version.
   """
   @type t :: %__MODULE__{
           supervisor_name: PostHog.supervisor_name(),
@@ -79,7 +85,8 @@ defmodule PostHog.FeatureFlags.Evaluations do
           request_id: String.t() | nil,
           evaluated_at: integer() | nil,
           errors_while_computing: boolean(),
-          accessed: accessed()
+          accessed: accessed(),
+          accessed_pid: nil
         }
 
   @opaque accessed :: {%{String.t() => pos_integer()}, :atomics.atomics_ref() | nil}
@@ -90,6 +97,9 @@ defmodule PostHog.FeatureFlags.Evaluations do
     :distinct_id,
     :flags,
     :accessed,
+    # Deprecated and always nil. Kept for compatibility with code written for
+    # the old Agent-based tracker.
+    :accessed_pid,
     :request_id,
     :evaluated_at,
     groups: %{},

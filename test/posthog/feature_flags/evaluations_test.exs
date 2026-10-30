@@ -69,6 +69,23 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
       assert Process.info(self(), :links) == {:links, links_before}
     end
 
+    test "keeps the deprecated accessed_pid field as nil" do
+      expect(API.Mock, :request, fn _client, :post, "/flags", _opts ->
+        {:ok, stub_flags_response()}
+      end)
+
+      {:ok, snapshot} = FeatureFlags.evaluate_flags("foo")
+
+      for snapshot <- [
+            snapshot,
+            Evaluations.only(snapshot, ["boolean-flag"]),
+            Evaluations.only_accessed(snapshot),
+            Evaluations.empty(PostHog)
+          ] do
+        assert %Evaluations{accessed_pid: nil} = snapshot
+      end
+    end
+
     test "snapshots stay usable after the creating process exits" do
       expect(API.Mock, :request, fn _client, :post, "/flags", _opts ->
         {:ok, stub_flags_response()}
