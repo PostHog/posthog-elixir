@@ -68,14 +68,14 @@ defmodule PostHog.FeatureFlags.Evaluations do
     `errorsWhileComputingFlags`. When `true`, every event fired from this
     snapshot includes `errors_while_computing_flags` in its
     `$feature_flag_error` property.
-  - `:accessed` - internal access-tracking state. Use `accessed/1` instead of
-    reading it directly.
-  - `:accessed_pid` - deprecated and always `nil`. It held the pid of an
-    internal Agent that tracked accessed keys. Snapshots no longer start a
-    process, so there is nothing to stop or clean up, and the process leak this
-    Agent caused no longer happens. Kept only so existing code that reads or
-    matches the field still compiles. It will be removed in the next major
-    version.
+  - `:accessed` - internal. Its contents may change in any release without
+    notice. Don't read or match on it; use `accessed/1`.
+  - `:accessed_pid` - internal and deprecated. Always `nil`. It held the pid of
+    an internal Agent that tracked accessed keys and was never meant to be
+    used directly. Snapshots no longer start a process, so there is nothing to
+    stop or clean up, and the process leak this Agent caused no longer
+    happens. Kept only so existing code that reads or matches the field still
+    compiles. Don't use it; it will be removed in the next major version.
   """
   @type t :: %__MODULE__{
           supervisor_name: PostHog.supervisor_name(),
@@ -89,6 +89,7 @@ defmodule PostHog.FeatureFlags.Evaluations do
           accessed_pid: nil
         }
 
+  @typedoc false
   @opaque accessed :: {%{String.t() => pos_integer()}, :atomics.atomics_ref() | nil}
 
   @enforce_keys [:supervisor_name, :distinct_id, :flags, :accessed]
