@@ -7,11 +7,10 @@ defmodule PostHog.FeatureFlags.Evaluations do
   `PostHog.FeatureFlags.evaluate_flags/2` and lets you branch on multiple flags
   and enrich captured events from the same frozen result set.
 
-  Each snapshot owns a small `Agent` linked to the calling process that tracks
-  which flags were accessed via `enabled?/2` and `get_flag/2`. The Agent exits
-  with the calling process, whatever the exit reason — no manual cleanup is
-  required. A snapshot is therefore only usable while the process that created
-  it is alive; don't hand it to a process that outlives its creator.
+  Each snapshot tracks which flags were accessed via `enabled?/2` and
+  `get_flag/2` in an `:atomics` array that is garbage-collected together with
+  the snapshot. No process is started and no manual cleanup is required, and a
+  snapshot can be shared with other processes.
 
   ## Querying
 
@@ -69,7 +68,14 @@ defmodule PostHog.FeatureFlags.Evaluations do
     `errorsWhileComputingFlags`. When `true`, every event fired from this
     snapshot includes `errors_while_computing_flags` in its
     `$feature_flag_error` property.
-  - `:accessed_pid` - pid of the Agent tracking accessed keys.
+  - `:accessed` - internal. Its contents may change in any release without
+    notice. Don't read or match on it; use `accessed/1`.
+  - `:accessed_pid` - internal and deprecated. Always `nil`. It held the pid of
+    an internal Agent that tracked accessed keys and was never meant to be
+    used directly. Snapshots no longer start a process, so there is nothing to
+    stop or clean up, and the process leak this Agent caused no longer
+    happens. Kept only so existing code that reads or matches the field still
+    compiles. Don't use it; it will be removed in the next major version.
   """
   @type t :: %__MODULE__{
           supervisor_name: PostHog.supervisor_name(),
@@ -79,14 +85,21 @@ defmodule PostHog.FeatureFlags.Evaluations do
           request_id: String.t() | nil,
           evaluated_at: integer() | nil,
           errors_while_computing: boolean(),
-          accessed_pid: pid()
+          accessed: accessed(),
+          accessed_pid: nil
         }
 
-  @enforce_keys [:supervisor_name, :distinct_id, :flags, :accessed_pid]
+  @typedoc false
+  @opaque accessed :: {%{String.t() => pos_integer()}, :atomics.atomics_ref() | nil}
+
+  @enforce_keys [:supervisor_name, :distinct_id, :flags, :accessed]
   defstruct [
     :supervisor_name,
     :distinct_id,
     :flags,
+    :accessed,
+    # Deprecated and always nil. Kept for compatibility with code written for
+    # the old Agent-based tracker.
     :accessed_pid,
     :request_id,
     :evaluated_at,
@@ -111,7 +124,7 @@ defmodule PostHog.FeatureFlags.Evaluations do
       evaluated_at: Map.get(body, "evaluatedAt"),
       errors_while_computing: Map.get(body, "errorsWhileComputingFlags") == true,
       groups: normalize_groups(Map.get(body, :groups, Map.get(body, "groups", %{}))),
-      accessed_pid: start_accessed_agent()
+      accessed: new_accessed(flags)
     }
   end
 
@@ -134,7 +147,7 @@ defmodule PostHog.FeatureFlags.Evaluations do
         Map.get(metadata, :errors_while_computing, Map.get(metadata, "errorsWhileComputingFlags")) ==
           true,
       groups: normalize_groups(Map.get(metadata, :groups, Map.get(metadata, "groups", %{}))),
-      accessed_pid: start_accessed_agent()
+      accessed: new_accessed(results)
     }
   end
 
@@ -145,7 +158,7 @@ defmodule PostHog.FeatureFlags.Evaluations do
       supervisor_name: supervisor_name,
       distinct_id: "",
       flags: %{},
-      accessed_pid: start_accessed_agent()
+      accessed: new_accessed(%{})
     }
   end
 
@@ -206,14 +219,19 @@ defmodule PostHog.FeatureFlags.Evaluations do
   def keys(%__MODULE__{flags: flags}), do: flags |> Map.keys() |> Enum.sort()
 
   @doc """
-  Returns the sorted list of keys accessed via `enabled?/2` or `get_flag/2` on
-  this snapshot.
+  Returns the sorted list of keys present in this snapshot that were accessed
+  via `enabled?/2` or `get_flag/2`.
 
-  Includes keys that were accessed but absent from the snapshot.
+  Keys that were accessed but are absent from the snapshot are not included.
   """
   @spec accessed(t()) :: [String.t()]
-  def accessed(%__MODULE__{accessed_pid: pid}) do
-    pid |> Agent.get(& &1) |> MapSet.to_list() |> Enum.sort()
+  def accessed(%__MODULE__{accessed: {_indexes, nil}}), do: []
+
+  def accessed(%__MODULE__{accessed: {indexes, ref}}) do
+    indexes
+    |> Enum.filter(fn {_key, index} -> :atomics.get(ref, index) == 1 end)
+    |> Enum.map(fn {key, _index} -> key end)
+    |> Enum.sort()
   end
 
   @doc """
@@ -229,9 +247,7 @@ defmodule PostHog.FeatureFlags.Evaluations do
   """
   @spec only_accessed(t()) :: t()
   def only_accessed(%__MODULE__{flags: flags} = snapshot) do
-    accessed_set = MapSet.new(accessed(snapshot))
-    keep = flags |> Map.keys() |> Enum.filter(&MapSet.member?(accessed_set, &1))
-    clone_with(snapshot, Map.take(flags, keep))
+    clone_with(snapshot, Map.take(flags, accessed(snapshot)))
   end
 
   @doc """
@@ -275,25 +291,24 @@ defmodule PostHog.FeatureFlags.Evaluations do
     end
   end
 
-  defp start_accessed_agent do
-    # Trap exits so the Agent also stops when the caller exits with :normal.
-    # Without it, a :normal exit signal is ignored and the Agent is orphaned.
-    {:ok, pid} =
-      Agent.start_link(fn ->
-        Logger.metadata(posthog_skip_capture: true)
-        Process.flag(:trap_exit, true)
-        MapSet.new()
-      end)
+  # :atomics are garbage-collected with the snapshot, unlike a process-based
+  # tracker, which would live until its owner exits.
+  defp new_accessed(flags) when map_size(flags) == 0, do: {%{}, nil}
 
-    pid
+  defp new_accessed(flags) do
+    indexes = flags |> Map.keys() |> Enum.with_index(1) |> Map.new()
+    {indexes, :atomics.new(map_size(indexes), signed: false)}
   end
 
-  defp record_access(%__MODULE__{accessed_pid: pid}, key) do
-    Agent.update(pid, &MapSet.put(&1, key))
+  defp record_access(%__MODULE__{accessed: {indexes, ref}}, key) do
+    case Map.fetch(indexes, key) do
+      {:ok, index} -> :atomics.put(ref, index, 1)
+      :error -> :ok
+    end
   end
 
   defp clone_with(%__MODULE__{} = snapshot, flags) do
-    %{snapshot | flags: flags, accessed_pid: start_accessed_agent()}
+    %{snapshot | flags: flags, accessed: new_accessed(flags)}
   end
 
   defp fetch_and_log(%__MODULE__{flags: flags} = snapshot, key) do

@@ -52,26 +52,61 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
     }
   end
 
-  describe "access tracker lifetime" do
-    for reason <- [:normal, :shutdown, {:shutdown, :closed}] do
-      @reason reason
-      test "stops when the creating process exits with #{inspect(reason)}" do
-        test_pid = self()
+  describe "access tracking resources" do
+    test "snapshots do not start or link processes to the caller" do
+      expect(API.Mock, :request, fn _client, :post, "/flags", _opts ->
+        {:ok, stub_flags_response()}
+      end)
 
-        {creator, creator_ref} =
-          spawn_monitor(fn ->
-            send(test_pid, {:snapshot, Evaluations.empty(PostHog)})
-            receive do: (:exit -> exit(@reason))
-          end)
+      {:links, links_before} = Process.info(self(), :links)
 
-        assert_receive {:snapshot, %Evaluations{accessed_pid: agent}}
-        agent_ref = Process.monitor(agent)
+      {:ok, snapshot} = FeatureFlags.evaluate_flags("foo")
+      Evaluations.enabled?(snapshot, "boolean-flag")
+      _ = Evaluations.only(snapshot, ["variant-flag"])
+      _ = Evaluations.only_accessed(snapshot)
+      _ = Evaluations.empty(PostHog)
 
-        send(creator, :exit)
+      assert Process.info(self(), :links) == {:links, links_before}
+    end
 
-        assert_receive {:DOWN, ^creator_ref, :process, ^creator, _}
-        assert_receive {:DOWN, ^agent_ref, :process, ^agent, _}
+    test "keeps the deprecated accessed_pid field as nil" do
+      expect(API.Mock, :request, fn _client, :post, "/flags", _opts ->
+        {:ok, stub_flags_response()}
+      end)
+
+      {:ok, snapshot} = FeatureFlags.evaluate_flags("foo")
+
+      for snapshot <- [
+            snapshot,
+            Evaluations.only(snapshot, ["boolean-flag"]),
+            Evaluations.only_accessed(snapshot),
+            Evaluations.empty(PostHog)
+          ] do
+        assert %Evaluations{accessed_pid: nil} = snapshot
       end
+    end
+
+    test "snapshots stay usable after the creating process exits" do
+      expect(API.Mock, :request, fn _client, :post, "/flags", _opts ->
+        {:ok, stub_flags_response()}
+      end)
+
+      test_pid = self()
+
+      {creator, creator_ref} =
+        spawn_monitor(fn ->
+          receive do: (:go -> :ok)
+          {:ok, snapshot} = FeatureFlags.evaluate_flags("foo")
+          send(test_pid, {:snapshot, snapshot})
+        end)
+
+      allow(API.Mock, test_pid, creator)
+      send(creator, :go)
+      assert_receive {:snapshot, snapshot}
+      assert_receive {:DOWN, ^creator_ref, :process, ^creator, :normal}
+
+      assert Evaluations.enabled?(snapshot, "boolean-flag")
+      assert Evaluations.accessed(snapshot) == ["boolean-flag"]
     end
   end
 
@@ -432,6 +467,8 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
          %{snapshot: snapshot} do
       Evaluations.enabled?(snapshot, "boolean-flag")
       Evaluations.enabled?(snapshot, "missing-flag")
+
+      assert Evaluations.accessed(snapshot) == ["boolean-flag"]
 
       narrowed = Evaluations.only_accessed(snapshot)
       assert Evaluations.keys(narrowed) == ["boolean-flag"]

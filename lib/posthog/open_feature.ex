@@ -167,11 +167,7 @@ if Code.ensure_loaded?(OpenFeature.Provider) do
 
           case FeatureFlags.evaluate_flags(provider.supervisor_name, body) do
             {:ok, snapshot} ->
-              try do
-                fetch_result(provider, snapshot, key)
-              after
-                Agent.stop(snapshot.accessed_pid)
-              end
+              fetch_result(provider, snapshot, key)
 
             {:error, reason} ->
               {:error, :unexpected_error, to_exception(reason)}
