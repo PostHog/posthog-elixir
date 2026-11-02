@@ -643,8 +643,9 @@ defmodule PostHog.Emails do
   end
 
   # The client's own timeouts bound each phase, not the whole request, so the request runs in a
-  # worker that is killed at the deadline. The worker is monitored, not linked, so a caller that
-  # traps exits gets no exit message. Failures inside it come back to the caller.
+  # worker that is killed at the deadline. The worker is linked, so it dies with a caller that is
+  # killed or shut down mid-request, and monitored. Each side unlinks before it ends the worker's
+  # life, so a caller that traps exits gets no exit message. Failures come back to the caller.
   defp within_deadline(timeout_ms, fun) do
     caller = self()
     reply = make_ref()
@@ -652,10 +653,15 @@ defmodule PostHog.Emails do
     callers = [caller | Process.get(:"$callers", [])]
 
     {worker, monitor} =
-      spawn_monitor(fn ->
-        Process.put(:"$callers", callers)
-        Kernel.send(caller, {reply, run_capturing(fun)})
-      end)
+      :erlang.spawn_opt(
+        fn ->
+          Process.put(:"$callers", callers)
+          result = run_capturing(fun)
+          Process.unlink(caller)
+          Kernel.send(caller, {reply, result})
+        end,
+        [:link, :monitor]
+      )
 
     receive do
       {^reply, result} ->
@@ -666,6 +672,7 @@ defmodule PostHog.Emails do
         {:error, :worker_down}
     after
       timeout_ms ->
+        Process.unlink(worker)
         Process.exit(worker, :kill)
         # The DOWN message comes after any reply the worker sent, so both leave the mailbox here.
         receive do

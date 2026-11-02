@@ -636,6 +636,33 @@ defmodule PostHog.EmailsTest do
     end
   end
 
+  describe "send/2 when its caller dies" do
+    @tag config: [email_request_timeout_ms: 5_000]
+    test "the request stops with the caller", %{name: name} do
+      test_pid = self()
+
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        send(test_pid, {:requesting, self()})
+        Process.sleep(500)
+        send(test_pid, :request_finished)
+        accepted()
+      end)
+
+      caller =
+        spawn(fn ->
+          Process.put(:"$callers", [test_pid])
+          Emails.send(name, to: "user@example.com", template_id: @template_id)
+        end)
+
+      assert_receive {:requesting, worker}
+      worker_ref = Process.monitor(worker)
+      Process.exit(caller, :kill)
+
+      assert_receive {:DOWN, ^worker_ref, :process, ^worker, _reason}
+      refute_receive :request_finished, 700
+    end
+  end
+
   describe "send/2 replies" do
     test "keeps every field of a refusal", %{name: name} do
       expect_reply(
