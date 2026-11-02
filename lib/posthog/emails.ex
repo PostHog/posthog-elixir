@@ -95,6 +95,8 @@ defmodule PostHog.Emails do
     project.
   - `client_disabled`: the PostHog instance is not running or has no `:api_key`, so it sends
     nothing.
+  - `client_closed`: the PostHog instance stopped while a call waited to retry, so the retry
+    was not sent.
 
   An option the SDK refuses returns an error with an `invalid_*` code, such as
   `invalid_template_id`, and the name `:validation_error`, before any request.
@@ -541,6 +543,8 @@ defmodule PostHog.Emails do
          {:ok, secret_key} <- secret_key(name, operation) do
       {:ok,
        %{
+         name: name,
+         nothing_done: nothing_done,
          api_client: config.api_client,
          app_host: app_host,
          secret_key: secret_key,
@@ -560,6 +564,20 @@ defmodule PostHog.Emails do
        "client_disabled",
        "The PostHog instance #{inspect(name)} is not running or has no api_key, so #{nothing_done}."
      )}
+  end
+
+  defp check_running(%{name: name, nothing_done: nothing_done}) do
+    case PostHog.Registry.config(name) do
+      %{enabled: true} ->
+        :ok
+
+      _stopped ->
+        {:error,
+         Error.new(
+           "client_closed",
+           "The PostHog instance #{inspect(name)} stopped before the retry, so #{nothing_done}."
+         )}
+    end
   end
 
   # A custom host is often an ingestion proxy, which must not receive the secret key.
@@ -631,7 +649,7 @@ defmodule PostHog.Emails do
     %{module: module, client: client} = connection.api_client
 
     case within_deadline(connection.timeout_ms, fn ->
-           module.request(client, method, connection.app_host <> path, options)
+           call_client(module, client, method, connection.app_host <> path, options)
          end) do
       {:ok, %{status: status} = response} when is_integer(status) ->
         {:ok, status, fields(Map.get(response, :body)),
@@ -640,6 +658,16 @@ defmodule PostHog.Emails do
       {:error, _reason} ->
         {:error, Error.new("network_error", "The request to PostHog failed.")}
     end
+  end
+
+  # Finch raises, rather than returns, when no pooled connection frees up in time.
+  defp call_client(module, client, method, url, options) do
+    module.request(client, method, url, options)
+  rescue
+    exception in RuntimeError ->
+      if String.starts_with?(exception.message, "Finch was unable to provide a connection"),
+        do: {:error, exception},
+        else: reraise(exception, __STACKTRACE__)
   end
 
   # The client's own timeouts bound each phase, not the whole request, so the request runs in a
@@ -731,8 +759,14 @@ defmodule PostHog.Emails do
 
           delay_ms ->
             connection.sleep.(delay_ms)
-            with_retries(connection, max_retries, attempt_once, attempt + 1)
+            retry(connection, max_retries, attempt_once, attempt + 1)
         end
+    end
+  end
+
+  defp retry(connection, max_retries, attempt_once, attempt) do
+    with :ok <- check_running(connection) do
+      with_retries(connection, max_retries, attempt_once, attempt)
     end
   end
 

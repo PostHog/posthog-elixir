@@ -46,7 +46,10 @@ defmodule PostHog.EmailsTest do
       ]
       |> Keyword.merge(context[:config] || [])
       |> PostHog.Config.validate!()
-      |> Map.put(:email_sleep, fn ms -> send(test_pid, {:slept, ms}) end)
+      |> Map.put(:email_sleep, fn ms ->
+        send(test_pid, {:slept, ms})
+        if context[:stop_instance_on_sleep], do: stop_supervised!(context.test)
+      end)
 
     start_link_supervised!({PostHog.Supervisor, config})
     %{name: context.test}
@@ -597,6 +600,30 @@ defmodule PostHog.EmailsTest do
                Emails.send(name, to: "user@example.com", template_id: @template_id)
 
       refute_received {:slept, _}
+    end
+
+    test "retries a connection pool checkout timeout as a network error", %{name: name} do
+      expect(API.Mock, :request, 2, fn _client, _method, _url, _opts ->
+        raise "Finch was unable to provide a connection within the timeout due to excess queuing"
+      end)
+
+      expect_reply(accepted())
+
+      assert {:ok, %Emails.SendResult{id: @message_id}} =
+               Emails.send(name, to: "user@example.com", template_id: @template_id)
+
+      assert_received {:slept, _}
+      assert_received {:slept, _}
+    end
+
+    @tag stop_instance_on_sleep: true
+    test "sends no retry after the instance stops", %{name: name} do
+      expect_reply(refused(503, %{"code" => "service_unavailable"}))
+
+      assert {:error, %Error{code: "client_closed"}} =
+               Emails.send(name, to: "user@example.com", template_id: @template_id)
+
+      assert_received {:slept, _}
     end
 
     @tag capture_log: true
