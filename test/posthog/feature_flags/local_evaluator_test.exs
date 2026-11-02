@@ -31,6 +31,16 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
     }
   end
 
+  defp depends_on(key, value \\ true) do
+    %{
+      "type" => "flag",
+      "key" => key,
+      "operator" => "flag_evaluates_to",
+      "value" => value,
+      "dependency_chain" => [key]
+    }
+  end
+
   defp evaluate(flag, context \\ %{}) do
     context = Map.merge(%{distinct_id: "user", person_properties: %{}}, context)
     LocalEvaluator.evaluate(snapshot([flag]), context, [flag["key"]])
@@ -483,16 +493,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
       group = put_in(flag("group", [condition]), ["filters", "aggregation_group_type_index"], 0)
       cohort = flag("cohort", [%{"type" => "cohort", "value" => 1}])
 
-      dependency =
-        flag("dependency", [
-          %{
-            "type" => "flag",
-            "key" => "person",
-            "operator" => "flag_evaluates_to",
-            "value" => true,
-            "dependency_chain" => ["person"]
-          }
-        ])
+      dependency = flag("dependency", [depends_on("person")])
 
       definitions =
         versioned_snapshot([person, group, cohort, dependency], version)
@@ -1052,22 +1053,11 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
     assert MapSet.member?(missing.unresolved, "cohort")
 
     base = flag("base")
-
-    dependency = %{
-      "type" => "flag",
-      "key" => "base",
-      "operator" => "flag_evaluates_to",
-      "value" => true,
-      "dependency_chain" => ["base"]
-    }
-
-    dependent = flag("dependent", [dependency])
+    dependent = flag("dependent", [depends_on("base")])
     result = LocalEvaluator.evaluate(snapshot([base, dependent]), %{distinct_id: "u"})
     assert result.results["dependent"].enabled
 
-    a_dep = %{dependency | "key" => "b", "dependency_chain" => ["b"]}
-    b_dep = %{dependency | "key" => "a", "dependency_chain" => ["a"]}
-    cycle = snapshot([flag("a", [a_dep]), flag("b", [b_dep])])
+    cycle = snapshot([flag("a", [depends_on("b")]), flag("b", [depends_on("a")])])
     result = LocalEvaluator.evaluate(cycle, %{distinct_id: "u"})
     assert MapSet.equal?(result.unresolved, MapSet.new(["a", "b"]))
   end
@@ -1128,21 +1118,8 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
         "variants" => [%{"key" => "control", "rollout_percentage" => 100}]
       })
 
-    false_dependency = %{
-      "type" => "flag",
-      "key" => "false-flag",
-      "operator" => "flag_evaluates_to",
-      "value" => false,
-      "dependency_chain" => ["false-flag"]
-    }
-
-    variant_dependency = %{
-      "type" => "flag",
-      "key" => "variant",
-      "operator" => "flag_evaluates_to",
-      "value" => "control",
-      "dependency_chain" => ["variant"]
-    }
+    false_dependency = depends_on("false-flag", false)
+    variant_dependency = depends_on("variant", "control")
 
     repeated = flag("repeated", [variant_dependency, variant_dependency])
 
@@ -1187,16 +1164,6 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
     static_cohort = %{"type" => "cohort", "value" => 999}
     # to_string/1 raises for a map, which no filter check expects.
     raising_cohort = %{"type" => "cohort", "value" => %{}}
-
-    depends_on = fn key ->
-      %{
-        "type" => "flag",
-        "key" => key,
-        "operator" => "flag_evaluates_to",
-        "value" => true,
-        "dependency_chain" => [key]
-      }
-    end
 
     conditions = fn conditions ->
       groups = Enum.map(conditions, &%{"properties" => &1, "rollout_percentage" => 100})
@@ -1249,21 +1216,20 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
       {"no group key", [group.([])], %{}, {:reason, :missing_context}},
       {"no group key, static cohort", [group.([static_cohort])], %{},
        {:reason, :unsupported_definition}},
-      {"dependency without a definition", [flag("checkout", [depends_on.("absent")])], %{},
+      {"dependency without a definition", [flag("checkout", [depends_on("absent")])], %{},
        {:reason, :unsupported_definition}},
       {"unresolved dependency, dependency without a definition",
-       [continuity.("dep"), flag("checkout", [depends_on.("dep"), depends_on.("absent")])], %{},
+       [continuity.("dep"), flag("checkout", [depends_on("dep"), depends_on("absent")])], %{},
        {:reason, :unsupported_definition}},
       {"dependency with experience continuity",
-       [continuity.("dep"), flag("checkout", [depends_on.("dep")])], %{},
+       [continuity.("dep"), flag("checkout", [depends_on("dep")])], %{},
        {:reason, :unresolved_dependency}},
       {"dependency with experience continuity, then a catch-all",
-       [continuity.("dep"), a_or_b.([depends_on.("dep")])], %{}, {:value, "b"}},
+       [continuity.("dep"), a_or_b.([depends_on("dep")])], %{}, {:value, "b"}},
       {"dependency that requires the server, then a catch-all",
-       [server_dependency, a_or_b.([depends_on.("dep")])], %{},
-       {:reason, :unresolved_dependency}},
+       [server_dependency, a_or_b.([depends_on("dep")])], %{}, {:reason, :unresolved_dependency}},
       {"dependency that requires the server, then an unknown operator",
-       [server_dependency, conditions.([[depends_on.("dep")], [unknown_operator]])], plan,
+       [server_dependency, conditions.([[depends_on("dep")], [unknown_operator]])], plan,
        {:reason, :unsupported_definition}},
       {"cohort with a dependency that requires the server and an unknown operator",
        [server_dependency, flag("checkout", [%{"type" => "cohort", "value" => 1}])], plan,
@@ -1276,7 +1242,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
        {:reason, nil}}
     ]
 
-    cohort = %{"type" => "AND", "values" => [depends_on.("dep"), unknown_operator]}
+    cohort = %{"type" => "AND", "values" => [depends_on("dep"), unknown_operator]}
     extras = %{group_type_mapping: %{"0" => "organization"}, cohorts: %{"1" => cohort}}
 
     for {name, flags, context, expected} <- cases do

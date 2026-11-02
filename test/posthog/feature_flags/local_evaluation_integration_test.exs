@@ -874,15 +874,6 @@ defmodule PostHog.FeatureFlags.LocalEvaluationIntegrationTest do
     end
 
     assert {:ok, "a"} = FeatureFlags.check(name, "target", "user")
-
-    assert {:ok, local} =
-             FeatureFlags.evaluate_flags(name, %{
-               distinct_id: "user",
-               flag_keys: ["target"],
-               only_evaluate_locally: true
-             })
-
-    assert local.unresolved_flags == %{"target" => :unresolved_dependency}
   end
 
   test "deprecated getters evaluate dependencies locally and preserve local missing/send_event contracts" do

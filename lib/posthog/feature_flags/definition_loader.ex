@@ -167,7 +167,8 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
           group_type_mapping: map(),
           cohorts: map(),
           property_matching_version: term(),
-          minimal_flag_called_events: boolean()
+          minimal_flag_called_events: boolean(),
+          definition_reasons: %{String.t() => atom()}
         }
 
   def child_spec(opts) do
@@ -512,9 +513,11 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
 
   # A 304 keeps the installed definitions, so only an install can change what to warn about.
   defp install(state, snapshot, etag) do
+    reasons = PostHog.FeatureFlags.LocalEvaluator.definition_reasons(snapshot)
+
     state
     |> Map.put(:etag, etag)
-    |> successful_definition_refresh(snapshot)
+    |> successful_definition_refresh(Map.put(snapshot, :definition_reasons, reasons))
     |> warn_unresolvable_flags()
   end
 
@@ -531,12 +534,13 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
     }
   end
 
-  defp warn_unresolvable_flags(%{definitions: nil} = state), do: state
-
-  defp warn_unresolvable_flags(state) do
+  defp warn_unresolvable_flags(%{definitions: definitions} = state) do
     # Rebuilt from the current definitions, so a flag that is deleted or becomes resolvable
     # warns again if it later returns to a definition local evaluation can't resolve.
-    unresolvable = unresolvable_flags(state.definitions)
+    unresolvable =
+      Map.new(definitions.definition_reasons, fn {key, reason} ->
+        {key, {reason, definitions.flags_by_key[key]}}
+      end)
 
     unresolvable
     |> Enum.reject(fn {key, entry} -> Map.get(state.warned_unresolvable_flags, key) == entry end)
@@ -547,22 +551,6 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
   rescue
     # The warning is a diagnostic. It must never stop definitions from loading.
     _exception -> state
-  end
-
-  defp unresolvable_flags(definitions) do
-    Enum.reduce(definitions.flags_by_key, %{}, fn {key, flag}, unresolvable ->
-      case definition_unresolved_reason(flag, definitions) do
-        nil -> unresolvable
-        reason -> Map.put(unresolvable, key, {reason, flag})
-      end
-    end)
-  end
-
-  defp definition_unresolved_reason(flag, definitions) do
-    PostHog.FeatureFlags.LocalEvaluator.definition_unresolved_reason(flag, definitions)
-  rescue
-    # Evaluation reports a definition this malformed when the flag is used.
-    _exception -> nil
   end
 
   defp unresolvable_flag_message(key, :experience_continuity) do

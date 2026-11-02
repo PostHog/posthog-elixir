@@ -170,20 +170,21 @@ defmodule PostHog.FeatureFlags.DefinitionLoaderTest do
       "filters" => %{"groups" => [%{"properties" => [unreadable]}]}
     }
 
-    depends_on = fn key, chain ->
-      dependency = %{
-        "type" => "flag",
-        "key" => key,
-        "operator" => "flag_evaluates_to",
-        "value" => true,
-        "dependency_chain" => chain
-      }
-
-      %{"active" => true, "filters" => %{"groups" => [%{"properties" => [dependency]}]}}
-    end
-
     # The flags service marks a dependency cycle with an empty chain.
-    cycle = Map.put(depends_on.("empty-chain", []), "key", "empty-chain")
+    empty_chain = %{
+      "type" => "flag",
+      "key" => "empty-chain",
+      "operator" => "flag_evaluates_to",
+      "value" => true,
+      "dependency_chain" => []
+    }
+
+    cycle = %{
+      "key" => "empty-chain",
+      "active" => true,
+      "filters" => %{"groups" => [%{"properties" => [empty_chain]}]}
+    }
+
     server_regex = %{"key" => "plan", "operator" => "regex", "value" => "(*FAIL)"}
 
     regex = %{
@@ -232,8 +233,7 @@ defmodule PostHog.FeatureFlags.DefinitionLoaderTest do
 
     expect(PostHog.API.Mock, :request, 4, fn :stub_client, :get, "/flags/definitions", _opts ->
       case Agent.get_and_update(counter, &{&1, &1 + 1}) do
-        0 -> {:ok, %{status: 200, body: body.(checkout), headers: %{}}}
-        1 -> {:ok, %{status: 200, body: body.(checkout), headers: %{}}}
+        n when n in [0, 1] -> {:ok, %{status: 200, body: body.(checkout), headers: %{}}}
         2 -> {:ok, %{status: 304, body: nil, headers: %{}}}
         3 -> {:ok, %{status: 200, body: body.(Map.put(checkout, "version", 2)), headers: %{}}}
       end
