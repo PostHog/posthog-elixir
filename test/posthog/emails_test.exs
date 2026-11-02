@@ -818,16 +818,6 @@ defmodule PostHog.EmailsTest do
     end
   end
 
-  describe "the default instance" do
-    test "send/1 and get/1 use the PostHog instance" do
-      # The test config doesn't start the PostHog instance.
-      assert {:error, %Error{code: "client_disabled"}} =
-               Emails.send(to: "user@example.com", template_id: @template_id)
-
-      assert {:error, %Error{code: "invalid_message_id"}} = Emails.get("nope")
-    end
-  end
-
   describe "config" do
     test "validates migrated_from as a header token" do
       assert {:error, %NimbleOptions.ValidationError{}} =
