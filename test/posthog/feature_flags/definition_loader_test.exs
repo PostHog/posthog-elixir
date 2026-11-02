@@ -192,7 +192,43 @@ defmodule PostHog.FeatureFlags.DefinitionLoaderTest do
       "filters" => %{"groups" => [%{"properties" => [server_regex]}]}
     }
 
-    body = fn checkout -> %{envelope() | "flags" => [checkout, malformed, cycle, regex]} end
+    object_search = %{
+      "key" => "object-search",
+      "active" => true,
+      "filters" => %{
+        "groups" => [
+          %{"properties" => [%{"key" => "plan", "operator" => "icontains", "value" => %{}}]}
+        ]
+      }
+    }
+
+    # Each cohort references the two before it, so checking every path would take minutes.
+    dag_cohorts =
+      Map.new(0..40, fn index ->
+        values =
+          if index < 2,
+            do: [%{"key" => "plan", "value" => "pro"}],
+            else: [
+              %{"type" => "cohort", "value" => index - 1},
+              %{"type" => "cohort", "value" => index - 2}
+            ]
+
+        {to_string(index), %{"type" => "AND", "values" => values}}
+      end)
+
+    dag = %{
+      "key" => "shared-cohorts",
+      "active" => true,
+      "filters" => %{"groups" => [%{"properties" => [%{"type" => "cohort", "value" => 40}]}]}
+    }
+
+    body = fn checkout ->
+      %{
+        envelope()
+        | "flags" => [checkout, malformed, cycle, regex, object_search, dag],
+          "cohorts" => dag_cohorts
+      }
+    end
 
     expect(PostHog.API.Mock, :request, 4, fn :stub_client, :get, "/flags/definitions", _opts ->
       case Agent.get_and_update(counter, &{&1, &1 + 1}) do
@@ -207,7 +243,7 @@ defmodule PostHog.FeatureFlags.DefinitionLoaderTest do
     warnings = &(~r/"checkout".*\(reason: experience_continuity\)/ |> Regex.scan(&1) |> length())
 
     unsupported_warnings =
-      &(~r/"(empty-chain|server-regex)".*\(reason: unsupported_definition\)/
+      &(~r/"([a-z-]+)".*\(reason: unsupported_definition\)/
         |> Regex.scan(&1, capture: :all_but_first)
         |> List.flatten()
         |> Enum.sort())
@@ -219,7 +255,7 @@ defmodule PostHog.FeatureFlags.DefinitionLoaderTest do
       end)
 
     assert warnings.(log) == 1
-    assert unsupported_warnings.(log) == ["empty-chain", "server-regex"]
+    assert unsupported_warnings.(log) == ["empty-chain", "object-search", "server-regex"]
 
     unchanged = capture_log(fn -> for _ <- 1..2, do: DefinitionLoader.refresh(name) end)
     assert warnings.(unchanged) == 0

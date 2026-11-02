@@ -11,7 +11,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
 
   @long_scale 0xFFFFFFFFFFFFFFF
   @semver_operators ~w(semver_eq semver_neq semver_gt semver_gte semver_lt semver_lte semver_tilde semver_caret semver_wildcard)
-  @text_operators ~w(exact is_not is_set is_not_set icontains not_icontains starts_with not_starts_with ends_with not_ends_with)
+  @search_operators ~w(icontains not_icontains starts_with not_starts_with ends_with not_ends_with)
 
   @type reason :: PostHog.FeatureFlags.Evaluations.unresolved_reason()
 
@@ -111,56 +111,62 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
     rollout = value(condition, "rollout_percentage")
 
     not is_list(properties) or not (is_nil(rollout) or is_number(rollout)) or
-      Enum.any?(properties, &unsupported_property?(&1, definitions, false, MapSet.new()))
+      Enum.any?(properties, &elem(unsupported_property?(&1, definitions, false, MapSet.new()), 0))
   end
 
   defp unsupported_condition?(_condition, _definitions), do: true
 
+  # Returns the cohorts visited so far with the result. A cohort seen before needs no second
+  # check: it was supported, or the check already stopped at the first unsupported filter.
+  # Without this, cohorts that share sub-cohorts are checked once per path, exponentially.
   defp unsupported_property?(property, definitions, cohort?, visited) when is_map(property) do
     case value(property, "type") do
-      "flag" -> dependency_filter(property, definitions) == :unsupported
+      "flag" -> {dependency_filter(property, definitions) == :unsupported, visited}
       "cohort" -> unsupported_cohort?(property, definitions, visited)
-      _ -> not filter_supported?(property, DateTime.utc_now(), cohort?)
+      _ -> {not filter_supported?(property, DateTime.utc_now(), cohort?), visited}
     end
   end
 
-  defp unsupported_property?(_property, _definitions, _cohort?, _visited), do: true
+  defp unsupported_property?(_property, _definitions, _cohort?, visited), do: {true, visited}
 
   defp unsupported_cohort?(property, definitions, visited) do
     cohort_id = to_string(value(property, "value"))
 
     cond do
       (value(property, "operator") || "exact") not in ["exact", "in", "not_in"] ->
-        true
+        {true, visited}
 
       MapSet.member?(visited, cohort_id) ->
-        false
+        {false, visited}
 
       true ->
         case map_fetch(definitions.cohorts, cohort_id) do
-          :error -> true
+          :error -> {true, visited}
           {:ok, group} -> unsupported_group?(group, definitions, MapSet.put(visited, cohort_id))
         end
     end
   end
 
-  defp unsupported_group?(group, _definitions, _visited) when group == %{}, do: false
+  defp unsupported_group?(group, _definitions, visited) when group == %{}, do: {false, visited}
 
   defp unsupported_group?(group, definitions, visited) when is_map(group) do
     values = value(group, "values")
 
     if value(group, "type") in ["AND", "OR"] and is_list(values) do
-      Enum.any?(values, fn entry ->
-        if is_map(entry) and (entry == %{} or has_key?(entry, "values")),
-          do: unsupported_group?(entry, definitions, visited),
-          else: unsupported_property?(entry, definitions, true, visited)
+      Enum.reduce_while(values, {false, visited}, fn entry, {false, visited} ->
+        result =
+          if is_map(entry) and (entry == %{} or has_key?(entry, "values")),
+            do: unsupported_group?(entry, definitions, visited),
+            else: unsupported_property?(entry, definitions, true, visited)
+
+        if elem(result, 0), do: {:halt, result}, else: {:cont, result}
       end)
     else
-      true
+      {true, visited}
     end
   end
 
-  defp unsupported_group?(_group, _definitions, _visited), do: true
+  defp unsupported_group?(_group, _definitions, visited), do: {true, visited}
 
   @doc false
   @spec hash(String.t(), String.t(), String.t()) :: float()
@@ -855,8 +861,12 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
     filter = value(property, "value")
 
     case value(property, "operator") || "exact" do
-      operator when operator in @text_operators ->
+      operator when operator in ["exact", "is_not", "is_set", "is_not_set"] ->
         true
+
+      # Evaluation compares the filter as a string, which raises for a map, for example.
+      operator when operator in @search_operators ->
+        is_binary(to_string(filter))
 
       operator when operator in ["regex", "not_regex"] ->
         case compile_regex(to_string(filter)) do

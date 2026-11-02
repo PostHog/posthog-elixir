@@ -1183,6 +1183,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
     free_plan = %{"key" => "plan", "operator" => "exact", "value" => "free"}
     unknown_operator = %{"key" => "plan", "operator" => "future", "value" => "pro"}
     bad_number = %{"key" => "age", "operator" => "gt", "value" => "not-a-number"}
+    object_search = %{"key" => "plan", "operator" => "icontains", "value" => %{}}
     static_cohort = %{"type" => "cohort", "value" => 999}
     # to_string/1 raises for a map, which no filter check expects.
     raising_cohort = %{"type" => "cohort", "value" => %{}}
@@ -1233,6 +1234,8 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
       {"unknown operator, property missing", [flag("checkout", [unknown_operator])], %{},
        {:reason, :unsupported_definition}},
       {"malformed value, property missing", [flag("checkout", [bad_number])], %{},
+       {:reason, :unsupported_definition}},
+      {"search value that is not a string", [flag("checkout", [object_search])], plan,
        {:reason, :unsupported_definition}},
       {"static cohort", [flag("checkout", [static_cohort])], %{},
        {:reason, :unsupported_definition}},
