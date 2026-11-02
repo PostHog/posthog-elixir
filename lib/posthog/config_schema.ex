@@ -43,9 +43,43 @@ defmodule PostHog.Config.Schema do
         type: {:or, [:string, nil]},
         default: nil,
         doc: """
-        A privileged project secret (`phs_`) or appropriately scoped personal API key (`phx_`)
-        required only to fetch local feature flag definitions directly from PostHog. A configured
+        A privileged project secret (`phs_`) or appropriately scoped personal API key (`phx_`).
+        Fetches local feature flag definitions directly from PostHog. A configured
         `flag_definition_cache_provider` can supply definitions without this key.
+        `PostHog.Emails` needs a project secret API key with the `hog_flow:write` scope to send
+        email, or `hog_flow:read` to read an email's status.
+        """
+      ],
+      app_host: [
+        type: {:or, [:string, nil]},
+        default: nil,
+        doc: """
+        The PostHog app host that `PostHog.Emails` sends to, such as `https://posthog.example.com`
+        for a self-hosted instance. Without it, a PostHog Cloud `api_host` maps to its region's app
+        host, and any other `api_host` makes email calls fail with `missing_app_host`, because a
+        reverse proxy for ingestion must not receive the secret key.
+        """
+      ],
+      email_request_timeout_ms: [
+        type: :pos_integer,
+        default: 15_000,
+        doc: "Maximum time in milliseconds to wait for each `PostHog.Emails` request."
+      ],
+      email_request_max_retries: [
+        type: :non_neg_integer,
+        default: 2,
+        doc: """
+        Number of retries for a `PostHog.Emails` request after a network error, a rate limit, an
+        idempotency key still in flight, or an unavailable service. Set to 0 when a job runner
+        already retries the send.
+        """
+      ],
+      migrated_from: [
+        type: {:or, [{:custom, __MODULE__, :header_token, []}, nil]},
+        default: nil,
+        doc: """
+        The email provider you moved from, such as `"resend"`. Sent with every `PostHog.Emails`
+        request as `X-PostHog-Migrated-From`.
         """
       ],
       enable_local_evaluation: [
@@ -150,6 +184,17 @@ defmodule PostHog.Config.Schema do
       ]
     ] ++ shared()
   end
+
+  @doc false
+  def header_token(value) when is_binary(value) do
+    if value =~ ~r/\A[\x21-\x7e]+\z/ do
+      {:ok, value}
+    else
+      {:error, "expected visible ASCII characters without spaces, got: #{inspect(value)}"}
+    end
+  end
+
+  def header_token(value), do: {:error, "expected a string, got: #{inspect(value)}"}
 
   def convenience do
     [

@@ -15,6 +15,16 @@ defmodule PostHog.Registry do
     ArgumentError -> disabled_config(supervisor_name)
   end
 
+  # The secret key stays out of `config/1`, so it never shows up where the config is read or logged.
+  def secret_key(supervisor_name) do
+    case Registry.meta(registry_name(supervisor_name), :secret_key) do
+      {:ok, secret_key} -> secret_key
+      :error -> nil
+    end
+  rescue
+    ArgumentError -> nil
+  end
+
   def disabled_config(supervisor_name) do
     %{
       supervisor_name: supervisor_name,

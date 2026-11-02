@@ -54,6 +54,13 @@ defmodule PostHog.MixProject do
         "CONTRIBUTING.md"
       ],
       groups_for_modules: [
+        Emails: [
+          PostHog.Emails,
+          PostHog.Emails.Error,
+          PostHog.Emails.SendResult,
+          PostHog.Emails.Status,
+          PostHog.Emails.Warning
+        ],
         Integrations: [PostHog.Integrations.Plug, PostHog.Integrations.LLMAnalytics.Req],
         Testing: [PostHog.Test]
       ],
