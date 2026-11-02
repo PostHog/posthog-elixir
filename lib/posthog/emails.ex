@@ -643,9 +643,9 @@ defmodule PostHog.Emails do
   end
 
   # The client's own timeouts bound each phase, not the whole request, so the request runs in a
-  # worker that is killed at the deadline. The worker is linked, so it dies with a caller that is
-  # killed or shut down mid-request, and monitored. Each side unlinks before it ends the worker's
-  # life, so a caller that traps exits gets no exit message. Failures come back to the caller.
+  # monitored worker that is killed at the deadline. The worker is not linked, so its failure comes
+  # back as an error rather than killing the caller, and a caller that traps exits gets no exit
+  # message. A watchdog kills the worker when the caller dies, so the request ends with its caller.
   defp within_deadline(timeout_ms, fun) do
     caller = self()
     reply = make_ref()
@@ -653,15 +653,12 @@ defmodule PostHog.Emails do
     callers = [caller | Process.get(:"$callers", [])]
 
     {worker, monitor} =
-      :erlang.spawn_opt(
-        fn ->
-          Process.put(:"$callers", callers)
-          result = run_capturing(fun)
-          Process.unlink(caller)
-          Kernel.send(caller, {reply, result})
-        end,
-        [:link, :monitor]
-      )
+      spawn_monitor(fn ->
+        worker = self()
+        spawn(fn -> watch(caller, worker) end)
+        Process.put(:"$callers", callers)
+        Kernel.send(caller, {reply, run_capturing(fun)})
+      end)
 
     receive do
       {^reply, result} ->
@@ -672,7 +669,6 @@ defmodule PostHog.Emails do
         {:error, :worker_down}
     after
       timeout_ms ->
-        Process.unlink(worker)
         Process.exit(worker, :kill)
         # The DOWN message comes after any reply the worker sent, so both leave the mailbox here.
         receive do
@@ -686,6 +682,17 @@ defmodule PostHog.Emails do
         end
 
         {:error, :timeout}
+    end
+  end
+
+  # Monitoring a caller that is already gone delivers DOWN at once, so no window is missed.
+  defp watch(caller, worker) do
+    caller_monitor = Process.monitor(caller)
+    worker_monitor = Process.monitor(worker)
+
+    receive do
+      {:DOWN, ^caller_monitor, :process, ^caller, _reason} -> Process.exit(worker, :kill)
+      {:DOWN, ^worker_monitor, :process, ^worker, _reason} -> :ok
     end
   end
 

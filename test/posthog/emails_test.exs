@@ -663,6 +663,25 @@ defmodule PostHog.EmailsTest do
     end
   end
 
+  describe "send/2 when its request worker dies" do
+    test "returns network_error and leaves the caller running", %{name: name} do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        Process.exit(self(), :kill)
+      end)
+
+      task =
+        Task.async(fn ->
+          result =
+            Emails.send(name, to: "user@example.com", template_id: @template_id, max_retries: 0)
+
+          Process.sleep(50)
+          {result, Process.info(self(), :messages)}
+        end)
+
+      assert {{:error, %Error{code: "network_error"}}, {:messages, []}} = Task.await(task)
+    end
+  end
+
   describe "send/2 replies" do
     test "keeps every field of a refusal", %{name: name} do
       expect_reply(
