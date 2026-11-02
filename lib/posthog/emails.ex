@@ -79,7 +79,8 @@ defmodule PostHog.Emails do
   already retries the send, pass `max_retries: 0` and an `:idempotency_key` that names the
   email, such as `"welcome:user_123"`. A generated key doesn't survive a job retry.
 
-  Sends and status reads run in the calling process. The SDK keeps no email queue.
+  Sends and status reads block the calling process until they finish. The SDK keeps no email
+  queue.
 
   ## Errors
 
@@ -616,24 +617,51 @@ defmodule PostHog.Emails do
   # Requests
 
   defp request(connection, method, path, headers, body) do
+    # The SDK parses the body itself, so a malformed acceptance stays an api_error with its status.
     options =
       [
         headers: headers,
         retry: false,
         redirect: false,
         compress_body: false,
+        decode_body: false,
         receive_timeout: connection.timeout_ms
       ] ++ if(body, do: [body: body], else: [])
 
     %{module: module, client: client} = connection.api_client
 
-    case module.request(client, method, connection.app_host <> path, options) do
+    case within_deadline(connection.timeout_ms, fn ->
+           module.request(client, method, connection.app_host <> path, options)
+         end) do
       {:ok, %{status: status} = response} when is_integer(status) ->
         {:ok, status, fields(Map.get(response, :body)),
          retry_after_ms(Map.get(response, :headers))}
 
       {:error, _reason} ->
         {:error, Error.new("network_error", "The request to PostHog failed.")}
+    end
+  end
+
+  # The client's own timeouts bound each phase, not the whole request, so the request runs in a
+  # task that is stopped at the deadline. Failures inside it come back to the caller.
+  defp within_deadline(timeout_ms, fun) do
+    task =
+      Task.async(fn ->
+        try do
+          {:returned, fun.()}
+        rescue
+          exception -> {:raised, exception, __STACKTRACE__}
+        catch
+          kind, reason -> {:caught, kind, reason, __STACKTRACE__}
+        end
+      end)
+
+    case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, {:returned, result}} -> result
+      {:ok, {:raised, exception, stacktrace}} -> reraise exception, stacktrace
+      {:ok, {:caught, kind, reason, stacktrace}} -> :erlang.raise(kind, reason, stacktrace)
+      # Stopped at the deadline, or ended without a reply.
+      _timeout_or_exit -> {:error, :timeout}
     end
   end
 

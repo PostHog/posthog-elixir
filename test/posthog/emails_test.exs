@@ -1,3 +1,20 @@
+defmodule PostHog.EmailsTest.ReqTestClient do
+  @moduledoc false
+  # The default client, with Req.Test in place of the network.
+  @behaviour PostHog.API.Client
+
+  alias PostHog.API.Client
+
+  @impl true
+  def client(api_key, api_host) do
+    default = Client.client(api_key, api_host)
+    %{default | client: Req.merge(default.client, plug: {Req.Test, __MODULE__})}
+  end
+
+  @impl true
+  defdelegate request(client, method, url, opts), to: Client
+end
+
 defmodule PostHog.EmailsTest do
   use ExUnit.Case, async: true
 
@@ -333,7 +350,7 @@ defmodule PostHog.EmailsTest do
       assert header(opts, "content-type") == "application/json"
       assert header(opts, "accept") == "application/json"
       assert header(opts, "idempotency-key") == "welcome:user_123"
-      assert header(opts, "user-agent") == PostHog.API.Client.user_agent()
+      assert header(opts, "user-agent") == API.Client.user_agent()
       assert header(opts, "x-posthog-migrated-from") == nil
       assert opts[:retry] == false
       assert opts[:redirect] == false
@@ -741,6 +758,81 @@ defmodule PostHog.EmailsTest do
     test "validates migrated_from as a header token" do
       assert {:error, %NimbleOptions.ValidationError{}} =
                PostHog.Config.validate(api_key: "phc", migrated_from: "re send")
+    end
+
+    test "refuses an app_host that is not an absolute HTTP(S) URL" do
+      for app_host <- ["posthog.example.com", "/", "ftp://posthog.example.com", "https://"] do
+        assert {:error, %NimbleOptions.ValidationError{key: :app_host}} =
+                 PostHog.Config.validate(api_key: "phc", app_host: app_host)
+      end
+
+      assert {:ok, %{app_host: "http://localhost:8010"}} =
+               PostHog.Config.validate(api_key: "phc", app_host: " http://localhost:8010 ")
+    end
+  end
+
+  describe "through the default Req client" do
+    @describetag config: [api_client_module: PostHog.EmailsTest.ReqTestClient]
+
+    test "an acceptance with malformed JSON is api_error with its status, not retried", %{
+      name: name
+    } do
+      Req.Test.expect(__MODULE__.ReqTestClient, fn conn ->
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.send_resp(202, "{not json")
+      end)
+
+      assert {:error, %Error{code: "api_error", status_code: 202}} =
+               Emails.send(name, to: "user@example.com", template_id: @template_id)
+
+      refute_received {:slept, _}
+    end
+
+    test "sends the body as is, without the project API key", %{name: name} do
+      test_pid = self()
+
+      Req.Test.expect(__MODULE__.ReqTestClient, fn conn ->
+        {:ok, body, conn} = Plug.Conn.read_body(conn)
+        send(test_pid, {:raw, conn.method, conn.host, conn.request_path, conn.req_headers, body})
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.send_resp(202, ~s({"message_id": "#{@message_id}"}))
+      end)
+
+      assert {:ok, %Emails.SendResult{id: @message_id}} =
+               Emails.send(name, to: "user@example.com", template_id: @template_id)
+
+      assert_received {:raw, "POST", "us.posthog.com",
+                       "/api/projects/@current/messaging/send/email/", headers, body}
+
+      refute Map.has_key?(Jason.decode!(body), "api_key")
+      assert {"content-encoding", "gzip"} not in headers
+
+      assert Enum.count(headers, fn {name, _value} -> name == "user-agent" end) == 1
+    end
+
+    @tag config: [
+           api_client_module: PostHog.EmailsTest.ReqTestClient,
+           email_request_timeout_ms: 50
+         ]
+    test "a request that outlasts the timeout is a network error at the deadline", %{name: name} do
+      Req.Test.expect(__MODULE__.ReqTestClient, fn conn ->
+        Process.sleep(2_000)
+        Plug.Conn.send_resp(conn, 202, "{}")
+      end)
+
+      started = System.monotonic_time(:millisecond)
+
+      assert {:error, %Error{code: "network_error", name: :service_unavailable}} =
+               Emails.send(name,
+                 to: "user@example.com",
+                 template_id: @template_id,
+                 max_retries: 0
+               )
+
+      assert System.monotonic_time(:millisecond) - started < 1_000
     end
   end
 end

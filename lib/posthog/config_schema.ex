@@ -51,7 +51,7 @@ defmodule PostHog.Config.Schema do
         """
       ],
       app_host: [
-        type: {:or, [:string, nil]},
+        type: {:or, [{:custom, __MODULE__, :http_url, []}, nil]},
         default: nil,
         doc: """
         The PostHog app host that `PostHog.Emails` sends to, such as `https://posthog.example.com`
@@ -184,6 +184,20 @@ defmodule PostHog.Config.Schema do
       ]
     ] ++ shared()
   end
+
+  @doc false
+  def http_url(value) when is_binary(value) do
+    case URI.parse(value) do
+      %URI{scheme: scheme, host: host}
+      when scheme in ["http", "https"] and host not in [nil, ""] ->
+        {:ok, value}
+
+      _other ->
+        {:error, "expected an absolute http or https URL, got: #{inspect(value)}"}
+    end
+  end
+
+  def http_url(value), do: {:error, "expected a string, got: #{inspect(value)}"}
 
   @doc false
   def header_token(value) when is_binary(value) do
