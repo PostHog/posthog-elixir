@@ -608,6 +608,34 @@ defmodule PostHog.EmailsTest do
     end
   end
 
+  describe "send/2 in a caller that traps exits" do
+    @tag config: [email_request_timeout_ms: 50]
+    test "leaves the caller's mailbox clean after a reply and after a timeout", %{name: name} do
+      expect_reply(accepted())
+
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        Process.sleep(1_000)
+        accepted()
+      end)
+
+      task =
+        Task.async(fn ->
+          Process.flag(:trap_exit, true)
+          sent = Emails.send(name, to: "user@example.com", template_id: @template_id)
+
+          timed_out =
+            Emails.send(name, to: "user@example.com", template_id: @template_id, max_retries: 0)
+
+          # Give any late exit or reply message time to arrive.
+          Process.sleep(100)
+          {sent, timed_out, Process.info(self(), :messages)}
+        end)
+
+      assert {{:ok, _}, {:error, %Error{code: "network_error"}}, {:messages, []}} =
+               Task.await(task)
+    end
+  end
+
   describe "send/2 replies" do
     test "keeps every field of a refusal", %{name: name} do
       expect_reply(

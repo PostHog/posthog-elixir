@@ -643,27 +643,56 @@ defmodule PostHog.Emails do
   end
 
   # The client's own timeouts bound each phase, not the whole request, so the request runs in a
-  # task that is stopped at the deadline. Failures inside it come back to the caller.
+  # worker that is killed at the deadline. The worker is monitored, not linked, so a caller that
+  # traps exits gets no exit message. Failures inside it come back to the caller.
   defp within_deadline(timeout_ms, fun) do
-    task =
-      Task.async(fn ->
-        try do
-          {:returned, fun.()}
-        rescue
-          exception -> {:raised, exception, __STACKTRACE__}
-        catch
-          kind, reason -> {:caught, kind, reason, __STACKTRACE__}
-        end
+    caller = self()
+    reply = make_ref()
+    # Keeps test allowances, such as Mox's, for the worker.
+    callers = [caller | Process.get(:"$callers", [])]
+
+    {worker, monitor} =
+      spawn_monitor(fn ->
+        Process.put(:"$callers", callers)
+        Kernel.send(caller, {reply, run_capturing(fun)})
       end)
 
-    case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
-      {:ok, {:returned, result}} -> result
-      {:ok, {:raised, exception, stacktrace}} -> reraise exception, stacktrace
-      {:ok, {:caught, kind, reason, stacktrace}} -> :erlang.raise(kind, reason, stacktrace)
-      # Stopped at the deadline, or ended without a reply.
-      _timeout_or_exit -> {:error, :timeout}
+    receive do
+      {^reply, result} ->
+        Process.demonitor(monitor, [:flush])
+        unwrap(result)
+
+      {:DOWN, ^monitor, :process, ^worker, _reason} ->
+        {:error, :worker_down}
+    after
+      timeout_ms ->
+        Process.exit(worker, :kill)
+        # The DOWN message comes after any reply the worker sent, so both leave the mailbox here.
+        receive do
+          {:DOWN, ^monitor, :process, ^worker, _reason} -> :ok
+        end
+
+        receive do
+          {^reply, _late} -> :ok
+        after
+          0 -> :ok
+        end
+
+        {:error, :timeout}
     end
   end
+
+  defp run_capturing(fun) do
+    {:returned, fun.()}
+  rescue
+    exception -> {:raised, exception, __STACKTRACE__}
+  catch
+    kind, reason -> {:caught, kind, reason, __STACKTRACE__}
+  end
+
+  defp unwrap({:returned, result}), do: result
+  defp unwrap({:raised, exception, stacktrace}), do: reraise(exception, stacktrace)
+  defp unwrap({:caught, kind, reason, stacktrace}), do: :erlang.raise(kind, reason, stacktrace)
 
   defp fields(body) when is_map(body), do: body
 
