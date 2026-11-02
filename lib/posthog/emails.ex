@@ -63,8 +63,12 @@ defmodule PostHog.Emails do
 
   A client on PostHog Cloud sends to its region's app host, `https://us.posthog.com` or
   `https://eu.posthog.com`. For any other `:api_host`, such as a reverse proxy, set `:app_host`
-  in the config, because the proxy must not receive the secret key. Without it, a send returns
-  the error `missing_app_host`.
+  in the config, because email requests must not send the secret key to the proxy. Without it,
+  a send returns the error `missing_app_host`.
+
+  `:secret_key` also turns on local feature flag evaluation, which fetches flag definitions
+  from `:api_host` with that key. When `:api_host` is a proxy that must not see the key, set
+  `enable_local_evaluation: false` as well.
 
   ## Timeouts, retries and idempotency
 

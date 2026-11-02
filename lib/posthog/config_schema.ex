@@ -56,8 +56,10 @@ defmodule PostHog.Config.Schema do
         doc: """
         The PostHog app host that `PostHog.Emails` sends to, such as `https://posthog.example.com`
         for a self-hosted instance. Without it, a PostHog Cloud `api_host` maps to its region's app
-        host, and any other `api_host` makes email calls fail with `missing_app_host`, because a
-        reverse proxy for ingestion must not receive the secret key.
+        host, and any other `api_host` makes email calls fail with `missing_app_host`, so email
+        requests never send the secret key to a reverse proxy for ingestion. Local flag
+        evaluation still fetches definitions from `api_host` with `secret_key`; set
+        `enable_local_evaluation: false` when the proxy must not see the key.
         """
       ],
       email_request_timeout_ms: [
