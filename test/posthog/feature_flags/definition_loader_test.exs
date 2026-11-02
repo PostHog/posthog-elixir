@@ -157,6 +157,78 @@ defmodule PostHog.FeatureFlags.DefinitionLoaderTest do
     assert DefinitionLoader.definitions(__MODULE__.Stale).flags_by_key["stale"]
   end
 
+  test "a flag local evaluation never resolves warns once until its definition changes" do
+    stub_with(PostHog.API.Mock, PostHog.API.Stub)
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+    checkout = %{"key" => "checkout", "active" => true, "ensure_experience_continuity" => true}
+    # The unresolvable-flag check raises on this cohort value.
+    unreadable = %{"type" => "cohort", "value" => %{}}
+
+    malformed = %{
+      "key" => "malformed",
+      "active" => true,
+      "filters" => %{"groups" => [%{"properties" => [unreadable]}]}
+    }
+
+    depends_on = fn key, chain ->
+      dependency = %{
+        "type" => "flag",
+        "key" => key,
+        "operator" => "flag_evaluates_to",
+        "value" => true,
+        "dependency_chain" => chain
+      }
+
+      %{"active" => true, "filters" => %{"groups" => [%{"properties" => [dependency]}]}}
+    end
+
+    # The flags service marks a dependency cycle with an empty chain.
+    cycle = Map.put(depends_on.("empty-chain", []), "key", "empty-chain")
+    server_regex = %{"key" => "plan", "operator" => "regex", "value" => "(*FAIL)"}
+
+    regex = %{
+      "key" => "server-regex",
+      "active" => true,
+      "filters" => %{"groups" => [%{"properties" => [server_regex]}]}
+    }
+
+    body = fn checkout -> %{envelope() | "flags" => [checkout, malformed, cycle, regex]} end
+
+    expect(PostHog.API.Mock, :request, 4, fn :stub_client, :get, "/flags/definitions", _opts ->
+      case Agent.get_and_update(counter, &{&1, &1 + 1}) do
+        0 -> {:ok, %{status: 200, body: body.(checkout), headers: %{}}}
+        1 -> {:ok, %{status: 200, body: body.(checkout), headers: %{}}}
+        2 -> {:ok, %{status: 304, body: nil, headers: %{}}}
+        3 -> {:ok, %{status: 200, body: body.(Map.put(checkout, "version", 2)), headers: %{}}}
+      end
+    end)
+
+    name = __MODULE__.Unresolvable
+    warnings = &(~r/"checkout".*\(reason: experience_continuity\)/ |> Regex.scan(&1) |> length())
+
+    unsupported_warnings =
+      &(~r/"(empty-chain|server-regex)".*\(reason: unsupported_definition\)/
+        |> Regex.scan(&1, capture: :all_but_first)
+        |> List.flatten()
+        |> Enum.sort())
+
+    log =
+      capture_log(fn ->
+        start_supervised!({PostHog.Supervisor, config(name)})
+        assert DefinitionLoader.definitions(name).flags_by_key["malformed"]
+      end)
+
+    assert warnings.(log) == 1
+    assert unsupported_warnings.(log) == ["empty-chain", "server-regex"]
+
+    unchanged = capture_log(fn -> for _ <- 1..2, do: DefinitionLoader.refresh(name) end)
+    assert warnings.(unchanged) == 0
+    assert unsupported_warnings.(unchanged) == []
+
+    changed = capture_log(fn -> DefinitionLoader.refresh(name) end)
+    assert warnings.(changed) == 1
+  end
+
   test "auth and quota responses clear definitions while empty complete definitions remain ready" do
     stub_with(PostHog.API.Mock, PostHog.API.Stub)
 

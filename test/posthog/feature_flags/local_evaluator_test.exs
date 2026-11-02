@@ -1177,4 +1177,119 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
     assert first.results["dated"].enabled
     assert MapSet.equal?(first.unresolved, MapSet.new(["unknown"]))
   end
+
+  test "unresolved flags report the highest-precedence reason and other flags resolve" do
+    missing_plan = %{"key" => "plan", "operator" => "exact", "value" => "pro"}
+    free_plan = %{"key" => "plan", "operator" => "exact", "value" => "free"}
+    unknown_operator = %{"key" => "plan", "operator" => "future", "value" => "pro"}
+    bad_number = %{"key" => "age", "operator" => "gt", "value" => "not-a-number"}
+    static_cohort = %{"type" => "cohort", "value" => 999}
+    # to_string/1 raises for a map, which no filter check expects.
+    raising_cohort = %{"type" => "cohort", "value" => %{}}
+
+    depends_on = fn key ->
+      %{
+        "type" => "flag",
+        "key" => key,
+        "operator" => "flag_evaluates_to",
+        "value" => true,
+        "dependency_chain" => [key]
+      }
+    end
+
+    conditions = fn conditions ->
+      groups = Enum.map(conditions, &%{"properties" => &1, "rollout_percentage" => 100})
+      put_in(flag("checkout"), ["filters", "groups"], groups)
+    end
+
+    # Condition 1 picks variant "a" and the catch-all condition 2 picks "b".
+    a_or_b = fn first_condition ->
+      variants = [
+        %{"key" => "a", "rollout_percentage" => 50},
+        %{"key" => "b", "rollout_percentage" => 50}
+      ]
+
+      flag("checkout")
+      |> put_in(["filters", "multivariate"], %{"variants" => variants})
+      |> put_in(["filters", "groups"], [
+        %{"properties" => first_condition, "rollout_percentage" => 100, "variant" => "a"},
+        %{"properties" => [], "rollout_percentage" => 100, "variant" => "b"}
+      ])
+    end
+
+    continuity = &Map.put(flag(&1), "ensure_experience_continuity", true)
+    group = &put_in(flag("checkout", &1), ["filters", "aggregation_group_type_index"], 0)
+    server_dependency = flag("dep", [static_cohort])
+    plan = %{person_properties: %{plan: "pro"}}
+
+    cases = [
+      {"experience continuity", [continuity.("checkout")], %{},
+       {:reason, :experience_continuity}},
+      {"inactive with experience continuity", [%{continuity.("checkout") | "active" => false}],
+       %{}, {:value, false}},
+      {"missing property", [flag("checkout", [missing_plan])], %{}, {:reason, :missing_context}},
+      {"unknown operator", [flag("checkout", [unknown_operator])], plan,
+       {:reason, :unsupported_definition}},
+      {"unknown operator, property missing", [flag("checkout", [unknown_operator])], %{},
+       {:reason, :unsupported_definition}},
+      {"malformed value, property missing", [flag("checkout", [bad_number])], %{},
+       {:reason, :unsupported_definition}},
+      {"static cohort", [flag("checkout", [static_cohort])], %{},
+       {:reason, :unsupported_definition}},
+      {"missing property, static cohort, then a catch-all",
+       [conditions.([[missing_plan, static_cohort], []])], %{},
+       {:reason, :unsupported_definition}},
+      {"static cohort, missing property", [flag("checkout", [static_cohort, missing_plan])], %{},
+       {:reason, :unsupported_definition}},
+      {"no device id", [Map.put(flag("checkout"), "bucketing_identifier", "device_id")], %{},
+       {:reason, :missing_context}},
+      {"no group key", [group.([])], %{}, {:reason, :missing_context}},
+      {"no group key, static cohort", [group.([static_cohort])], %{},
+       {:reason, :unsupported_definition}},
+      {"dependency without a definition", [flag("checkout", [depends_on.("absent")])], %{},
+       {:reason, :unsupported_definition}},
+      {"unresolved dependency, dependency without a definition",
+       [continuity.("dep"), flag("checkout", [depends_on.("dep"), depends_on.("absent")])], %{},
+       {:reason, :unsupported_definition}},
+      {"dependency with experience continuity",
+       [continuity.("dep"), flag("checkout", [depends_on.("dep")])], %{},
+       {:reason, :unresolved_dependency}},
+      {"dependency with experience continuity, then a catch-all",
+       [continuity.("dep"), a_or_b.([depends_on.("dep")])], %{}, {:value, "b"}},
+      {"dependency that requires the server, then a catch-all",
+       [server_dependency, a_or_b.([depends_on.("dep")])], %{},
+       {:reason, :unresolved_dependency}},
+      {"dependency that requires the server, then an unknown operator",
+       [server_dependency, conditions.([[depends_on.("dep")], [unknown_operator]])], plan,
+       {:reason, :unsupported_definition}},
+      {"cohort with a dependency that requires the server and an unknown operator",
+       [server_dependency, flag("checkout", [%{"type" => "cohort", "value" => 1}])], plan,
+       {:reason, :unsupported_definition}},
+      {"static cohort and a filter that does not match, then a catch-all",
+       [conditions.([[static_cohort, free_plan], []])], plan, {:value, true}},
+      {"missing property and an unexpected error, then a catch-all",
+       [conditions.([[missing_plan, raising_cohort], []])], %{}, {:value, true}},
+      {"unexpected error, then a catch-all", [conditions.([[raising_cohort], []])], %{},
+       {:reason, nil}}
+    ]
+
+    cohort = %{"type" => "AND", "values" => [depends_on.("dep"), unknown_operator]}
+    extras = %{group_type_mapping: %{"0" => "organization"}, cohorts: %{"1" => cohort}}
+
+    for {name, flags, context, expected} <- cases do
+      context = Map.put(context, :distinct_id, "user")
+      result = LocalEvaluator.evaluate(snapshot(flags, extras), context, ["checkout"])
+
+      actual =
+        case result.results do
+          %{"checkout" => flag_result} -> {:value, Result.value(flag_result)}
+          _unresolved -> {:reason, result.reasons["checkout"]}
+        end
+
+      assert {name, actual} == {name, expected}
+
+      if match?({:reason, _reason}, expected),
+        do: assert({name, MapSet.member?(result.unresolved, "checkout")} == {name, true})
+    end
+  end
 end

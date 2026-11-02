@@ -4,6 +4,7 @@ defmodule PostHog.FeatureFlags do
   """
 
   @missing_probe_coordination_limit 1_000
+  @no_local_results %{results: %{}, reasons: %{}}
 
   @doc """
   Make request to [`/flags`](https://posthog.com/docs/api/flags) API.
@@ -139,7 +140,7 @@ defmodule PostHog.FeatureFlags do
   Plus these snapshot-specific options:
 
   - `:only_evaluate_locally` - when true, never calls `/flags`; unresolved
-    flags are omitted from the snapshot.
+    flags are omitted from the snapshot and listed in its `unresolved_flags`.
 
   - `:flag_keys` - list of flag keys. A non-empty list is forwarded to the
     request as `flag_keys_to_evaluate` so the server returns only those flags.
@@ -198,9 +199,9 @@ defmodule PostHog.FeatureFlags do
     case loader_state.definitions do
       nil ->
         if only_local? do
-          snapshot_from_results(name, distinct_id, %{}, body)
+          snapshot_from_results(name, distinct_id, @no_local_results, body)
         else
-          remote_snapshot(name, distinct_id, body, %{}, requested_keys, nil, [])
+          remote_snapshot(name, distinct_id, body, @no_local_results, requested_keys, nil, [])
         end
 
       _definitions ->
@@ -235,7 +236,7 @@ defmodule PostHog.FeatureFlags do
         body,
         requested_keys,
         loader_state,
-        %{results: %{}},
+        @no_local_results,
         owned_probe_keys
       )
     else
@@ -269,7 +270,7 @@ defmodule PostHog.FeatureFlags do
 
     cond do
       only_local? or MapSet.size(unresolved) == 0 ->
-        snapshot_from_results(name, distinct_id, local.results, body)
+        snapshot_from_results(name, distinct_id, local, body)
 
       coordinate_missing? and is_list(requested_keys) ->
         coordinate_missing_probe(
@@ -312,7 +313,7 @@ defmodule PostHog.FeatureFlags do
         name,
         distinct_id,
         body,
-        local.results,
+        local,
         requested_keys,
         loader_state.generation,
         []
@@ -328,7 +329,7 @@ defmodule PostHog.FeatureFlags do
     fresh_state = local_evaluation_state(name, requested_keys)
 
     if is_nil(fresh_state.definitions) do
-      remote_snapshot(name, distinct_id, body, %{}, requested_keys, nil, [])
+      remote_snapshot(name, distinct_id, body, @no_local_results, requested_keys, nil, [])
     else
       evaluate_loaded_snapshot(
         name,
@@ -369,7 +370,7 @@ defmodule PostHog.FeatureFlags do
       name,
       distinct_id,
       body,
-      local.results,
+      local,
       requested_keys,
       loader_state.generation,
       absent
@@ -386,7 +387,7 @@ defmodule PostHog.FeatureFlags do
          name,
          distinct_id,
          body,
-         local_results,
+         local,
          requested_keys,
          generation,
          negative_candidates
@@ -409,39 +410,39 @@ defmodule PostHog.FeatureFlags do
           clean_remote_response?(response_body) and not malformed?
         )
 
-        merged = Map.merge(remote_results, local_results)
+        merged = Map.merge(remote_results, local.results)
 
         if malformed? and map_size(merged) == 0 do
-          remote_failure_result(
-            name,
-            distinct_id,
-            local_results,
-            body,
-            invalid_flags_response()
-          )
+          remote_failure_result(name, distinct_id, local, body, invalid_flags_response())
         else
-          metadata = Map.put(response_body, :groups, evaluation_groups(body))
+          # A returned record, including one with `failed: true`, resolves the flag.
+          metadata =
+            Map.merge(response_body, %{
+              groups: evaluation_groups(body),
+              unresolved_flags: Map.drop(local.reasons, Map.keys(merged))
+            })
+
           {:ok, __MODULE__.Evaluations.from_results(name, distinct_id, merged, metadata)}
         end
 
       {:ok, _malformed_response} ->
-        remote_failure_result(name, distinct_id, local_results, body, invalid_flags_response())
+        remote_failure_result(name, distinct_id, local, body, invalid_flags_response())
 
       {:error, _reason} = error ->
-        remote_failure_result(name, distinct_id, local_results, body, error)
+        remote_failure_result(name, distinct_id, local, body, error)
     end
   end
 
-  defp remote_failure_result(_name, _distinct_id, local_results, _body, error)
-       when map_size(local_results) == 0,
+  defp remote_failure_result(_name, _distinct_id, %{results: results}, _body, error)
+       when map_size(results) == 0,
        do: error
 
-  defp remote_failure_result(name, distinct_id, local_results, body, _error),
-    do: snapshot_from_results(name, distinct_id, local_results, body)
+  defp remote_failure_result(name, distinct_id, local, body, _error),
+    do: snapshot_from_results(name, distinct_id, local, body)
 
-  defp snapshot_from_results(name, distinct_id, results, body) do
-    metadata = %{groups: evaluation_groups(body)}
-    {:ok, __MODULE__.Evaluations.from_results(name, distinct_id, results, metadata)}
+  defp snapshot_from_results(name, distinct_id, local, body) do
+    metadata = %{groups: evaluation_groups(body), unresolved_flags: local.reasons}
+    {:ok, __MODULE__.Evaluations.from_results(name, distinct_id, local.results, metadata)}
   end
 
   defp build_remote_results(flags, response_body) do
@@ -1049,7 +1050,9 @@ defmodule PostHog.FeatureFlags do
         groups
       )
       when is_list(extra_errors) and is_map(groups) do
-    flag_missing? = "flag_missing" in extra_errors
+    flag_missing? =
+      Enum.any?(extra_errors, &(&1 in ["flag_missing", "local_evaluation_inconclusive"]))
+
     value = if flag_missing?, do: nil, else: __MODULE__.Result.value(result)
     errors = build_error_codes(result, extra_errors)
 
