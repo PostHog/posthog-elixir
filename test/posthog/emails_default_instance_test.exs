@@ -4,7 +4,13 @@ defmodule PostHog.EmailsDefaultInstanceTest do
     async: Version.match?(System.version(), ">= 1.18.0"),
     group: PostHog
 
-  @moduletag config: [supervisor_name: PostHog, secret_key: "phs_secret_key"]
+  # A secret key would also start the flag definition loader, whose requests take the mock's
+  # expectations.
+  @moduletag config: [
+               supervisor_name: PostHog,
+               secret_key: "phs_secret_key",
+               enable_local_evaluation: false
+             ]
 
   import Mox
 
