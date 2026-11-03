@@ -157,6 +157,116 @@ defmodule PostHog.FeatureFlags.DefinitionLoaderTest do
     assert DefinitionLoader.definitions(__MODULE__.Stale).flags_by_key["stale"]
   end
 
+  test "a flag local evaluation never resolves warns once until its definition changes" do
+    stub_with(PostHog.API.Mock, PostHog.API.Stub)
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+    checkout = %{"key" => "checkout", "active" => true, "ensure_experience_continuity" => true}
+    # The unresolvable-flag check raises on this cohort, which holds an improper list that no
+    # JSON definition can produce.
+    unreadable = %{"type" => "cohort", "value" => "unreadable"}
+
+    malformed = %{
+      "key" => "malformed",
+      "active" => true,
+      "filters" => %{"groups" => [%{"properties" => [unreadable]}]}
+    }
+
+    # The flags service marks a dependency cycle with an empty chain.
+    empty_chain = %{
+      "type" => "flag",
+      "key" => "empty-chain",
+      "operator" => "flag_evaluates_to",
+      "value" => true,
+      "dependency_chain" => []
+    }
+
+    cycle = %{
+      "key" => "empty-chain",
+      "active" => true,
+      "filters" => %{"groups" => [%{"properties" => [empty_chain]}]}
+    }
+
+    server_regex = %{"key" => "plan", "operator" => "regex", "value" => "(*FAIL)"}
+
+    regex = %{
+      "key" => "server-regex",
+      "active" => true,
+      "filters" => %{"groups" => [%{"properties" => [server_regex]}]}
+    }
+
+    object_search = %{
+      "key" => "object-search",
+      "active" => true,
+      "filters" => %{
+        "groups" => [
+          %{"properties" => [%{"key" => "plan", "operator" => "icontains", "value" => %{}}]}
+        ]
+      }
+    }
+
+    # Each cohort references the two before it, so checking every path would take minutes.
+    dag_cohorts =
+      Map.new(0..40, fn index ->
+        values =
+          if index < 2,
+            do: [%{"key" => "plan", "value" => "pro"}],
+            else: [
+              %{"type" => "cohort", "value" => index - 1},
+              %{"type" => "cohort", "value" => index - 2}
+            ]
+
+        {to_string(index), %{"type" => "AND", "values" => values}}
+      end)
+
+    dag = %{
+      "key" => "shared-cohorts",
+      "active" => true,
+      "filters" => %{"groups" => [%{"properties" => [%{"type" => "cohort", "value" => 40}]}]}
+    }
+
+    body = fn checkout ->
+      %{
+        envelope()
+        | "flags" => [checkout, malformed, cycle, regex, object_search, dag],
+          "cohorts" =>
+            Map.put(dag_cohorts, "unreadable", %{"type" => "AND", "values" => [%{} | :improper]})
+      }
+    end
+
+    expect(PostHog.API.Mock, :request, 4, fn :stub_client, :get, "/flags/definitions", _opts ->
+      case Agent.get_and_update(counter, &{&1, &1 + 1}) do
+        n when n in [0, 1] -> {:ok, %{status: 200, body: body.(checkout), headers: %{}}}
+        2 -> {:ok, %{status: 304, body: nil, headers: %{}}}
+        3 -> {:ok, %{status: 200, body: body.(Map.put(checkout, "version", 2)), headers: %{}}}
+      end
+    end)
+
+    name = __MODULE__.Unresolvable
+    warnings = &(~r/"checkout".*\(reason: experience_continuity\)/ |> Regex.scan(&1) |> length())
+
+    unsupported_warnings =
+      &(~r/"([a-z-]+)".*\(reason: unsupported_definition\)/
+        |> Regex.scan(&1, capture: :all_but_first)
+        |> List.flatten()
+        |> Enum.sort())
+
+    log =
+      capture_log(fn ->
+        start_supervised!({PostHog.Supervisor, config(name)})
+        assert DefinitionLoader.definitions(name).flags_by_key["malformed"]
+      end)
+
+    assert warnings.(log) == 1
+    assert unsupported_warnings.(log) == ["empty-chain", "object-search", "server-regex"]
+
+    unchanged = capture_log(fn -> for _ <- 1..2, do: DefinitionLoader.refresh(name) end)
+    assert warnings.(unchanged) == 0
+    assert unsupported_warnings.(unchanged) == []
+
+    changed = capture_log(fn -> DefinitionLoader.refresh(name) end)
+    assert warnings.(changed) == 1
+  end
+
   test "auth and quota responses clear definitions while empty complete definitions remain ready" do
     stub_with(PostHog.API.Mock, PostHog.API.Stub)
 

@@ -31,6 +31,16 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
     }
   end
 
+  defp depends_on(key, value \\ true) do
+    %{
+      "type" => "flag",
+      "key" => key,
+      "operator" => "flag_evaluates_to",
+      "value" => value,
+      "dependency_chain" => [key]
+    }
+  end
+
   defp evaluate(flag, context \\ %{}) do
     context = Map.merge(%{distinct_id: "user", person_properties: %{}}, context)
     LocalEvaluator.evaluate(snapshot([flag]), context, [flag["key"]])
@@ -483,16 +493,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
       group = put_in(flag("group", [condition]), ["filters", "aggregation_group_type_index"], 0)
       cohort = flag("cohort", [%{"type" => "cohort", "value" => 1}])
 
-      dependency =
-        flag("dependency", [
-          %{
-            "type" => "flag",
-            "key" => "person",
-            "operator" => "flag_evaluates_to",
-            "value" => true,
-            "dependency_chain" => ["person"]
-          }
-        ])
+      dependency = flag("dependency", [depends_on("person")])
 
       definitions =
         versioned_snapshot([person, group, cohort, dependency], version)
@@ -1052,22 +1053,11 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
     assert MapSet.member?(missing.unresolved, "cohort")
 
     base = flag("base")
-
-    dependency = %{
-      "type" => "flag",
-      "key" => "base",
-      "operator" => "flag_evaluates_to",
-      "value" => true,
-      "dependency_chain" => ["base"]
-    }
-
-    dependent = flag("dependent", [dependency])
+    dependent = flag("dependent", [depends_on("base")])
     result = LocalEvaluator.evaluate(snapshot([base, dependent]), %{distinct_id: "u"})
     assert result.results["dependent"].enabled
 
-    a_dep = %{dependency | "key" => "b", "dependency_chain" => ["b"]}
-    b_dep = %{dependency | "key" => "a", "dependency_chain" => ["a"]}
-    cycle = snapshot([flag("a", [a_dep]), flag("b", [b_dep])])
+    cycle = snapshot([flag("a", [depends_on("b")]), flag("b", [depends_on("a")])])
     result = LocalEvaluator.evaluate(cycle, %{distinct_id: "u"})
     assert MapSet.equal?(result.unresolved, MapSet.new(["a", "b"]))
   end
@@ -1128,21 +1118,8 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
         "variants" => [%{"key" => "control", "rollout_percentage" => 100}]
       })
 
-    false_dependency = %{
-      "type" => "flag",
-      "key" => "false-flag",
-      "operator" => "flag_evaluates_to",
-      "value" => false,
-      "dependency_chain" => ["false-flag"]
-    }
-
-    variant_dependency = %{
-      "type" => "flag",
-      "key" => "variant",
-      "operator" => "flag_evaluates_to",
-      "value" => "control",
-      "dependency_chain" => ["variant"]
-    }
+    false_dependency = depends_on("false-flag", false)
+    variant_dependency = depends_on("variant", "control")
 
     repeated = flag("repeated", [variant_dependency, variant_dependency])
 
@@ -1176,5 +1153,149 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
     assert first.results["good"].enabled
     assert first.results["dated"].enabled
     assert MapSet.equal?(first.unresolved, MapSet.new(["unknown"]))
+  end
+
+  test "unresolved flags report the highest-precedence reason and other flags resolve" do
+    missing_plan = %{"key" => "plan", "operator" => "exact", "value" => "pro"}
+    free_plan = %{"key" => "plan", "operator" => "exact", "value" => "free"}
+    unknown_operator = %{"key" => "plan", "operator" => "future", "value" => "pro"}
+    bad_number = %{"key" => "age", "operator" => "gt", "value" => "not-a-number"}
+    object_search = %{"key" => "plan", "operator" => "icontains", "value" => %{}}
+    static_cohort = %{"type" => "cohort", "value" => 999}
+    # Cohort "raising" holds an improper list, which no JSON definition can produce, so
+    # matching it raises an error that no filter check expects.
+    raising_cohort = %{"type" => "cohort", "value" => "raising"}
+    profile = &%{"key" => "profile", "operator" => &1, "value" => &2}
+
+    conditions = fn conditions ->
+      groups = Enum.map(conditions, &%{"properties" => &1, "rollout_percentage" => 100})
+      put_in(flag("checkout"), ["filters", "groups"], groups)
+    end
+
+    # Condition 1 picks variant "a" and the catch-all condition 2 picks "b".
+    a_or_b = fn first_condition ->
+      variants = [
+        %{"key" => "a", "rollout_percentage" => 50},
+        %{"key" => "b", "rollout_percentage" => 50}
+      ]
+
+      flag("checkout")
+      |> put_in(["filters", "multivariate"], %{"variants" => variants})
+      |> put_in(["filters", "groups"], [
+        %{"properties" => first_condition, "rollout_percentage" => 100, "variant" => "a"},
+        %{"properties" => [], "rollout_percentage" => 100, "variant" => "b"}
+      ])
+    end
+
+    continuity = &Map.put(flag(&1), "ensure_experience_continuity", true)
+    group = &put_in(flag("checkout", &1), ["filters", "aggregation_group_type_index"], 0)
+    server_dependency = flag("dep", [static_cohort])
+    plan = %{person_properties: %{plan: "pro"}}
+    anything = %{person_properties: %{"profile" => "anything"}}
+
+    cases = [
+      {"experience continuity", [continuity.("checkout")], %{},
+       {:reason, :experience_continuity}},
+      {"inactive with experience continuity", [%{continuity.("checkout") | "active" => false}],
+       %{}, {:value, false}},
+      {"missing property", [flag("checkout", [missing_plan])], %{}, {:reason, :missing_context}},
+      {"unknown operator", [flag("checkout", [unknown_operator])], plan,
+       {:reason, :unsupported_definition}},
+      {"unknown operator, property missing", [flag("checkout", [unknown_operator])], %{},
+       {:reason, :unsupported_definition}},
+      {"malformed value, property missing", [flag("checkout", [bad_number])], %{},
+       {:reason, :unsupported_definition}},
+      {"search value that is not a string", [flag("checkout", [object_search])], plan,
+       {:reason, :unsupported_definition}},
+      {"static cohort", [flag("checkout", [static_cohort])], %{},
+       {:reason, :unsupported_definition}},
+      {"missing property, static cohort, then a catch-all",
+       [conditions.([[missing_plan, static_cohort], []])], %{},
+       {:reason, :unsupported_definition}},
+      {"static cohort, missing property", [flag("checkout", [static_cohort, missing_plan])], %{},
+       {:reason, :unsupported_definition}},
+      {"no device id", [Map.put(flag("checkout"), "bucketing_identifier", "device_id")], %{},
+       {:reason, :missing_context}},
+      {"no group key", [group.([])], %{}, {:reason, :missing_context}},
+      {"no group key, static cohort", [group.([static_cohort])], %{},
+       {:reason, :unsupported_definition}},
+      {"dependency without a definition", [flag("checkout", [depends_on("absent")])], %{},
+       {:reason, :unsupported_definition}},
+      {"unresolved dependency, dependency without a definition",
+       [continuity.("dep"), flag("checkout", [depends_on("dep"), depends_on("absent")])], %{},
+       {:reason, :unsupported_definition}},
+      {"dependency with experience continuity",
+       [continuity.("dep"), flag("checkout", [depends_on("dep")])], %{},
+       {:reason, :unresolved_dependency}},
+      {"dependency with experience continuity, then a catch-all",
+       [continuity.("dep"), a_or_b.([depends_on("dep")])], %{}, {:value, "b"}},
+      {"dependency that requires the server, then a catch-all",
+       [server_dependency, a_or_b.([depends_on("dep")])], %{}, {:reason, :unresolved_dependency}},
+      {"dependency that requires the server, then an unknown operator",
+       [server_dependency, conditions.([[depends_on("dep")], [unknown_operator]])], plan,
+       {:reason, :unsupported_definition}},
+      {"cohort with a dependency that requires the server and an unknown operator",
+       [server_dependency, flag("checkout", [%{"type" => "cohort", "value" => 1}])], plan,
+       {:reason, :unsupported_definition}},
+      {"static cohort and a filter that does not match, then a catch-all",
+       [conditions.([[static_cohort, free_plan], []])], plan, {:value, true}},
+      {"missing property and an unexpected error, then a catch-all",
+       [conditions.([[missing_plan, raising_cohort], []])], %{}, {:value, true}},
+      {"unexpected error, then a catch-all", [conditions.([[raising_cohort], []])], %{},
+       {:reason, nil}},
+      {"malformed cohort reference", [flag("checkout", [%{"type" => "cohort", "value" => %{}}])],
+       %{}, {:reason, :unsupported_definition}, :unsupported_definition},
+      # The rows below also check the reason computed from the definition alone.
+      {"exact on a composite value with a float",
+       [flag("checkout", [profile.("exact", %{"n" => 0.1})])], anything,
+       {:reason, :unsupported_definition}, :unsupported_definition},
+      {"is_not on a composite value with a float",
+       [flag("checkout", [profile.("is_not", %{"n" => 0.1})])], anything,
+       {:reason, :unsupported_definition}, :unsupported_definition},
+      {"exact on a composite value with Sigma",
+       [flag("checkout", [profile.("exact", %{"name" => "ΟΣ"})])], anything,
+       {:reason, :unsupported_definition}, :unsupported_definition},
+      {"exact on a scalar float", [flag("checkout", [profile.("exact", 0.1)])],
+       %{person_properties: %{"profile" => 0.1}}, {:value, true}, nil},
+      {"supported regex, non-ASCII value", [flag("checkout", [profile.("regex", "^a$")])],
+       %{person_properties: %{"profile" => "é"}}, {:reason, :missing_context}, nil},
+      {"regex only the server can run", [flag("checkout", [profile.("regex", "(?=a)")])],
+       %{person_properties: %{"profile" => "a"}}, {:reason, :unsupported_definition},
+       :unsupported_definition}
+    ]
+
+    cohort = %{"type" => "AND", "values" => [depends_on("dep"), unknown_operator]}
+    raising = %{"type" => "AND", "values" => [%{} | :improper]}
+
+    extras = %{
+      group_type_mapping: %{"0" => "organization"},
+      cohorts: %{"1" => cohort, "raising" => raising}
+    }
+
+    for row <- cases do
+      {name, flags, context, expected, definition_reason} =
+        with {name, flags, context, expected} <- row,
+             do: {name, flags, context, expected, :unchecked}
+
+      context = Map.put(context, :distinct_id, "user")
+      definitions = snapshot(flags, extras)
+      result = LocalEvaluator.evaluate(definitions, context, ["checkout"])
+
+      if definition_reason != :unchecked do
+        actual_definition_reason = LocalEvaluator.definition_reasons(definitions)["checkout"]
+        assert {name, actual_definition_reason} == {name, definition_reason}
+      end
+
+      actual =
+        case result.results do
+          %{"checkout" => flag_result} -> {:value, Result.value(flag_result)}
+          _unresolved -> {:reason, result.reasons["checkout"]}
+        end
+
+      assert {name, actual} == {name, expected}
+
+      if match?({:reason, _reason}, expected),
+        do: assert({name, MapSet.member?(result.unresolved, "checkout")} == {name, true})
+    end
   end
 end

@@ -25,6 +25,14 @@ defmodule PostHog.FeatureFlags.Evaluations do
         render_new_dashboard()
       end
 
+  A flag that has a local definition but that neither local evaluation nor the
+  `/flags` fallback resolved is absent from the snapshot. Its key and the
+  reason are in the `unresolved_flags` field, so you can tell it apart from a
+  flag that does not exist:
+
+      snapshot.unresolved_flags
+      #=> %{"checkout" => :experience_continuity}
+
   ## Enriching captures
 
   Call `PostHog.FeatureFlags.set_in_context/2` to copy the snapshot's
@@ -68,6 +76,13 @@ defmodule PostHog.FeatureFlags.Evaluations do
     `errorsWhileComputingFlags`. When `true`, every event fired from this
     snapshot includes `errors_while_computing_flags` in its
     `$feature_flag_error` property.
+  - `:unresolved_flags` - map of flag key to `t:unresolved_reason/0` for each
+    flag that has a loaded local definition but that neither local evaluation
+    nor the `/flags` fallback resolved. These flags are absent from `:flags`.
+    Reading one with `enabled?/2` or `get_flag/2` reports
+    `local_evaluation_inconclusive` instead of `flag_missing`. Reading this
+    field records no access and sends no event. Always empty on snapshots
+    returned by `only/2` and `only_accessed/1`.
   - `:accessed` - internal. Its contents may change in any release without
     notice. Don't read or match on it; use `accessed/1`.
   - `:accessed_pid` - internal and deprecated. Always `nil`. It held the pid of
@@ -85,9 +100,34 @@ defmodule PostHog.FeatureFlags.Evaluations do
           request_id: String.t() | nil,
           evaluated_at: integer() | nil,
           errors_while_computing: boolean(),
+          unresolved_flags: %{String.t() => unresolved_reason()},
           accessed: accessed(),
           accessed_pid: nil
         }
+
+  @typedoc """
+  Why local evaluation could not resolve a flag.
+
+  - `:experience_continuity` - the flag has experience continuity enabled,
+    which local evaluation never resolves. Disable it to evaluate the flag
+    locally.
+  - `:unsupported_definition` - the flag uses something local evaluation does
+    not support, such as a static cohort, an unknown operator, a malformed
+    value, or a missing or circular flag dependency. Change the flag or upgrade
+    the SDK.
+  - `:unresolved_dependency` - a flag this flag depends on has a loaded
+    definition but was not resolved.
+  - `:missing_context` - the call did not pass a property, group key, group
+    property, or device id the flag needs, or passed it in a form local
+    evaluation cannot use.
+
+  When several causes apply, the reason is the first in this list.
+  """
+  @type unresolved_reason ::
+          :experience_continuity
+          | :unsupported_definition
+          | :unresolved_dependency
+          | :missing_context
 
   @typedoc false
   @opaque accessed :: {%{String.t() => pos_integer()}, :atomics.atomics_ref() | nil}
@@ -104,7 +144,8 @@ defmodule PostHog.FeatureFlags.Evaluations do
     :request_id,
     :evaluated_at,
     groups: %{},
-    errors_while_computing: false
+    errors_while_computing: false,
+    unresolved_flags: %{}
   ]
 
   @doc false
@@ -147,6 +188,7 @@ defmodule PostHog.FeatureFlags.Evaluations do
         Map.get(metadata, :errors_while_computing, Map.get(metadata, "errorsWhileComputingFlags")) ==
           true,
       groups: normalize_groups(Map.get(metadata, :groups, Map.get(metadata, "groups", %{}))),
+      unresolved_flags: Map.get(metadata, :unresolved_flags, %{}),
       accessed: new_accessed(results)
     }
   end
@@ -168,7 +210,9 @@ defmodule PostHog.FeatureFlags.Evaluations do
   Returns `false` for unknown flags. Records the access. Fires a
   `$feature_flag_called` event with full metadata when the flag is present,
   or with `$feature_flag_error: "flag_missing"` and
-  `$feature_flag_response: nil` when it is not.
+  `$feature_flag_response: nil` when it is not. The error is
+  `local_evaluation_inconclusive` instead when the flag is in
+  `unresolved_flags`.
   """
   @spec enabled?(t(), String.t()) :: boolean()
   def enabled?(%__MODULE__{} = snapshot, key) when is_binary(key) do
@@ -185,7 +229,9 @@ defmodule PostHog.FeatureFlags.Evaluations do
 
   Records the access. Fires a `$feature_flag_called` event with full metadata
   when the flag is present, or with `$feature_flag_error: "flag_missing"` and
-  `$feature_flag_response: nil` when it is not.
+  `$feature_flag_response: nil` when it is not. The error is
+  `local_evaluation_inconclusive` instead when the flag is in
+  `unresolved_flags`.
   """
   @spec get_flag(t(), String.t()) :: String.t() | boolean() | nil
   def get_flag(%__MODULE__{} = snapshot, key) when is_binary(key) do
@@ -307,8 +353,10 @@ defmodule PostHog.FeatureFlags.Evaluations do
     end
   end
 
+  # Filtered snapshots scope capture enrichment; the original snapshot is the place to
+  # inspect unresolved flags.
   defp clone_with(%__MODULE__{} = snapshot, flags) do
-    %{snapshot | flags: flags, accessed: new_accessed(flags)}
+    %{snapshot | flags: flags, unresolved_flags: %{}, accessed: new_accessed(flags)}
   end
 
   defp fetch_and_log(%__MODULE__{flags: flags} = snapshot, key) do
@@ -318,7 +366,12 @@ defmodule PostHog.FeatureFlags.Evaluations do
         {:ok, result}
 
       :error ->
-        log(snapshot, missing_result(snapshot, key), ["flag_missing"])
+        error =
+          if Map.has_key?(snapshot.unresolved_flags, key),
+            do: "local_evaluation_inconclusive",
+            else: "flag_missing"
+
+        log(snapshot, missing_result(snapshot, key), [error])
         :error
     end
   end

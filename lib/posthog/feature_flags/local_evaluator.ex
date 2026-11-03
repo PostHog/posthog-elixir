@@ -11,19 +11,29 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
 
   @long_scale 0xFFFFFFFFFFFFFFF
   @semver_operators ~w(semver_eq semver_neq semver_gt semver_gte semver_lt semver_lte semver_tilde semver_caret semver_wildcard)
+  @semver_range_operators ~w(semver_tilde semver_caret semver_wildcard)
+  @search_operators ~w(icontains not_icontains starts_with not_starts_with ends_with not_ends_with)
+  @cohort_operators ~w(exact in not_in)
 
-  @type outcome :: {:ok, boolean() | String.t()} | :inconclusive | :requires_server
+  @type reason :: PostHog.FeatureFlags.Evaluations.unresolved_reason()
+
+  # :inconclusive lets later conditions resolve the flag. :requires_server stops evaluation,
+  # because only the server knows whether this condition matches.
+  @type outcome ::
+          {:ok, boolean() | String.t()} | {:inconclusive, reason()} | {:requires_server, reason()}
 
   @spec evaluate(map(), map(), [String.t()] | nil) :: %{
           results: %{String.t() => Result.t()},
-          unresolved: MapSet.t(String.t())
+          unresolved: MapSet.t(String.t()),
+          reasons: %{String.t() => reason()}
         }
   def evaluate(definitions, context, keys \\ nil) do
     keys = keys || Map.keys(definitions.flags_by_key)
     context = normalize_context(context)
 
-    {results, unresolved, _cache} =
-      Enum.reduce(keys, {%{}, MapSet.new(), %{}}, fn key, {results, unresolved, cache} ->
+    {results, unresolved, reasons, _cache} =
+      Enum.reduce(keys, {%{}, MapSet.new(), %{}, %{}}, fn key,
+                                                          {results, unresolved, reasons, cache} ->
         case Map.fetch(definitions.flags_by_key, key) do
           {:ok, flag} ->
             {outcome, cache} = evaluate_key(key, flag, definitions, context, cache)
@@ -31,19 +41,155 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
             case outcome do
               {:ok, value} ->
                 {Map.put(results, key, build_result(key, flag, value, definitions)), unresolved,
-                 cache}
+                 reasons, cache}
 
-              status when status in [:inconclusive, :requires_server] ->
-                {results, MapSet.put(unresolved, key), cache}
+              # An unexpected error has no reason, but the flag still falls back.
+              {_status, reason} ->
+                reasons = if reason, do: Map.put(reasons, key, reason), else: reasons
+                {results, MapSet.put(unresolved, key), reasons, cache}
             end
 
           :error ->
-            {results, MapSet.put(unresolved, key), cache}
+            {results, MapSet.put(unresolved, key), reasons, cache}
         end
       end)
 
-    %{results: results, unresolved: unresolved}
+    %{results: results, unresolved: unresolved, reasons: reasons}
   end
+
+  @doc false
+  # Computed once when definitions are installed, so evaluation and the load-time warning
+  # read the same reasons. Flags without a definition reason are left out.
+  @spec definition_reasons(map()) :: %{String.t() => reason()}
+  def definition_reasons(definitions) do
+    for {key, flag} <- definitions.flags_by_key,
+        reason = definition_unresolved_reason(flag, definitions),
+        not is_nil(reason),
+        into: %{},
+        do: {key, reason}
+  end
+
+  # The reason that comes from the flag's definition alone, so it is known when definitions
+  # load. It is the reason evaluation reports for the same cause.
+  defp definition_unresolved_reason(flag, definitions) do
+    case flag_header_reason(flag) do
+      :inactive -> nil
+      :evaluable -> filters_definition_reason(value(flag, "filters"), definitions)
+      reason -> reason
+    end
+  rescue
+    # Evaluation reports a definition this malformed when the flag is used.
+    _exception -> nil
+  end
+
+  # Evaluation and the definition check share these checks, so both report the same reason.
+  defp flag_header_reason(flag) do
+    cond do
+      not is_map(flag) -> :unsupported_definition
+      value(flag, "active") == false -> :inactive
+      value(flag, "active") != true -> :unsupported_definition
+      value(flag, "ensure_experience_continuity") == true -> :experience_continuity
+      not is_binary(value(flag, "key")) -> :unsupported_definition
+      not is_map(value(flag, "filters")) -> :unsupported_definition
+      true -> :evaluable
+    end
+  end
+
+  defp filters_definition_reason(filters, definitions) do
+    aggregation = value(filters, "aggregation_group_type_index")
+    conditions = value(filters, "groups") || []
+    now = DateTime.utc_now()
+
+    cond do
+      not is_nil(aggregation) and not is_binary(group_name(definitions, aggregation)) ->
+        :unsupported_definition
+
+      not is_list(conditions) ->
+        :unsupported_definition
+
+      Enum.any?(conditions, &unsupported_condition?(&1, definitions, now)) ->
+        :unsupported_definition
+
+      true ->
+        nil
+    end
+  end
+
+  defp unsupported_condition?(condition, definitions, now) when is_map(condition) do
+    properties = value(condition, "properties") || []
+    rollout = value(condition, "rollout_percentage")
+
+    not is_list(properties) or not (is_nil(rollout) or is_number(rollout)) or
+      Enum.any?(properties, fn property ->
+        property |> unsupported_property?(definitions, false, MapSet.new(), now) |> elem(0)
+      end)
+  end
+
+  defp unsupported_condition?(_condition, _definitions, _now), do: true
+
+  # Returns the cohorts visited so far with the result. A cohort seen before needs no second
+  # check: it was supported, or the check already stopped at the first unsupported filter.
+  # Without this, cohorts that share sub-cohorts are checked once per path, exponentially.
+  defp unsupported_property?(property, definitions, cohort?, visited, now)
+       when is_map(property) do
+    case value(property, "type") do
+      "flag" -> {dependency_filter(property, definitions) == :unsupported, visited}
+      "cohort" -> unsupported_cohort?(property, definitions, visited, now)
+      _ -> {not filter_supported?(property, now, cohort?), visited}
+    end
+  end
+
+  defp unsupported_property?(_property, _definitions, _cohort?, visited, _now),
+    do: {true, visited}
+
+  defp unsupported_cohort?(property, definitions, visited, now) do
+    cohort_id = cohort_id(property)
+
+    cond do
+      (value(property, "operator") || "exact") not in @cohort_operators or cohort_id == :error ->
+        {true, visited}
+
+      MapSet.member?(visited, cohort_id) ->
+        {false, visited}
+
+      true ->
+        case map_fetch(definitions.cohorts, cohort_id) do
+          :error ->
+            {true, visited}
+
+          {:ok, group} ->
+            unsupported_group?(group, definitions, MapSet.put(visited, cohort_id), now)
+        end
+    end
+  end
+
+  defp unsupported_group?(group, _definitions, visited, _now) when group == %{},
+    do: {false, visited}
+
+  defp unsupported_group?(group, definitions, visited, now) when is_map(group) do
+    if valid_property_group?(group) do
+      Enum.reduce_while(value(group, "values"), {false, visited}, fn entry, {false, visited} ->
+        result =
+          if subgroup_entry?(entry),
+            do: unsupported_group?(entry, definitions, visited, now),
+            else: unsupported_property?(entry, definitions, true, visited, now)
+
+        if elem(result, 0), do: {:halt, result}, else: {:cont, result}
+      end)
+    else
+      {true, visited}
+    end
+  end
+
+  defp unsupported_group?(_group, _definitions, visited, _now), do: {true, visited}
+
+  defp subgroup_entry?(entry), do: is_map(entry) and (entry == %{} or has_key?(entry, "values"))
+
+  defp valid_property_group?(group),
+    do: value(group, "type") in ["AND", "OR"] and is_list(value(group, "values"))
+
+  defp group_name(definitions, index),
+    do: map_value(definitions.group_type_mapping, to_string(index))
 
   @doc false
   @spec hash(String.t(), String.t(), String.t()) :: float()
@@ -101,7 +247,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   defp evaluate_key(key, flag, definitions, context, cache) do
     case Map.get(cache, key) do
       :resolving ->
-        {:inconclusive, cache}
+        {{:inconclusive, :unsupported_definition}, cache}
 
       {:done, outcome} ->
         {outcome, cache}
@@ -112,31 +258,26 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
         {outcome, Map.put(cache, key, {:done, outcome})}
     end
   rescue
-    _exception -> {:inconclusive, Map.put(cache, key, {:done, :inconclusive})}
+    _exception -> unexpected_error(key, cache)
   catch
-    _kind, _reason -> {:inconclusive, Map.put(cache, key, {:done, :inconclusive})}
+    _kind, _reason -> unexpected_error(key, cache)
   end
 
-  defp evaluate_flag(flag, definitions, context, cache) when is_map(flag) do
-    cond do
-      value(flag, "active") == false ->
-        {{:ok, false}, cache}
+  # Like the other SDKs, an unexpected error reports no reason.
+  defp unexpected_error(key, cache) do
+    outcome = {:inconclusive, nil}
+    {outcome, Map.put(cache, key, {:done, outcome})}
+  end
 
-      value(flag, "active") != true ->
-        {:inconclusive, cache}
-
-      value(flag, "ensure_experience_continuity") == true ->
-        {:requires_server, cache}
-
-      not is_binary(value(flag, "key")) or not is_map(value(flag, "filters")) ->
-        {:inconclusive, cache}
-
-      true ->
-        evaluate_active_flag(flag, definitions, context, cache)
+  defp evaluate_flag(flag, definitions, context, cache) do
+    case flag_header_reason(flag) do
+      :inactive -> {{:ok, false}, cache}
+      :evaluable -> evaluate_active_flag(flag, definitions, context, cache)
+      # Inconclusive rather than server-required, even for experience continuity, so a flag
+      # that depends on this one can still resolve from a later condition.
+      reason -> {{:inconclusive, reason}, cache}
     end
   end
-
-  defp evaluate_flag(_flag, _definitions, _context, cache), do: {:inconclusive, cache}
 
   defp evaluate_active_flag(flag, definitions, context, cache) do
     filters = value(flag, "filters")
@@ -156,31 +297,33 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
           definitions,
           context,
           cache,
-          false
+          nil
         )
       else
-        {:inconclusive, cache}
+        {{:inconclusive, :unsupported_definition}, cache}
       end
     else
-      status when status in [:inconclusive, :requires_server] -> {status, cache}
+      # No condition can be checked, so a cause in the definition outranks the missing context.
+      {:inconclusive, reason} ->
+        {{:inconclusive, with_definition_reason(reason, flag, definitions)}, cache}
     end
   end
 
   defp evaluation_target(nil, flag, _definitions, context) do
     case bucketing_value(flag, context) do
       {:ok, bucketing} -> {:ok, context.person_properties, bucketing}
-      status -> status
+      :error -> {:inconclusive, :missing_context}
     end
   end
 
   defp evaluation_target(index, _flag, definitions, context) do
-    group_name = map_value(definitions.group_type_mapping, to_string(index))
+    group_name = group_name(definitions, index)
     group_key = if is_binary(group_name), do: map_value(context.groups, group_name)
     properties = if is_binary(group_name), do: map_value(context.group_properties, group_name)
 
     cond do
-      not is_binary(group_name) or is_nil(group_key) -> :inconclusive
-      not is_map(properties) -> :inconclusive
+      not is_binary(group_name) -> {:inconclusive, :unsupported_definition}
+      is_nil(group_key) or not is_map(properties) -> {:inconclusive, :missing_context}
       true -> {:ok, properties, to_string(group_key)}
     end
   end
@@ -194,13 +337,13 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
         {:ok, context.device_id}
 
       "device_id" ->
-        :inconclusive
+        :error
 
       _ when is_binary(context.distinct_id) ->
         {:ok, context.distinct_id}
 
       _ ->
-        :inconclusive
+        :error
     end
   end
 
@@ -213,9 +356,11 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
          _definitions,
          _context,
          cache,
-         inconclusive?
+         reason
        ) do
-    {if(inconclusive?, do: :inconclusive, else: {:ok, false}), cache}
+    # reason doubles as the inconclusive marker. It is never nil for an inconclusive condition,
+    # because only a whole-flag error has no reason, and that never reaches the condition loop.
+    {if(reason, do: {:inconclusive, reason}, else: {:ok, false}), cache}
   end
 
   defp evaluate_conditions(
@@ -227,7 +372,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
          definitions,
          context,
          cache,
-         inconclusive?
+         reason
        ) do
     case condition_target(
            condition,
@@ -256,7 +401,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
             {{:ok, value}, cache}
 
           :out_of_rollout ->
-            if value(value(flag, "filters"), "early_exit") == true and not inconclusive? do
+            if value(value(flag, "filters"), "early_exit") == true and is_nil(reason) do
               {{:ok, false}, cache}
             else
               evaluate_conditions(
@@ -268,7 +413,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
                 definitions,
                 context,
                 cache,
-                inconclusive?
+                reason
               )
             end
 
@@ -282,10 +427,10 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
               definitions,
               context,
               cache,
-              inconclusive?
+              reason
             )
 
-          :inconclusive ->
+          {:inconclusive, condition_reason} ->
             evaluate_conditions(
               rest,
               flag,
@@ -295,11 +440,16 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
               definitions,
               context,
               cache,
-              true
+              pick_reason(reason, condition_reason)
             )
 
-          :requires_server ->
-            {:requires_server, cache}
+          # Evaluation stops here and skips the conditions it did not reach, so the flag's
+          # definition still counts toward the reason.
+          {:requires_server, server_reason} ->
+            server_reason =
+              reason |> pick_reason(server_reason) |> with_definition_reason(flag, definitions)
+
+            {{:requires_server, server_reason}, cache}
         end
 
       :skip ->
@@ -312,10 +462,10 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
           definitions,
           context,
           cache,
-          inconclusive?
+          reason
         )
 
-      :inconclusive ->
+      {:inconclusive, target_reason} ->
         evaluate_conditions(
           rest,
           flag,
@@ -325,10 +475,34 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
           definitions,
           context,
           cache,
-          true
+          pick_reason(reason, target_reason)
         )
     end
   end
+
+  defp with_definition_reason(reason, flag, definitions) do
+    definition_reason =
+      case definitions do
+        %{definition_reasons: reasons} -> Map.get(reasons, value(flag, "key"))
+        # Definitions built without the loader, such as in tests.
+        _definitions -> definition_unresolved_reason(flag, definitions)
+      end
+
+    pick_reason(reason, definition_reason)
+  end
+
+  defp pick_reason(nil, reason), do: reason
+  defp pick_reason(reason, nil), do: reason
+
+  defp pick_reason(current, reason),
+    do: if(reason_rank(reason) < reason_rank(current), do: reason, else: current)
+
+  # When several causes apply to one flag, every SDK reports the first reason in this order,
+  # whatever order it inspects the filters in.
+  defp reason_rank(:experience_continuity), do: 0
+  defp reason_rank(:unsupported_definition), do: 1
+  defp reason_rank(:unresolved_dependency), do: 2
+  defp reason_rank(:missing_context), do: 3
 
   defp condition_target(condition, aggregation, properties, bucketing, flag, definitions, context)
        when is_map(condition) do
@@ -346,11 +520,11 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
         nil ->
           case bucketing_value(flag, context) do
             {:ok, person_bucketing} -> {:ok, context.person_properties, person_bucketing}
-            _ -> :inconclusive
+            :error -> {:inconclusive, :missing_context}
           end
 
         index ->
-          group_name = map_value(definitions.group_type_mapping, to_string(index))
+          group_name = group_name(definitions, index)
           group_key = if is_binary(group_name), do: map_value(context.groups, group_name)
 
           group_props =
@@ -358,7 +532,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
 
           cond do
             is_nil(group_key) -> :skip
-            not is_map(group_props) -> :inconclusive
+            not is_map(group_props) -> {:inconclusive, :missing_context}
             true -> {:ok, group_props, to_string(group_key)}
           end
       end
@@ -374,7 +548,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
          _definitions,
          _context
        ),
-       do: :inconclusive
+       do: {:inconclusive, :unsupported_definition}
 
   defp condition_match(condition, flag, properties, bucketing, definitions, context, cache) do
     property_filters = value(condition, "properties") || []
@@ -388,7 +562,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
         other -> {other, cache}
       end
     else
-      {:inconclusive, cache}
+      {{:inconclusive, :unsupported_definition}, cache}
     end
   end
 
@@ -412,22 +586,49 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
         {result, cache}
 
       _ ->
-        {:inconclusive, cache}
+        {{:inconclusive, :unsupported_definition}, cache}
     end
   end
 
+  # Filters in a condition have no defined order, so a filter that can't be checked does not
+  # stop the loop: a later filter can still rule the condition out or carry a higher reason.
   defp match_all_properties(properties, property_values, definitions, context, cache) do
     Enum.reduce_while(properties, {:match, cache}, fn property, {aggregate, cache} ->
-      {result, cache} =
-        match_typed_property(property, property_values, definitions, context, cache)
+      case match_condition_property(property, property_values, definitions, context, cache) do
+        {:no_match, cache} ->
+          {:halt, {:no_match, cache}}
 
-      case result do
-        :no_match -> {:halt, {:no_match, cache}}
-        :requires_server -> {:halt, {:requires_server, cache}}
-        :inconclusive -> {:cont, {:inconclusive, cache}}
-        :match -> {:cont, {aggregate, cache}}
+        {:match, cache} ->
+          {:cont, {aggregate, cache}}
+
+        {{_status, _reason} = uncertain, cache} ->
+          {:cont, {merge_uncertain(aggregate, uncertain), cache}}
+
+        {:error, kind, reason, stacktrace} ->
+          # The condition is already inconclusive, so an unexpected error in a later filter
+          # stops only this condition. Later conditions can still resolve the flag.
+          if aggregate == :match,
+            do: :erlang.raise(kind, reason, stacktrace),
+            else: {:halt, {aggregate, cache}}
       end
     end)
+  end
+
+  defp match_condition_property(property, property_values, definitions, context, cache) do
+    match_typed_property(property, property_values, definitions, context, cache)
+  catch
+    kind, reason -> {:error, kind, reason, __STACKTRACE__}
+  end
+
+  defp merge_uncertain(:match, uncertain), do: uncertain
+
+  defp merge_uncertain({left_status, left_reason}, {right_status, right_reason}) do
+    status =
+      if :requires_server in [left_status, right_status],
+        do: :requires_server,
+        else: :inconclusive
+
+    {status, pick_reason(left_reason, right_reason)}
   end
 
   defp match_typed_property(
@@ -454,54 +655,62 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
              property,
              property_values,
              context.now,
-             Map.get(definitions, :property_matching_version, 1)
+             Map.get(definitions, :property_matching_version, 1),
+             cohort?
            ), cache}
       end
 
     if result == :invalid_regex do
       # A cohort may be negated again at any outer group/reference. Keep malformed leaves
       # inconclusive there so an invalid search can never become a successful comparison.
-      {if(cohort?, do: :inconclusive, else: :no_match), cache}
+      {if(cohort?, do: {:inconclusive, :unsupported_definition}, else: :no_match), cache}
     else
       {apply_negation(result, value(property, "negation") == true), cache}
     end
   end
 
   defp match_typed_property(_property, _values, _definitions, _context, cache, _cohort?),
-    do: {:inconclusive, cache}
+    do: {{:inconclusive, :unsupported_definition}, cache}
 
   defp apply_negation(:match, true), do: :no_match
   defp apply_negation(:no_match, true), do: :match
   defp apply_negation(result, _negation), do: result
 
   defp match_dependency(property, definitions, context, cache) do
+    case dependency_filter(property, definitions) do
+      {:ok, key, expected, chain} ->
+        case evaluate_dependency_chain(chain, definitions, context, cache) do
+          {:ok, cache} -> dependency_result(key, expected, cache)
+          {uncertain, cache} -> {uncertain, cache}
+        end
+
+      :unsupported ->
+        {{:inconclusive, :unsupported_definition}, cache}
+
+      :no_match ->
+        {:no_match, cache}
+    end
+  end
+
+  # Evaluation and the load-time warning share this check, so both report the same reason.
+  defp dependency_filter(property, definitions) do
     key = value(property, "key")
     expected = value(property, "value")
+    chain = value(property, "dependency_chain")
 
     cond do
-      value(property, "operator") != "flag_evaluates_to" ->
-        {:no_match, cache}
+      value(property, "operator") != "flag_evaluates_to" or not is_binary(key) or is_nil(expected) ->
+        :no_match
 
-      not is_binary(key) or is_nil(expected) ->
-        {:no_match, cache}
+      not is_list(chain) or chain == [] or not Enum.all?(chain, &is_binary/1) ->
+        :unsupported
 
-      not has_key?(property, "dependency_chain") or value(property, "dependency_chain") == [] ->
-        {:inconclusive, cache}
-
-      not is_list(value(property, "dependency_chain")) or
-          not Enum.all?(value(property, "dependency_chain"), &is_binary/1) ->
-        {:inconclusive, cache}
+      # A dependency with no definition outranks one that is only unresolved.
+      not Enum.all?(chain, &Map.has_key?(definitions.flags_by_key, &1)) ->
+        :unsupported
 
       true ->
-        case evaluate_dependency_chain(
-               value(property, "dependency_chain"),
-               definitions,
-               context,
-               cache
-             ) do
-          {:ok, cache} -> dependency_result(key, expected, cache)
-          {:error, cache} -> {:inconclusive, cache}
-        end
+        {:ok, key, expected, chain}
     end
   end
 
@@ -512,27 +721,27 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
       {:done, {:ok, _value}} ->
         evaluate_dependency_chain(rest, definitions, context, cache)
 
-      {:done, _outcome} ->
-        {:error, cache}
+      {:done, outcome} ->
+        {unresolved_dependency(outcome), cache}
 
       :resolving ->
-        {:error, cache}
+        {{:inconclusive, :unsupported_definition}, cache}
 
       nil ->
-        case Map.fetch(definitions.flags_by_key, key) do
-          :error ->
-            {:error, Map.put(cache, key, {:done, :inconclusive})}
+        dependency = Map.fetch!(definitions.flags_by_key, key)
+        {outcome, cache} = evaluate_key(key, dependency, definitions, context, cache)
 
-          {:ok, dependency} ->
-            {outcome, cache} = evaluate_key(key, dependency, definitions, context, cache)
-
-            case outcome do
-              {:ok, _value} -> evaluate_dependency_chain(rest, definitions, context, cache)
-              _other -> {:error, cache}
-            end
+        case outcome do
+          {:ok, _value} -> evaluate_dependency_chain(rest, definitions, context, cache)
+          outcome -> {unresolved_dependency(outcome), cache}
         end
     end
   end
+
+  # Only the server knows the value of a dependency that requires it, and that value can
+  # decide which condition matches. So the dependent flag requires the server too, and a
+  # later condition must not choose a different value locally.
+  defp unresolved_dependency({status, _reason}), do: {status, :unresolved_dependency}
 
   defp dependency_result(key, expected, cache) do
     case Map.get(cache, key) do
@@ -540,7 +749,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
         {if(dependency_matches?(expected, actual), do: :match, else: :no_match), cache}
 
       _other ->
-        {:inconclusive, cache}
+        {{:inconclusive, :unresolved_dependency}, cache}
     end
   end
 
@@ -554,21 +763,26 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   defp dependency_matches?(_expected, _actual), do: false
 
   defp match_cohort(property, property_values, definitions, context, cache) do
-    cohort_id = to_string(value(property, "value"))
+    with cohort_id when is_binary(cohort_id) <- cohort_id(property),
+         {:ok, group} <- map_fetch(definitions.cohorts, cohort_id) do
+      result = match_property_group(group, property_values, definitions, context, cache)
 
-    case map_fetch(definitions.cohorts, cohort_id) do
-      :error ->
-        :requires_server
-
-      {:ok, group} ->
-        result = match_property_group(group, property_values, definitions, context, cache)
-
-        case value(property, "operator") || "exact" do
-          operator when operator in ["exact", "in"] -> result
-          "not_in" -> apply_negation(result, true)
-          _ -> :inconclusive
-        end
+      case value(property, "operator") || "exact" do
+        "not_in" -> apply_negation(result, true)
+        operator when operator in @cohort_operators -> result
+        _ -> {:inconclusive, :unsupported_definition}
+      end
+    else
+      # Likely a static cohort, whose members only the server knows, or a malformed reference.
+      :error -> {:requires_server, :unsupported_definition}
     end
+  end
+
+  # The other SDKs stringify any cohort reference and then find no such cohort.
+  defp cohort_id(property) do
+    to_string(value(property, "value"))
+  rescue
+    _exception -> :error
   end
 
   defp match_property_group(group, _property_values, _definitions, _context, _cache)
@@ -577,25 +791,24 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
 
   defp match_property_group(group, property_values, definitions, context, cache)
        when is_map(group) do
-    type = value(group, "type")
-    values = value(group, "values")
-
-    if type in ["AND", "OR"] and is_list(values) do
+    if valid_property_group?(group) do
+      type = value(group, "type")
+      values = value(group, "values")
       match_group_values(type, values, property_values, definitions, context, cache)
     else
-      :requires_server
+      {:requires_server, :unsupported_definition}
     end
   end
 
   defp match_property_group(_group, _property_values, _definitions, _context, _cache),
-    do: :requires_server
+    do: {:requires_server, :unsupported_definition}
 
   defp match_group_values(_type, [], _properties, _definitions, _context, _cache), do: :match
 
   defp match_group_values(type, values, properties, definitions, context, cache) do
     results =
       Enum.map(values, fn entry ->
-        if is_map(entry) and (entry == %{} or has_key?(entry, "values")) do
+        if subgroup_entry?(entry) do
           entry
           |> match_property_group(properties, definitions, context, cache)
           |> apply_negation(value(entry, "negation") == true)
@@ -610,43 +823,114 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
     combine_group_results(type, results)
   end
 
-  defp combine_group_results("AND", results) do
-    cond do
-      :requires_server in results -> :requires_server
-      :no_match in results -> :no_match
-      :inconclusive in results -> :inconclusive
-      true -> :match
-    end
-  end
+  defp combine_group_results(type, results) do
+    uncertain = Enum.filter(results, &match?({_status, _reason}, &1))
+    reason = uncertain |> Enum.map(&elem(&1, 1)) |> Enum.reduce(nil, &pick_reason(&2, &1))
 
-  defp combine_group_results("OR", results) do
     cond do
-      :requires_server in results -> :requires_server
-      :match in results -> :match
-      :inconclusive in results -> :inconclusive
+      Enum.any?(uncertain, &match?({:requires_server, _reason}, &1)) -> {:requires_server, reason}
+      type == "AND" and :no_match in results -> :no_match
+      type == "OR" and :match in results -> :match
+      uncertain != [] -> {:inconclusive, reason}
+      type == "AND" -> :match
       true -> :no_match
     end
   end
 
-  defp match_property(property, property_values, now, property_matching_version) do
+  defp match_property(property, property_values, now, property_matching_version, cohort?) do
     key = value(property, "key")
     operator = value(property, "operator") || "exact"
     filter_value = value(property, "value")
 
     case map_fetch(property_values, key) do
       :error ->
-        :inconclusive
+        {:inconclusive, property_reason(property, now, cohort?)}
 
       {:ok, property_value} when operator in ["exact", "is_not"] ->
         match = exact_match?(property_value, filter_value, property_matching_version)
         boolean_result(if(operator == "exact", do: match, else: not match))
 
       {:ok, property_value} ->
-        apply_operator(operator, property_value, filter_value, now)
+        case apply_operator(operator, property_value, filter_value, now) do
+          # The pattern is supported, but only the server can match it on this value.
+          :unusable_input ->
+            {:inconclusive, :missing_context}
+
+          # Only the server can run this pattern.
+          :inconclusive when operator in ["regex", "not_regex"] ->
+            {:inconclusive, :unsupported_definition}
+
+          :inconclusive ->
+            {:inconclusive, property_reason(property, now, cohort?)}
+
+          result ->
+            result
+        end
     end
   rescue
     # Unsupported comparisons must not prevent later conditions from matching.
-    _exception -> :inconclusive
+    _exception -> {:inconclusive, property_reason(property, now, cohort?)}
+  end
+
+  # A filter that local evaluation can't use outranks missing or unusable context, so the
+  # filter is checked before the context is blamed.
+  defp property_reason(property, now, cohort?) do
+    if filter_supported?(property, now, cohort?),
+      do: :missing_context,
+      else: :unsupported_definition
+  end
+
+  defp filter_supported?(property, now, cohort?) do
+    filter = value(property, "value")
+
+    case value(property, "operator") || "exact" do
+      operator when operator in ["exact", "is_not"] ->
+        exact_filter_supported?(filter)
+
+      operator when operator in ["is_set", "is_not_set"] ->
+        true
+
+      # Evaluation compares the filter as a string, which raises for a map, for example.
+      operator when operator in @search_operators ->
+        _ = to_string(filter)
+        true
+
+      operator when operator in ["regex", "not_regex"] ->
+        case compile_regex(to_string(filter)) do
+          {:ok, _regex} -> true
+          :invalid_regex -> not cohort?
+          :inconclusive -> false
+        end
+
+      operator when operator in ["gt", "gte", "lt", "lte"] ->
+        match?({:ok, _number}, number(filter))
+
+      operator when operator in ["is_date_before", "is_date_after"] ->
+        match?({:ok, _datetime}, parse_datetime(filter, now))
+
+      operator when operator in @semver_range_operators ->
+        match?({:ok, _lower, _upper}, semver_bounds(operator, filter))
+
+      operator when operator in @semver_operators ->
+        match?({:ok, _version}, parse_semver(filter))
+
+      _unknown ->
+        false
+    end
+  rescue
+    _exception -> false
+  end
+
+  # Equality raises for a composite candidate that has a float or Sigma casing, whatever the
+  # property. A scalar candidate fails only against a composite property, which is context.
+  defp exact_filter_supported?([_candidate | _rest] = filter),
+    do: Enum.all?(filter, &exact_candidate_supported?/1)
+
+  defp exact_filter_supported?(filter), do: exact_candidate_supported?(filter)
+
+  defp exact_candidate_supported?(candidate) do
+    {_string, composite?, sigma?} = prepare_exact_comparison(candidate)
+    not (composite? and sigma?)
   end
 
   defp apply_operator("is_set", _property, _filter, _now), do: :match
@@ -654,15 +938,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
 
   defp apply_operator(_operator, nil, _filter, _now), do: :no_match
 
-  defp apply_operator(operator, property, filter, _now)
-       when operator in [
-              "icontains",
-              "not_icontains",
-              "starts_with",
-              "not_starts_with",
-              "ends_with",
-              "not_ends_with"
-            ] do
+  defp apply_operator(operator, property, filter, _now) when operator in @search_operators do
     property = ascii_downcase(to_string(property))
     filter = ascii_downcase(to_string(filter))
 
@@ -722,28 +998,33 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   defp regex_match("", _input), do: true
 
   defp regex_match(pattern, input) do
+    case compile_regex(pattern) do
+      {:ok, regex} ->
+        # Make $ strict at the end of the input, rather than before a final LF.
+        if ascii_regex_input?(input) do
+          # Regex.match? hides match-limit errors as misses.
+          case :re.run(input, Regex.re_pattern(regex), [:report_errors, {:capture, :none}]) do
+            :match -> true
+            :nomatch -> false
+            {:error, _reason} -> :inconclusive
+          end
+        else
+          :unusable_input
+        end
+
+      result ->
+        result
+    end
+  end
+
+  defp compile_regex(pattern) do
     # PCRE's Unicode tables and set syntax differ from the service. Keep the shared ASCII
     # subset local, without changing POSIX classes by blindly enabling Unicode mode.
     if portable_regex?(pattern, :outside, :start) do
       case Regex.compile(pattern, [:dollar_endonly]) do
-        {:ok, regex} ->
-          # Make $ strict at the end of the input, rather than before a final LF.
-          if ascii_regex_input?(input) do
-            # Regex.match? hides match-limit errors as misses.
-            case :re.run(input, Regex.re_pattern(regex), [:report_errors, {:capture, :none}]) do
-              :match -> true
-              :nomatch -> false
-              {:error, _reason} -> :inconclusive
-            end
-          else
-            :inconclusive
-          end
-
-        {:error, {reason, _offset}} ->
-          invalid_regex_result(reason)
-
-        _ ->
-          :inconclusive
+        {:ok, regex} -> {:ok, regex}
+        {:error, {reason, _offset}} -> invalid_regex_result(reason)
+        _ -> :inconclusive
       end
     else
       :inconclusive
@@ -1164,14 +1445,8 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   defp semver_match(operator, property, filter) do
     with {:ok, actual} <- parse_semver(property) do
       case operator do
-        "semver_wildcard" ->
-          semver_range(actual, wildcard_bounds(filter))
-
-        "semver_tilde" ->
-          semver_range(actual, tilde_bounds(filter))
-
-        "semver_caret" ->
-          semver_range(actual, caret_bounds(filter))
+        operator when operator in @semver_range_operators ->
+          semver_range(actual, semver_bounds(operator, filter))
 
         _ ->
           with {:ok, expected} <- parse_semver(filter) do
@@ -1195,6 +1470,10 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
       _ -> :inconclusive
     end
   end
+
+  defp semver_bounds("semver_tilde", filter), do: tilde_bounds(filter)
+  defp semver_bounds("semver_caret", filter), do: caret_bounds(filter)
+  defp semver_bounds("semver_wildcard", filter), do: wildcard_bounds(filter)
 
   defp semver_range(_actual, :error), do: :inconclusive
 

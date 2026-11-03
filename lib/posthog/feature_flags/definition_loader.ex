@@ -167,7 +167,8 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
           group_type_mapping: map(),
           cohorts: map(),
           property_matching_version: term(),
-          minimal_flag_called_events: boolean()
+          minimal_flag_called_events: boolean(),
+          definition_reasons: %{String.t() => atom()}
         }
 
   def child_spec(opts) do
@@ -264,6 +265,8 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
       timer_generation: 0,
       quota_backoff_ms: nil,
       initial_load_complete?: false,
+      # Flag key => {reason, definition} already warned about as never locally resolvable.
+      warned_unresolvable_flags: %{},
       config: config
     }
 
@@ -508,10 +511,14 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
     current |> Kernel.*(2) |> max(baseline) |> min(cap)
   end
 
+  # A 304 keeps the installed definitions, so only an install can change what to warn about.
   defp install(state, snapshot, etag) do
+    reasons = PostHog.FeatureFlags.LocalEvaluator.definition_reasons(snapshot)
+
     state
     |> Map.put(:etag, etag)
-    |> successful_definition_refresh(snapshot)
+    |> successful_definition_refresh(Map.put(snapshot, :definition_reasons, reasons))
+    |> warn_unresolvable_flags()
   end
 
   defp successful_definition_refresh(state, snapshot) do
@@ -525,6 +532,40 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
         loaded_at: DateTime.utc_now(),
         quota_backoff_ms: nil
     }
+  end
+
+  defp warn_unresolvable_flags(%{definitions: definitions} = state) do
+    # Rebuilt from the current definitions, so a flag that is deleted or becomes resolvable
+    # warns again if it later returns to a definition local evaluation can't resolve.
+    unresolvable =
+      Map.new(definitions.definition_reasons, fn {key, reason} ->
+        {key, {reason, definitions.flags_by_key[key]}}
+      end)
+
+    unresolvable
+    |> Enum.reject(fn {key, entry} -> Map.get(state.warned_unresolvable_flags, key) == entry end)
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.each(fn {key, {reason, _flag}} -> warning(unresolvable_flag_message(key, reason)) end)
+
+    %{state | warned_unresolvable_flags: unresolvable}
+  rescue
+    # The warning is a diagnostic. It must never stop definitions from loading.
+    _exception -> state
+  end
+
+  defp unresolvable_flag_message(key, :experience_continuity) do
+    "feature flag #{inspect(key)} has experience continuity enabled and can't be evaluated " <>
+      "locally (reason: experience_continuity). Evaluating it makes a /flags request, or leaves " <>
+      "it unresolved with only_evaluate_locally: true. To evaluate it locally, disable " <>
+      "experience continuity on the flag in PostHog."
+  end
+
+  defp unresolvable_flag_message(key, reason) do
+    "feature flag #{inspect(key)} uses something local evaluation doesn't support, such as a " <>
+      "static cohort, an unknown operator, a malformed value, or a missing or circular flag " <>
+      "dependency (reason: #{reason}). Evaluating it makes a /flags request when evaluation " <>
+      "reaches that part, or leaves it unresolved with only_evaluate_locally: true. To evaluate " <>
+      "it locally, change the flag in PostHog or upgrade posthog."
   end
 
   defp next_definition_generation({incarnation, revision}),

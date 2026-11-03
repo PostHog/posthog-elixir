@@ -4,6 +4,10 @@ defmodule PostHog.FeatureFlags.LocalEvaluationIntegrationTest do
 
   alias PostHog.FeatureFlags
   alias PostHog.FeatureFlags.Evaluations
+  alias PostHog.FeatureFlags.Result
+
+  # Definitions that local evaluation can't resolve log a warning when they load.
+  @moduletag capture_log: true
 
   setup :set_mox_from_context
   setup :verify_on_exit!
@@ -760,6 +764,116 @@ defmodule PostHog.FeatureFlags.LocalEvaluationIntegrationTest do
 
     assert_receive {:missing_fallback, %{flag_keys_to_evaluate: ["missing"]}}
     assert snapshot.flags["missing"].enabled
+  end
+
+  test "local-only snapshots list unresolved flags and reading one reports an inconclusive evaluation" do
+    checkout = flag("checkout", [], %{"ensure_experience_continuity" => true})
+
+    expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+      {:ok, %{status: 200, body: envelope([flag("beta-ui"), checkout]), headers: %{}}}
+    end)
+
+    name = __MODULE__.Unresolved
+    start_instance(name)
+
+    assert {:ok, snapshot} =
+             FeatureFlags.evaluate_flags(name, %{distinct_id: "user", only_evaluate_locally: true})
+
+    assert Evaluations.keys(snapshot) == ["beta-ui"]
+    assert snapshot.unresolved_flags == %{"checkout" => :experience_continuity}
+    assert Evaluations.only(snapshot, ["beta-ui", "checkout"]).unresolved_flags == %{}
+
+    refute Evaluations.enabled?(snapshot, "checkout")
+    assert [%{properties: properties}] = PostHog.Test.all_captured(name)
+    assert properties[:"$feature_flag_error"] == "local_evaluation_inconclusive"
+    assert properties[:"$feature_flag_response"] == nil
+    refute Map.has_key?(PostHog.get_context(name), "$feature/checkout")
+  end
+
+  test "a flag the remote fallback returns, even as failed, is not unresolved" do
+    checkout = flag("checkout", [], %{"ensure_experience_continuity" => true})
+
+    expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+      {:ok, %{status: 200, body: envelope([flag("beta-ui"), checkout]), headers: %{}}}
+    end)
+
+    name = __MODULE__.UnresolvedFallback
+    start_instance(name)
+    failed = %{"enabled" => false, "failed" => true}
+    unresolved = %{"checkout" => :experience_continuity}
+
+    for {response, values, expected_unresolved} <- [
+          {%{"flags" => %{"checkout" => %{"enabled" => true}}}, %{"checkout" => true}, %{}},
+          {%{"flags" => %{"checkout" => failed}, "errorsWhileComputingFlags" => true},
+           %{"checkout" => false}, %{}},
+          {%{"flags" => %{}}, %{}, unresolved},
+          {:unavailable, %{}, unresolved}
+        ] do
+      expect(PostHog.API.Mock, :request, fn :stub_client, :post, "/flags", _opts ->
+        if response == :unavailable,
+          do: {:ok, %{status: 503, body: %{}}},
+          else: {:ok, %{status: 200, body: response}}
+      end)
+
+      assert {:ok, snapshot} = FeatureFlags.evaluate_flags(name, "user")
+
+      assert Map.new(snapshot.flags, fn {key, result} -> {key, Result.value(result)} end) ==
+               Map.put(values, "beta-ui", true)
+
+      assert snapshot.unresolved_flags == expected_unresolved
+    end
+  end
+
+  test "a dependency that requires the server falls back instead of choosing a later variant" do
+    dependency = %{
+      "type" => "flag",
+      "key" => "dep",
+      "operator" => "flag_evaluates_to",
+      "value" => true,
+      "dependency_chain" => ["dep"]
+    }
+
+    variants = [
+      %{"key" => "a", "rollout_percentage" => 50},
+      %{"key" => "b", "rollout_percentage" => 50}
+    ]
+
+    target =
+      flag("target")
+      |> put_in(["filters", "multivariate"], %{"variants" => variants})
+      |> put_in(["filters", "groups"], [
+        %{"properties" => [dependency], "rollout_percentage" => 100, "variant" => "a"},
+        %{"properties" => [], "rollout_percentage" => 100, "variant" => "b"}
+      ])
+
+    static_cohort_dependency = flag("dep", [%{"type" => "cohort", "value" => 999}])
+
+    expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+      {:ok, %{status: 200, body: envelope([static_cohort_dependency, target]), headers: %{}}}
+    end)
+
+    name = __MODULE__.ServerDependency
+    start_instance(name)
+
+    remote = %{
+      "flags" => %{
+        "dep" => %{"enabled" => true},
+        "target" => %{"enabled" => true, "variant" => "a"}
+      }
+    }
+
+    expect(PostHog.API.Mock, :request, 3, fn :stub_client, :post, "/flags", _opts ->
+      {:ok, %{status: 200, body: remote}}
+    end)
+
+    for flag_keys <- [["target"], nil] do
+      assert {:ok, snapshot} =
+               FeatureFlags.evaluate_flags(name, %{distinct_id: "user", flag_keys: flag_keys})
+
+      assert Evaluations.get_flag(snapshot, "target") == "a"
+    end
+
+    assert {:ok, "a"} = FeatureFlags.check(name, "target", "user")
   end
 
   test "deprecated getters evaluate dependencies locally and preserve local missing/send_event contracts" do
