@@ -1162,8 +1162,10 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
     bad_number = %{"key" => "age", "operator" => "gt", "value" => "not-a-number"}
     object_search = %{"key" => "plan", "operator" => "icontains", "value" => %{}}
     static_cohort = %{"type" => "cohort", "value" => 999}
-    # to_string/1 raises for a map, which no filter check expects.
-    raising_cohort = %{"type" => "cohort", "value" => %{}}
+    # Cohort "raising" holds an improper list, which no JSON definition can produce, so
+    # matching it raises an error that no filter check expects.
+    raising_cohort = %{"type" => "cohort", "value" => "raising"}
+    profile = &%{"key" => "profile", "operator" => &1, "value" => &2}
 
     conditions = fn conditions ->
       groups = Enum.map(conditions, &%{"properties" => &1, "rollout_percentage" => 100})
@@ -1189,6 +1191,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
     group = &put_in(flag("checkout", &1), ["filters", "aggregation_group_type_index"], 0)
     server_dependency = flag("dep", [static_cohort])
     plan = %{person_properties: %{plan: "pro"}}
+    anything = %{person_properties: %{"profile" => "anything"}}
 
     cases = [
       {"experience continuity", [continuity.("checkout")], %{},
@@ -1239,15 +1242,49 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
       {"missing property and an unexpected error, then a catch-all",
        [conditions.([[missing_plan, raising_cohort], []])], %{}, {:value, true}},
       {"unexpected error, then a catch-all", [conditions.([[raising_cohort], []])], %{},
-       {:reason, nil}}
+       {:reason, nil}},
+      {"malformed cohort reference", [flag("checkout", [%{"type" => "cohort", "value" => %{}}])],
+       %{}, {:reason, :unsupported_definition}, :unsupported_definition},
+      # The rows below also check the reason computed from the definition alone.
+      {"exact on a composite value with a float",
+       [flag("checkout", [profile.("exact", %{"n" => 0.1})])], anything,
+       {:reason, :unsupported_definition}, :unsupported_definition},
+      {"is_not on a composite value with a float",
+       [flag("checkout", [profile.("is_not", %{"n" => 0.1})])], anything,
+       {:reason, :unsupported_definition}, :unsupported_definition},
+      {"exact on a composite value with Sigma",
+       [flag("checkout", [profile.("exact", %{"name" => "ΟΣ"})])], anything,
+       {:reason, :unsupported_definition}, :unsupported_definition},
+      {"exact on a scalar float", [flag("checkout", [profile.("exact", 0.1)])],
+       %{person_properties: %{"profile" => 0.1}}, {:value, true}, nil},
+      {"supported regex, non-ASCII value", [flag("checkout", [profile.("regex", "^a$")])],
+       %{person_properties: %{"profile" => "é"}}, {:reason, :missing_context}, nil},
+      {"regex only the server can run", [flag("checkout", [profile.("regex", "(?=a)")])],
+       %{person_properties: %{"profile" => "a"}}, {:reason, :unsupported_definition},
+       :unsupported_definition}
     ]
 
     cohort = %{"type" => "AND", "values" => [depends_on("dep"), unknown_operator]}
-    extras = %{group_type_mapping: %{"0" => "organization"}, cohorts: %{"1" => cohort}}
+    raising = %{"type" => "AND", "values" => [%{} | :improper]}
 
-    for {name, flags, context, expected} <- cases do
+    extras = %{
+      group_type_mapping: %{"0" => "organization"},
+      cohorts: %{"1" => cohort, "raising" => raising}
+    }
+
+    for row <- cases do
+      {name, flags, context, expected, definition_reason} =
+        with {name, flags, context, expected} <- row,
+             do: {name, flags, context, expected, :unchecked}
+
       context = Map.put(context, :distinct_id, "user")
-      result = LocalEvaluator.evaluate(snapshot(flags, extras), context, ["checkout"])
+      definitions = snapshot(flags, extras)
+      result = LocalEvaluator.evaluate(definitions, context, ["checkout"])
+
+      if definition_reason != :unchecked do
+        actual_definition_reason = LocalEvaluator.definition_reasons(definitions)["checkout"]
+        assert {name, actual_definition_reason} == {name, definition_reason}
+      end
 
       actual =
         case result.results do

@@ -161,8 +161,9 @@ defmodule PostHog.FeatureFlags.DefinitionLoaderTest do
     stub_with(PostHog.API.Mock, PostHog.API.Stub)
     {:ok, counter} = Agent.start_link(fn -> 0 end)
     checkout = %{"key" => "checkout", "active" => true, "ensure_experience_continuity" => true}
-    # The unresolvable-flag check raises on this cohort value.
-    unreadable = %{"type" => "cohort", "value" => %{}}
+    # The unresolvable-flag check raises on this cohort, which holds an improper list that no
+    # JSON definition can produce.
+    unreadable = %{"type" => "cohort", "value" => "unreadable"}
 
     malformed = %{
       "key" => "malformed",
@@ -227,7 +228,8 @@ defmodule PostHog.FeatureFlags.DefinitionLoaderTest do
       %{
         envelope()
         | "flags" => [checkout, malformed, cycle, regex, object_search, dag],
-          "cohorts" => dag_cohorts
+          "cohorts" =>
+            Map.put(dag_cohorts, "unreadable", %{"type" => "AND", "values" => [%{} | :improper]})
       }
     end
 

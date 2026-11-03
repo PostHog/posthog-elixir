@@ -143,10 +143,10 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
     do: {true, visited}
 
   defp unsupported_cohort?(property, definitions, visited, now) do
-    cohort_id = to_string(value(property, "value"))
+    cohort_id = cohort_id(property)
 
     cond do
-      (value(property, "operator") || "exact") not in @cohort_operators ->
+      (value(property, "operator") || "exact") not in @cohort_operators or cohort_id == :error ->
         {true, visited}
 
       MapSet.member?(visited, cohort_id) ->
@@ -763,22 +763,26 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   defp dependency_matches?(_expected, _actual), do: false
 
   defp match_cohort(property, property_values, definitions, context, cache) do
-    cohort_id = to_string(value(property, "value"))
+    with cohort_id when is_binary(cohort_id) <- cohort_id(property),
+         {:ok, group} <- map_fetch(definitions.cohorts, cohort_id) do
+      result = match_property_group(group, property_values, definitions, context, cache)
 
-    case map_fetch(definitions.cohorts, cohort_id) do
-      # Likely a static cohort, whose members only the server knows.
-      :error ->
-        {:requires_server, :unsupported_definition}
-
-      {:ok, group} ->
-        result = match_property_group(group, property_values, definitions, context, cache)
-
-        case value(property, "operator") || "exact" do
-          "not_in" -> apply_negation(result, true)
-          operator when operator in @cohort_operators -> result
-          _ -> {:inconclusive, :unsupported_definition}
-        end
+      case value(property, "operator") || "exact" do
+        "not_in" -> apply_negation(result, true)
+        operator when operator in @cohort_operators -> result
+        _ -> {:inconclusive, :unsupported_definition}
+      end
+    else
+      # Likely a static cohort, whose members only the server knows, or a malformed reference.
+      :error -> {:requires_server, :unsupported_definition}
     end
+  end
+
+  # The other SDKs stringify any cohort reference and then find no such cohort.
+  defp cohort_id(property) do
+    to_string(value(property, "value"))
+  rescue
+    _exception -> :error
   end
 
   defp match_property_group(group, _property_values, _definitions, _context, _cache)
@@ -848,7 +852,11 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
 
       {:ok, property_value} ->
         case apply_operator(operator, property_value, filter_value, now) do
-          # Only the server can run this pattern on this value.
+          # The pattern is supported, but only the server can match it on this value.
+          :unusable_input ->
+            {:inconclusive, :missing_context}
+
+          # Only the server can run this pattern.
           :inconclusive when operator in ["regex", "not_regex"] ->
             {:inconclusive, :unsupported_definition}
 
@@ -876,7 +884,10 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
     filter = value(property, "value")
 
     case value(property, "operator") || "exact" do
-      operator when operator in ["exact", "is_not", "is_set", "is_not_set"] ->
+      operator when operator in ["exact", "is_not"] ->
+        exact_filter_supported?(filter)
+
+      operator when operator in ["is_set", "is_not_set"] ->
         true
 
       # Evaluation compares the filter as a string, which raises for a map, for example.
@@ -908,6 +919,18 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
     end
   rescue
     _exception -> false
+  end
+
+  # Equality raises for a composite candidate that has a float or Sigma casing, whatever the
+  # property. A scalar candidate fails only against a composite property, which is context.
+  defp exact_filter_supported?([_candidate | _rest] = filter),
+    do: Enum.all?(filter, &exact_candidate_supported?/1)
+
+  defp exact_filter_supported?(filter), do: exact_candidate_supported?(filter)
+
+  defp exact_candidate_supported?(candidate) do
+    {_string, composite?, sigma?} = prepare_exact_comparison(candidate)
+    not (composite? and sigma?)
   end
 
   defp apply_operator("is_set", _property, _filter, _now), do: :match
@@ -986,7 +1009,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
             {:error, _reason} -> :inconclusive
           end
         else
-          :inconclusive
+          :unusable_input
         end
 
       result ->
