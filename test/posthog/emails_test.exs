@@ -368,9 +368,32 @@ defmodule PostHog.EmailsTest do
                  ])
 
         assert field_name == to_string(field)
+        assert error.why =~ "recipients and content from the template"
         assert error.fix =~ "template_key"
       end
 
+      refute_requested()
+    end
+
+    test "asks for atom keys when an attachment has string keys", %{name: name} do
+      assert {:error,
+              %Error{code: "invalid_attachment", field: "attachments__0__content"} = error} =
+               Emails.send(
+                 name,
+                 @code_send ++ [attachments: [%{"filename" => "a.txt", "content" => "a"}]]
+               )
+
+      assert error.message =~ ~s(:content, not "content")
+      refute_requested()
+    end
+
+    test "refuses an attachment key that has no string form", %{name: name} do
+      attachment = %{{:extra, :field} => true, filename: "a.txt", content: "a"}
+
+      assert {:error, %Error{code: "invalid_attachment", field: "attachments__0"} = error} =
+               Emails.send(name, @code_send ++ [attachments: [attachment]])
+
+      assert error.message =~ "{:extra, :field}"
       refute_requested()
     end
 

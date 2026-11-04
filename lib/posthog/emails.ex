@@ -165,6 +165,8 @@ defmodule PostHog.Emails do
                  ]
   @address_fields [:reply_to, :cc, :bcc]
   @attachment_fields [:filename, :content, :content_type, :content_id]
+  @attachment_field_names Enum.map(@attachment_fields, &Atom.to_string/1)
+  @template_owned_fields [:cc, :bcc, :attachments]
 
   @typedoc """
   Options for `send/2`. Pass `:template_id` or `:template_key`, never both.
@@ -402,7 +404,7 @@ defmodule PostHog.Emails do
        |> Map.take([:to, :distinct_id, :template_key, :subject, :html, :text, :from])
        |> Map.put(:capture_engagement, Map.get(options, :capture_engagement, true))
        |> put_addresses(options)
-       |> put_unless_empty(:attachments, attachments)}
+       |> put_if_any(:attachments, attachments)}
     end
   end
 
@@ -466,13 +468,12 @@ defmodule PostHog.Emails do
 
   defp put_addresses(content, options) do
     Enum.reduce(@address_fields, content, fn field, content ->
-      put_unless_empty(content, field, List.wrap(Map.get(options, field)))
+      put_if_any(content, field, List.wrap(Map.get(options, field)))
     end)
   end
 
-  # A server that doesn't take a field yet refuses it even when empty, so an empty list stays out.
-  defp put_unless_empty(content, _field, []), do: content
-  defp put_unless_empty(content, field, list), do: Map.put(content, field, list)
+  defp put_if_any(content, _field, []), do: content
+  defp put_if_any(content, field, list), do: Map.put(content, field, list)
 
   defp addresses?(address) when is_binary(address), do: nonblank?(address)
   defp addresses?(addresses) when is_list(addresses), do: Enum.all?(addresses, &nonblank?/1)
@@ -497,7 +498,7 @@ defmodule PostHog.Emails do
     do: invalid_attachment("attachments must be a list of files.", "attachments")
 
   defp attachment(attachment, field) when is_map(attachment) and not is_struct(attachment) do
-    attachment = attachment |> Enum.reject(fn {_key, value} -> is_nil(value) end) |> Map.new()
+    attachment = Map.reject(attachment, fn {_key, value} -> is_nil(value) end)
     unknown = attachment |> Map.keys() |> Enum.reject(&(&1 in @attachment_fields)) |> Enum.sort()
 
     cond do
@@ -509,12 +510,7 @@ defmodule PostHog.Emails do
         )
 
       unknown != [] ->
-        key = to_string(hd(unknown))
-
-        invalid_attachment(
-          "An attachment takes filename, content, content_type and content_id, not #{key}.",
-          field <> "__" <> key
-        )
+        unknown_attachment_key(hd(unknown), field)
 
       not is_binary(attachment[:filename]) ->
         invalid_attachment("An attachment needs its filename as a string.", field <> "__filename")
@@ -536,7 +532,22 @@ defmodule PostHog.Emails do
   defp attachment(_attachment, field),
     do: invalid_attachment("An attachment is a map with filename and content.", field)
 
-  # The message never holds the file's content, so the error is safe to log.
+  defp unknown_attachment_key(key, field) when key in @attachment_field_names,
+    do:
+      invalid_attachment(
+        ~s(Attachment keys are atoms: use :#{key}, not "#{key}".),
+        "#{field}__#{key}"
+      )
+
+  defp unknown_attachment_key(key, field) when is_atom(key) or is_binary(key),
+    do: invalid_attachment(attachment_keys_message(key), "#{field}__#{key}")
+
+  defp unknown_attachment_key(key, field),
+    do: invalid_attachment(attachment_keys_message(inspect(key)), field)
+
+  defp attachment_keys_message(key),
+    do: "An attachment takes filename, content, content_type and content_id, not #{key}."
+
   defp invalid_attachment(message, field), do: invalid("invalid_attachment", message, field)
 
   defp refuse_fields_outside(options, form) do
@@ -555,6 +566,13 @@ defmodule PostHog.Emails do
     end
   end
 
+  defp template_owns(field) when field in @template_owned_fields,
+    do: "A send with template_id takes its recipients and content from the template."
+
+  defp template_owns(_field),
+    do:
+      "A template made in PostHog sets its own sender, subject and content, and follows the project's engagement setting."
+
   defp field_outside_error(form, field, other_form_takes_it?) do
     form_field = if form == :template, do: "template_id", else: "template_key"
     message = "A send with #{form_field} doesn't take #{field}, so no email was sent."
@@ -563,8 +581,7 @@ defmodule PostHog.Emails do
       {why, how} =
         case form do
           :template ->
-            {"A template made in PostHog sets its own sender, subject and content, and follows the project's engagement setting.",
-             "send content from your code with template_key"}
+            {template_owns(field), "send content from your code with template_key"}
 
           :code ->
             {"A send with template_key takes its content from your code.",
