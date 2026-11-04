@@ -146,8 +146,6 @@ defmodule PostHog.Emails do
     "https://eu.posthog.com" => @eu_app_host
   }
   @max_retry_delay_ms 30_000
-  @default_timeout_ms 15_000
-  @default_max_retries 2
   @log_metadata [posthog_skip_capture: true]
 
   @shared_fields [:to, :distinct_id, :idempotency_key, :max_retries]
@@ -633,10 +631,7 @@ defmodule PostHog.Emails do
     end
   end
 
-  defp uuid?(value),
-    do:
-      is_binary(value) and
-        value =~ ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
+  defp uuid?(value), do: UUIDv7.decode(value) != :error
 
   defp nonempty?(value), do: is_binary(value) and value != ""
   defp nonblank?(value), do: is_binary(value) and String.trim(value) != ""
@@ -646,11 +641,7 @@ defmodule PostHog.Emails do
   defp uuid4 do
     <<a::48, _::4, b::12, _::2, c::62>> = :crypto.strong_rand_bytes(16)
 
-    <<a::48, 4::4, b::12, 2::2, c::62>>
-    |> Base.encode16(case: :lower)
-    |> then(fn <<p1::binary-8, p2::binary-4, p3::binary-4, p4::binary-4, p5::binary-12>> ->
-      Enum.join([p1, p2, p3, p4, p5], "-")
-    end)
+    UUIDv7.encode(<<a::48, 4::4, b::12, 2::2, c::62>>)
   end
 
   # Connection
@@ -672,8 +663,8 @@ defmodule PostHog.Emails do
          app_host: app_host,
          secret_key: secret_key,
          migrated_from: Map.get(config, :migrated_from),
-         timeout_ms: Map.get(config, :email_request_timeout_ms, @default_timeout_ms),
-         max_retries: Map.get(config, :email_request_max_retries, @default_max_retries),
+         timeout_ms: config.email_request_timeout_ms,
+         max_retries: config.email_request_max_retries,
          sleep: Map.get(config, :email_sleep, &Process.sleep/1)
        }}
     end
@@ -857,7 +848,12 @@ defmodule PostHog.Emails do
 
   defp unwrap({:returned, result}), do: result
   defp unwrap({:raised, exception, stacktrace}), do: reraise(exception, stacktrace)
-  defp unwrap({:caught, kind, reason, stacktrace}), do: :erlang.raise(kind, reason, stacktrace)
+  # Finch exits when its pool goes away mid-request, such as during a restart, so an exit is
+  # a network failure.
+  defp unwrap({:caught, :exit, reason, _stacktrace}), do: {:error, {:exit, reason}}
+
+  defp unwrap({:caught, :throw, value, stacktrace}),
+    do: :erlang.raise(:error, {:nocatch, value}, stacktrace)
 
   defp fields(body) when is_map(body), do: body
 
