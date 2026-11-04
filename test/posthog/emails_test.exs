@@ -707,6 +707,32 @@ defmodule PostHog.EmailsTest do
 
       assert {{:error, %Error{code: "network_error"}}, {:messages, []}} = Task.await(task)
     end
+
+    test "retries a client exit, such as a restarting pool, as a network error", %{name: name} do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        exit({:noproc, {GenServer, :call, [:pool, :checkout, 5_000]}})
+      end)
+
+      expect_reply(accepted())
+
+      assert {:ok, %Emails.SendResult{id: @message_id}} =
+               Emails.send(name, to: "user@example.com", template_id: @template_id)
+
+      assert_received {:slept, _ms}
+    end
+
+    test "returns a client exit on a status read as network_error", %{name: name} do
+      expect(API.Mock, :request, 3, fn _client, :get, _url, _opts -> exit(:normal) end)
+
+      assert {:error, %Error{code: "network_error"}} = Emails.get(name, @message_id)
+    end
+
+    test "returns a client throw as unexpected_error without crashing the caller", %{name: name} do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts -> throw(:boom) end)
+
+      assert {:error, %Error{code: "unexpected_error"}} =
+               Emails.send(name, to: "user@example.com", template_id: @template_id)
+    end
   end
 
   describe "send/2 replies" do

@@ -205,14 +205,14 @@ defmodule PostHog.Config do
   defp normalize_api_key(nil), do: ""
   defp normalize_api_key(api_key), do: api_key
 
-  defp normalize_optional_string(secret_key) when is_binary(secret_key) do
-    case String.trim(secret_key) do
+  defp normalize_optional_string(value) when is_binary(value) do
+    case String.trim(value) do
       "" -> nil
-      value -> value
+      trimmed -> trimmed
     end
   end
 
-  defp normalize_optional_string(secret_key), do: secret_key
+  defp normalize_optional_string(value), do: value
 
   defp normalize_api_host(api_host) when is_binary(api_host) do
     api_host
