@@ -202,7 +202,7 @@ defmodule PostHog.Emails do
     `:filename`, `:content` (the file's bytes, such as `File.read!/1` returns), and optionally
     `:content_type`, such as `"application/pdf"`, and `:content_id`, which shows the file
     inline: reference it in `:html` as `<img src="cid:logo">` with `content_id: "logo"`. The
-    SDK encodes the bytes as Base64. PostHog can't fetch a file from a path or URL. A file the
+    SDK encodes the bytes as Base64. Pass raw bytes, not Base64, or the content is encoded twice. PostHog can't fetch a file from a path or URL. A file the
     SDK can't send returns the error code `invalid_attachment`.
   - `:capture_engagement` - whether PostHog captures the email's opens and clicks as events of
     the recipient. Defaults to `true`. A project whose admin turned engagement capture off
@@ -232,7 +232,8 @@ defmodule PostHog.Emails do
           | {:capture_engagement, boolean() | nil}
 
   @typedoc """
-  A file sent with the email. `:content` is the file's bytes; the SDK encodes them as Base64.
+  A file sent with the email. `:content` is the file's raw bytes, which the SDK encodes as
+  Base64. Don't pass content that is already Base64: it would be encoded twice.
   """
   @type attachment() :: %{
           required(:filename) => String.t(),
