@@ -849,9 +849,7 @@ defmodule PostHog.Emails do
 
   defp unwrap({:returned, result}), do: result
   defp unwrap({:raised, exception, stacktrace}), do: reraise(exception, stacktrace)
-  # Finch exits when its pool goes away mid-request, such as during a restart, so an exit is
-  # a network failure.
-  defp unwrap({:caught, :exit, reason, _stacktrace}), do: {:error, {:exit, reason}}
+  defp unwrap({:caught, :exit, reason, _stacktrace}), do: {:error, {:client_exit, reason}}
 
   defp unwrap({:caught, :throw, value, stacktrace}),
     do: :erlang.raise(:error, {:nocatch, value}, stacktrace)
