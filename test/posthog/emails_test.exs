@@ -384,6 +384,14 @@ defmodule PostHog.EmailsTest do
                )
 
       assert error.message =~ ~s(:content, not "content")
+
+      assert {:error, %Error{field: "attachments__0__content"}} =
+               Emails.send(
+                 name,
+                 @code_send ++
+                   [attachments: [%{"filename" => "a.txt", "content" => "a", "cid" => "logo"}]]
+               )
+
       refute_requested()
     end
 

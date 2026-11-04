@@ -510,7 +510,7 @@ defmodule PostHog.Emails do
         )
 
       unknown != [] ->
-        unknown_attachment_key(hd(unknown), field)
+        unknown_attachment_key(key_to_report(unknown), field)
 
       not is_binary(attachment[:filename]) ->
         invalid_attachment("An attachment needs its filename as a string.", field <> "__filename")
@@ -531,6 +531,9 @@ defmodule PostHog.Emails do
 
   defp attachment(_attachment, field),
     do: invalid_attachment("An attachment is a map with filename and content.", field)
+
+  defp key_to_report(unknown_keys),
+    do: Enum.find(unknown_keys, hd(unknown_keys), &(&1 in @attachment_field_names))
 
   defp unknown_attachment_key(key, field) when key in @attachment_field_names,
     do:
