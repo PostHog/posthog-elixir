@@ -118,8 +118,9 @@ defmodule PostHog.Config do
 
   ## Remarks
 
-  String `:api_key`, `:secret_key`, and `:api_host` values are trimmed before validation. A blank
-  `:api_host` falls back to the default PostHog US ingestion host.
+  String `:api_key`, `:secret_key`, `:app_host`, and `:api_host` values are trimmed before
+  validation. A blank `:api_host` falls back to the default PostHog US ingestion host, and a blank
+  `:app_host` counts as unset.
   """
   @spec validate(options()) ::
           {:ok, config()} | {:error, NimbleOptions.ValidationError.t()}
@@ -179,7 +180,14 @@ defmodule PostHog.Config do
     end)
     |> then(fn normalized_options ->
       if Keyword.has_key?(normalized_options, :secret_key) do
-        Keyword.update!(normalized_options, :secret_key, &normalize_secret_key/1)
+        Keyword.update!(normalized_options, :secret_key, &normalize_optional_string/1)
+      else
+        normalized_options
+      end
+    end)
+    |> then(fn normalized_options ->
+      if Keyword.has_key?(normalized_options, :app_host) do
+        Keyword.update!(normalized_options, :app_host, &normalize_optional_string/1)
       else
         normalized_options
       end
@@ -197,14 +205,14 @@ defmodule PostHog.Config do
   defp normalize_api_key(nil), do: ""
   defp normalize_api_key(api_key), do: api_key
 
-  defp normalize_secret_key(secret_key) when is_binary(secret_key) do
-    case String.trim(secret_key) do
+  defp normalize_optional_string(value) when is_binary(value) do
+    case String.trim(value) do
       "" -> nil
-      value -> value
+      trimmed -> trimmed
     end
   end
 
-  defp normalize_secret_key(secret_key), do: secret_key
+  defp normalize_optional_string(value), do: value
 
   defp normalize_api_host(api_host) when is_binary(api_host) do
     api_host

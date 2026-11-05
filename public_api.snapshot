@@ -105,6 +105,44 @@ PostHog.Config
   macros:
     (none)
 
+PostHog.Emails
+  module_doc: documented
+  functions:
+    get/1 doc: none
+    get/2 doc: documented
+    send/1 doc: none
+    send/2 doc: documented
+  macros:
+    (none)
+
+PostHog.Emails.Error
+  module_doc: documented
+  functions:
+    new/2 doc: none
+  macros:
+    (none)
+
+PostHog.Emails.SendResult
+  module_doc: documented
+  functions:
+    (none)
+  macros:
+    (none)
+
+PostHog.Emails.Status
+  module_doc: documented
+  functions:
+    (none)
+  macros:
+    (none)
+
+PostHog.Emails.Warning
+  module_doc: documented
+  functions:
+    (none)
+  macros:
+    (none)
+
 PostHog.Error
   module_doc: documented
   functions:

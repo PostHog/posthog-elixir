@@ -59,7 +59,7 @@ defmodule PostHog.Supervisor do
         {Registry,
          keys: :unique,
          name: PostHog.Registry.registry_name(config.supervisor_name),
-         meta: [config: public_config]},
+         meta: [config: public_config, secret_key: config.secret_key]},
         {PostHog.FeatureFlags.CalledCache, supervisor_name: config.supervisor_name}
       ] ++ definition_loader(config, callers) ++ senders(config) ++ sources(config)
 
