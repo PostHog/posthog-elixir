@@ -46,8 +46,8 @@ defmodule PostHog.Config.Schema do
         A privileged project secret (`phs_`) or appropriately scoped personal API key (`phx_`).
         Fetches local feature flag definitions directly from PostHog. A configured
         `flag_definition_cache_provider` can supply definitions without this key.
-        `PostHog.Emails` needs a project secret API key with the `hog_flow:write` scope to send
-        email, or `hog_flow:read` to read an email's status.
+        `PostHog.Emails` needs a project secret API key with the `transactional_email:write`
+        scope to send email, or `transactional_email:read` to read an email's status.
         """
       ],
       app_host: [

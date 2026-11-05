@@ -13,9 +13,10 @@ defmodule PostHog.Emails do
 
   1. In PostHog, open the email template under Workflows, make it transactional, and copy its
      ID. `:template_id` is that UUID. The code form needs no template.
-  2. Create a project secret API key (`phs_...`) with Workflow write access (`hog_flow:write`)
-     in your project settings. The project API key (`phc_...`) captures events but cannot send
-     email.
+  2. Create a project secret API key (`phs_...`) with the "Send transactional email" preset
+     (`transactional_email:write`) in your project settings. Add `transactional_email:read` too
+     if you read email statuses with a key that can't send. Keys made with `hog_flow:write`
+     still work. The project API key (`phc_...`) captures events but cannot send email.
   3. Set it as `:secret_key` in your PostHog config:
 
          config :posthog,
@@ -94,7 +95,7 @@ defmodule PostHog.Emails do
   - `missing_secret_key`: the config has no `:secret_key`.
   - `missing_app_host`: the `:api_host` is not PostHog Cloud. Set `:app_host`.
   - `authentication_failed` (401) or `permission_denied` (403): the key is wrong, or it lacks
-    `hog_flow:write`.
+    `transactional_email:write`.
   - `not_found` (404): the template ID is wrong, or transactional email is not enabled for the
     project.
   - `client_disabled`: the PostHog instance is not running or has no `:api_key`, so it sends
@@ -231,8 +232,8 @@ defmodule PostHog.Emails do
 
   Returns `{:ok, %PostHog.Emails.Status{}}` or `{:error, %PostHog.Emails.Error{}}`. The error
   code is `not_found` when no email of this project has the ID, when the email is older than 30
-  days, or for a few seconds after the send. A key with only `hog_flow:read` can read statuses
-  but not send. Network errors, rate limits and an unavailable service are retried.
+  days, or for a few seconds after the send. A key with only `transactional_email:read` can read
+  statuses but not send. Network errors, rate limits and an unavailable service are retried.
 
   ## Examples
 
@@ -606,9 +607,9 @@ defmodule PostHog.Emails do
         message =
           if operation == :send,
             do:
-              "Sending email needs secret_key, a project secret API key with the hog_flow:write scope.",
+              "Sending email needs secret_key, a project secret API key with the transactional_email:write scope.",
             else:
-              "Reading an email status needs secret_key, a project secret API key with the hog_flow:read or hog_flow:write scope."
+              "Reading an email status needs secret_key, a project secret API key with the transactional_email:read or transactional_email:write scope."
 
         {:error, Error.new("missing_secret_key", message)}
     end
