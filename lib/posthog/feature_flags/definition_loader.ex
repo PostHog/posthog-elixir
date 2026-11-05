@@ -264,6 +264,7 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
       timer_ref: nil,
       timer_generation: 0,
       quota_backoff_ms: nil,
+      reported_rejected_key?: false,
       initial_load_complete?: false,
       # Flag key => {reason, definition} already warned about as never locally resolvable.
       warned_unresolvable_flags: %{},
@@ -473,9 +474,13 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
     |> successful_definition_refresh(state.definitions)
   end
 
-  defp handle_response(state, {:ok, %{status: status}}, _store?) when status in [401, 402, 403] do
-    warning("definition refresh was rejected with HTTP #{status}; clearing local definitions")
-    %{state | definitions: nil, etag: nil, loaded_at: nil, quota_backoff_ms: nil}
+  defp handle_response(state, {:ok, %{status: status}}, _store?) when status in [401, 403] do
+    state |> report_rejected_key_once(status) |> clear_definitions()
+  end
+
+  defp handle_response(state, {:ok, %{status: 402}}, _store?) do
+    warning("definition refresh was rejected with HTTP 402; clearing local definitions")
+    clear_definitions(state)
   end
 
   defp handle_response(state, {:ok, %{status: 429}}, _store?) do
@@ -504,6 +509,29 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
     state
   end
 
+  defp clear_definitions(state),
+    do: %{state | definitions: nil, etag: nil, loaded_at: nil, quota_backoff_ms: nil}
+
+  defp report_rejected_key_once(%{reported_rejected_key?: true} = state, status) do
+    Logger.debug("definition refresh was rejected again with HTTP #{status}",
+      posthog_skip_capture: true
+    )
+
+    state
+  end
+
+  defp report_rejected_key_once(state, status) do
+    warning(
+      "your secret_key can't load feature flag definitions for local evaluation " <>
+        "(HTTP #{status}). The key is invalid or lacks the Feature flags: Read scope. " <>
+        "Add the scope to the key, or set enable_local_evaluation: false if you don't " <>
+        "evaluate flags locally. This warning won't repeat until definitions load. " <>
+        "More information: https://posthog.com/docs/feature-flags/local-evaluation"
+    )
+
+    %{state | reported_rejected_key?: true}
+  end
+
   defp next_quota_backoff(state) do
     baseline = state.config.feature_flags_poll_interval_ms
     current = max(state.quota_backoff_ms || baseline, baseline)
@@ -530,7 +558,8 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
       | definitions: snapshot,
         definition_generation: generation,
         loaded_at: DateTime.utc_now(),
-        quota_backoff_ms: nil
+        quota_backoff_ms: nil,
+        reported_rejected_key?: false
     }
   end
 
