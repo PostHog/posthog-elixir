@@ -350,6 +350,53 @@ defmodule PostHog.FeatureFlags.DefinitionLoaderTest do
     assert DefinitionLoader.definitions(__MODULE__.Transport).flags_by_key["stale"]
   end
 
+  defp rejected_key_warnings(log),
+    do: log |> String.split("Feature flags: Read") |> length() |> Kernel.-(1)
+
+  defp serve_definition_statuses(statuses) do
+    stub_with(PostHog.API.Mock, PostHog.API.Stub)
+    {:ok, queue} = Agent.start_link(fn -> statuses end)
+
+    expect(PostHog.API.Mock, :request, length(statuses), fn :stub_client,
+                                                            :get,
+                                                            "/flags/definitions",
+                                                            _opts ->
+      queue |> Agent.get_and_update(fn [next | rest] -> {next, rest} end) |> status_response()
+    end)
+  end
+
+  defp status_response(200), do: {:ok, %{status: 200, body: envelope(), headers: %{}}}
+  defp status_response(status), do: {:ok, %{status: status, body: %{}, headers: %{}}}
+
+  for status <- [401, 403] do
+    test "a key rejected with #{status} warns once across polls" do
+      serve_definition_statuses(List.duplicate(unquote(status), 5))
+      name = Module.concat(__MODULE__, "Rejected#{unquote(status)}")
+
+      log =
+        capture_log(fn ->
+          start_supervised!({PostHog.Supervisor, config(name)})
+          for _ <- 1..4, do: DefinitionLoader.refresh(name)
+        end)
+
+      assert rejected_key_warnings(log) == 1
+      assert log =~ "enable_local_evaluation: false"
+      refute DefinitionLoader.ready?(name)
+    end
+  end
+
+  test "a rejected key warns again after definitions load in between" do
+    serve_definition_statuses([401, 401, 200, 401, 401])
+
+    log =
+      capture_log(fn ->
+        start_supervised!({PostHog.Supervisor, config(__MODULE__.RejectedAgain)})
+        for _ <- 1..4, do: DefinitionLoader.refresh(__MODULE__.RejectedAgain)
+      end)
+
+    assert rejected_key_warnings(log) == 2
+  end
+
   test "401, 402, and 403 clear definitions while 429 preserves stale state and backs off" do
     stub_with(PostHog.API.Mock, PostHog.API.Stub)
     statuses = [401, 402, 403, 429]
