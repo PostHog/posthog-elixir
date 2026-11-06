@@ -535,10 +535,14 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
   end
 
   defp warn_unresolvable_flags(%{definitions: definitions} = state) do
-    # Rebuilt from the current definitions, so a flag that is deleted or becomes resolvable
-    # warns again if it later returns to a definition local evaluation can't resolve.
+    # Rebuilt from the current definitions, so deleted, resolvable or client-only flags
+    # warn again if they later return to a warning-eligible definition.
     unresolvable =
-      Map.new(definitions.definition_reasons, fn {key, reason} ->
+      definitions.definition_reasons
+      |> Enum.reject(fn {key, _reason} ->
+        value(definitions.flags_by_key[key], "evaluation_runtime") == "client"
+      end)
+      |> Map.new(fn {key, reason} ->
         {key, {reason, definitions.flags_by_key[key]}}
       end)
 
@@ -636,6 +640,9 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
     do: Map.get(map, "property_matching_version", Map.get(map, :property_matching_version, 1))
 
   defp value(map, "key"), do: Map.get(map, "key", Map.get(map, :key))
+
+  defp value(map, "evaluation_runtime"),
+    do: Map.get(map, "evaluation_runtime", Map.get(map, :evaluation_runtime))
 
   defp response_etag(%{headers: headers}), do: header_value(headers, "etag")
   defp response_etag(_response), do: nil
