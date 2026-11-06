@@ -636,7 +636,7 @@ defmodule PostHog.EmailsTest do
       assert {:error, %Error{code: "missing_secret_key", name: :missing_api_key} = error} =
                Emails.send(name, to: "user@example.com", template_id: @template_id)
 
-      assert error.message =~ "hog_flow:write"
+      assert error.message =~ "transactional_email:write scope"
       refute_requested()
     end
 
