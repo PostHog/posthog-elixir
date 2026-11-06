@@ -48,6 +48,20 @@ defmodule PostHog.Emails do
         idempotency_key: "password-reset:\#{reset.id}"
       )
 
+  Copy finance and attach the receipt:
+
+      PostHog.Emails.send(
+        to: "user@example.com",
+        cc: "finance@example.com",
+        template_key: "receipt",
+        subject: "Your receipt",
+        html: rendered_html,
+        attachments: [
+          %{filename: "receipt.pdf", content: File.read!(pdf_path), content_type: "application/pdf"}
+        ],
+        distinct_id: "user_123"
+      )
+
   Read what happened to it:
 
       {:ok, %PostHog.Emails.Status{status: status}} = PostHog.Emails.get(message_id)
@@ -138,7 +152,22 @@ defmodule PostHog.Emails do
   @shared_fields [:to, :distinct_id, :idempotency_key, :max_retries]
   @template_fields @shared_fields ++ [:template_id, :template_data]
   @code_fields @shared_fields ++
-                 [:template_key, :subject, :html, :text, :from, :reply_to, :capture_engagement]
+                 [
+                   :template_key,
+                   :subject,
+                   :html,
+                   :text,
+                   :from,
+                   :reply_to,
+                   :cc,
+                   :bcc,
+                   :attachments,
+                   :capture_engagement
+                 ]
+  @address_fields [:reply_to, :cc, :bcc]
+  @attachment_fields [:filename, :content, :content_type, :content_id]
+  @attachment_field_names Enum.map(@attachment_fields, &Atom.to_string/1)
+  @template_owned_fields [:cc, :bcc, :attachments]
 
   @typedoc """
   Options for `send/2`. Pass `:template_id` or `:template_key`, never both.
@@ -170,11 +199,22 @@ defmodule PostHog.Emails do
   - `:from` - a verified sender, such as `"Acme <security@example.com>"`. Without it, the
     project's default sender.
   - `:reply_to` - one address or a list of addresses.
+  - `:cc` and `:bcc` - one address or a list of at most 10 bare addresses, such as
+    `"finance@example.com"`, that get a visible or a hidden copy.
+  - `:attachments` - a list of files, at most 10 and 512 KB in total. Each is a map with
+    `:filename`, `:content` (the file's bytes, such as `File.read!/1` returns), and optionally
+    `:content_type`, such as `"application/pdf"`, and `:content_id`, which shows the file
+    inline: reference it in `:html` as `<img src="cid:logo">` with `content_id: "logo"`. The
+    SDK encodes the bytes as Base64. Pass raw bytes, not Base64, or the content is encoded twice. PostHog can't fetch a file from a path or URL. A file the
+    SDK can't send returns the error code `invalid_attachment`.
   - `:capture_engagement` - whether PostHog captures the email's opens and clicks as events of
     the recipient. Defaults to `true`. A project whose admin turned engagement capture off
     captures nothing, whatever the send asks.
 
-  An option set to `nil` counts as left out.
+  An option set to `nil` counts as left out, and so does an empty `:reply_to`, `:cc`, `:bcc` or
+  `:attachments` list. PostHog holds the limits. A PostHog version that doesn't take a field
+  yet, such as `:attachments`, refuses the send with an error whose `:field` names it, and never
+  drops the field to send the rest.
   """
   @type send_option() ::
           {:to, String.t()}
@@ -189,7 +229,21 @@ defmodule PostHog.Emails do
           | {:text, String.t() | nil}
           | {:from, String.t() | nil}
           | {:reply_to, String.t() | [String.t()] | nil}
+          | {:cc, String.t() | [String.t()] | nil}
+          | {:bcc, String.t() | [String.t()] | nil}
+          | {:attachments, [attachment()] | nil}
           | {:capture_engagement, boolean() | nil}
+
+  @typedoc """
+  A file sent with the email. `:content` is the file's raw bytes, which the SDK encodes as
+  Base64. Don't pass content that is already Base64: it would be encoded twice.
+  """
+  @type attachment() :: %{
+          required(:filename) => String.t(),
+          required(:content) => binary(),
+          optional(:content_type) => String.t() | nil,
+          optional(:content_id) => String.t() | nil
+        }
 
   @doc """
   Queues one email, from a template made in PostHog or from content your code rendered.
@@ -344,12 +398,14 @@ defmodule PostHog.Emails do
   defp code_content(%{template_key: template_key} = options) do
     with :ok <- check_template_key(template_key),
          :ok <- refuse_fields_outside(options, :code),
-         :ok <- check_code_fields(options) do
+         :ok <- check_code_fields(options),
+         {:ok, attachments} <- attachments(Map.get(options, :attachments, [])) do
       {:ok,
        options
        |> Map.take([:to, :distinct_id, :template_key, :subject, :html, :text, :from])
        |> Map.put(:capture_engagement, Map.get(options, :capture_engagement, true))
-       |> put_reply_to(options)}
+       |> put_addresses(options)
+       |> put_if_any(:attachments, attachments)}
     end
   end
 
@@ -392,11 +448,12 @@ defmodule PostHog.Emails do
       not_string?(options, :from) ->
         invalid("invalid_form", "from must be a string.", "from")
 
-      Map.has_key?(options, :reply_to) and not addresses?(options.reply_to) ->
+      field =
+          Enum.find(@address_fields, &(Map.has_key?(options, &1) and not addresses?(options[&1]))) ->
         invalid(
           "invalid_form",
-          "reply_to must be one address or a list of addresses.",
-          "reply_to"
+          "#{field} must be one address or a list of addresses.",
+          to_string(field)
         )
 
       not is_boolean(Map.get(options, :capture_engagement, true)) ->
@@ -410,15 +467,92 @@ defmodule PostHog.Emails do
   defp not_string?(options, field),
     do: Map.has_key?(options, field) and not is_binary(Map.fetch!(options, field))
 
-  defp put_reply_to(content, %{reply_to: reply_to}) when is_binary(reply_to),
-    do: Map.put(content, :reply_to, [reply_to])
+  defp put_addresses(content, options) do
+    Enum.reduce(@address_fields, content, fn field, content ->
+      put_if_any(content, field, List.wrap(Map.get(options, field)))
+    end)
+  end
 
-  defp put_reply_to(content, %{reply_to: reply_to}), do: Map.put(content, :reply_to, reply_to)
-  defp put_reply_to(content, _options), do: content
+  defp put_if_any(content, _field, []), do: content
+  defp put_if_any(content, field, list), do: Map.put(content, field, list)
 
   defp addresses?(address) when is_binary(address), do: nonblank?(address)
   defp addresses?(addresses) when is_list(addresses), do: Enum.all?(addresses, &nonblank?/1)
   defp addresses?(_addresses), do: false
+
+  defp attachments(attachments) when is_list(attachments) do
+    attachments
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {attachment, index}, {:ok, encoded} ->
+      case attachment(attachment, "attachments__#{index}") do
+        {:ok, attachment} -> {:cont, {:ok, [attachment | encoded]}}
+        error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, encoded} -> {:ok, Enum.reverse(encoded)}
+      error -> error
+    end
+  end
+
+  defp attachments(_attachments),
+    do: invalid_attachment("attachments must be a list of files.", "attachments")
+
+  defp attachment(attachment, field) when is_map(attachment) and not is_struct(attachment) do
+    attachment = Map.reject(attachment, fn {_key, value} -> is_nil(value) end)
+    unknown = attachment |> Map.keys() |> Enum.reject(&(&1 in @attachment_fields)) |> Enum.sort()
+
+    cond do
+      Map.has_key?(attachment, :path) ->
+        invalid_attachment(
+          "PostHog can't fetch an attachment from a path or URL. Read the file, for example " <>
+            "with File.read!/1, and pass its bytes as content.",
+          field <> "__path"
+        )
+
+      unknown != [] ->
+        unknown_attachment_key(key_to_report(unknown), field)
+
+      not is_binary(attachment[:filename]) ->
+        invalid_attachment("An attachment needs its filename as a string.", field <> "__filename")
+
+      not is_binary(attachment[:content]) ->
+        invalid_attachment(
+          "An attachment needs content: the file's bytes as a binary.",
+          field <> "__content"
+        )
+
+      key = Enum.find([:content_type, :content_id], &not_string?(attachment, &1)) ->
+        invalid_attachment("An attachment's #{key} must be a string.", "#{field}__#{key}")
+
+      true ->
+        {:ok, Map.update!(attachment, :content, &Base.encode64/1)}
+    end
+  end
+
+  defp attachment(_attachment, field),
+    do: invalid_attachment("An attachment is a map with filename and content.", field)
+
+  defp key_to_report(unknown_keys),
+    do: Enum.find(unknown_keys, hd(unknown_keys), &(&1 in @attachment_field_names))
+
+  defp unknown_attachment_key(key, field) when key in @attachment_field_names,
+    do:
+      invalid_attachment(
+        ~s(Attachment keys are atoms: use :#{key}, not "#{key}".),
+        "#{field}__#{key}"
+      )
+
+  defp unknown_attachment_key(key, field) when is_atom(key) or is_binary(key),
+    do: invalid_attachment(attachment_keys_message(key), "#{field}__#{key}")
+
+  defp unknown_attachment_key(key, field),
+    do: invalid_attachment(attachment_keys_message(inspect(key)), field)
+
+  defp attachment_keys_message(key),
+    do: "An attachment takes filename, content, content_type and content_id, not #{key}."
+
+  defp invalid_attachment(message, field), do: invalid("invalid_attachment", message, field)
 
   defp refuse_fields_outside(options, form) do
     {fields, other_fields} =
@@ -436,6 +570,13 @@ defmodule PostHog.Emails do
     end
   end
 
+  defp template_owns(field) when field in @template_owned_fields,
+    do: "A send with template_id takes its recipients and content from the template."
+
+  defp template_owns(_field),
+    do:
+      "A template made in PostHog sets its own sender, subject and content, and follows the project's engagement setting."
+
   defp field_outside_error(form, field, other_form_takes_it?) do
     form_field = if form == :template, do: "template_id", else: "template_key"
     message = "A send with #{form_field} doesn't take #{field}, so no email was sent."
@@ -444,8 +585,7 @@ defmodule PostHog.Emails do
       {why, how} =
         case form do
           :template ->
-            {"A template made in PostHog sets its own sender, subject and content, and follows the project's engagement setting.",
-             "send content from your code with template_key"}
+            {template_owns(field), "send content from your code with template_key"}
 
           :code ->
             {"A send with template_key takes its content from your code.",

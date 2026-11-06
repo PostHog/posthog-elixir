@@ -281,6 +281,217 @@ defmodule PostHog.EmailsTest do
     end
   end
 
+  describe "send/2 with cc, bcc and attachments" do
+    @code_send [to: "user@example.com", template_key: "receipt", subject: "Hi", html: "<p/>"]
+    @pdf <<37, 80, 68, 70, 45, 0, 255, 10>>
+
+    test "posts copies and Base64 attachments", %{name: name} do
+      expect_reply(accepted())
+
+      assert {:ok, %Emails.SendResult{id: @message_id}} =
+               Emails.send(
+                 name,
+                 @code_send ++
+                   [
+                     cc: "finance@example.com",
+                     bcc: ["audit@example.com", "archive@example.com"],
+                     attachments: [
+                       %{filename: "invoice.pdf", content: @pdf, content_type: "application/pdf"},
+                       %{filename: "logo.png", content: "png bytes", content_id: "logo"}
+                     ]
+                   ]
+               )
+
+      body = sent_body()
+      assert body["cc"] == ["finance@example.com"]
+      assert body["bcc"] == ["audit@example.com", "archive@example.com"]
+
+      assert body["attachments"] == [
+               %{
+                 "filename" => "invoice.pdf",
+                 "content" => Base.encode64(@pdf),
+                 "content_type" => "application/pdf"
+               },
+               %{
+                 "filename" => "logo.png",
+                 "content" => Base.encode64("png bytes"),
+                 "content_id" => "logo"
+               }
+             ]
+    end
+
+    test "leaves out empty lists and nil attachment fields", %{name: name} do
+      expect_reply(accepted())
+
+      assert {:ok, _} =
+               Emails.send(
+                 name,
+                 @code_send ++
+                   [
+                     reply_to: [],
+                     cc: [],
+                     bcc: nil,
+                     attachments: [],
+                     distinct_id: "user_123"
+                   ]
+               )
+
+      body = sent_body()
+      refute Map.has_key?(body, "reply_to")
+      refute Map.has_key?(body, "cc")
+      refute Map.has_key?(body, "bcc")
+      refute Map.has_key?(body, "attachments")
+
+      expect_reply(accepted())
+
+      assert {:ok, _} =
+               Emails.send(
+                 name,
+                 @code_send ++
+                   [attachments: [%{filename: "a.txt", content: "a", content_type: nil}]]
+               )
+
+      assert sent_body()["attachments"] == [%{"filename" => "a.txt", "content" => "YQ=="}]
+    end
+
+    test "a template send refuses them before any request", %{name: name} do
+      for {field, value} <- [
+            cc: "finance@example.com",
+            bcc: "audit@example.com",
+            attachments: [%{filename: "a.txt", content: "a"}]
+          ] do
+        assert {:error, %Error{code: "invalid_form", field: field_name} = error} =
+                 Emails.send(name, [
+                   {field, value},
+                   to: "user@example.com",
+                   template_id: @template_id
+                 ])
+
+        assert field_name == to_string(field)
+        assert error.why =~ "recipients and content from the template"
+        assert error.fix =~ "template_key"
+      end
+
+      refute_requested()
+    end
+
+    test "asks for atom keys when an attachment has string keys", %{name: name} do
+      assert {:error,
+              %Error{code: "invalid_attachment", field: "attachments__0__content"} = error} =
+               Emails.send(
+                 name,
+                 @code_send ++ [attachments: [%{"filename" => "a.txt", "content" => "a"}]]
+               )
+
+      assert error.message =~ ~s(:content, not "content")
+
+      assert {:error, %Error{field: "attachments__0__content"}} =
+               Emails.send(
+                 name,
+                 @code_send ++
+                   [attachments: [%{"filename" => "a.txt", "content" => "a", "cid" => "logo"}]]
+               )
+
+      refute_requested()
+    end
+
+    test "refuses an attachment key that has no string form", %{name: name} do
+      attachment = %{{:extra, :field} => true, filename: "a.txt", content: "a"}
+
+      assert {:error, %Error{code: "invalid_attachment", field: "attachments__0"} = error} =
+               Emails.send(name, @code_send ++ [attachments: [attachment]])
+
+      assert error.message =~ "{:extra, :field}"
+      refute_requested()
+    end
+
+    test "refuses cc and bcc that are not addresses", %{name: name} do
+      for {field, value} <- [cc: [:nope], bcc: " ", cc: %{a: 1}] do
+        assert {:error, %Error{code: "invalid_form", field: field_name}} =
+                 Emails.send(name, @code_send ++ [{field, value}])
+
+        assert field_name == to_string(field)
+      end
+
+      refute_requested()
+    end
+
+    test "refuses an attachment it can't send, naming the field", %{name: name} do
+      for {attachments, field} <- [
+            {%{filename: "a.txt", content: "a"}, "attachments"},
+            {"invoice.pdf", "attachments"},
+            {[[filename: "a.txt", content: "a"]], "attachments__0"},
+            {[%{filename: "a.txt", content: "a"}, "b.txt"], "attachments__1"},
+            {[%{filename: "a.txt", path: "/tmp/a.txt"}], "attachments__0__path"},
+            {[%{filename: "a.txt", content: "a", cid: "logo"}], "attachments__0__cid"},
+            {[%{"filename" => "a.txt", "content" => "a"}], "attachments__0__content"},
+            {[%{filename: "a.txt"}], "attachments__0__content"},
+            {[%{filename: "a.txt", content: [97]}], "attachments__0__content"},
+            {[%{filename: "a.txt", content: <<1::3>>}], "attachments__0__content"},
+            {[%{content: "a"}], "attachments__0__filename"},
+            {[%{filename: :a, content: "a"}], "attachments__0__filename"},
+            {[%{filename: "a.txt", content: "a", content_type: :pdf}],
+             "attachments__0__content_type"},
+            {[%{filename: "a.txt", content: "a", content_id: 1}], "attachments__0__content_id"}
+          ] do
+        assert {:error,
+                %Error{code: "invalid_attachment", name: :validation_error, field: ^field}} =
+                 Emails.send(name, @code_send ++ [attachments: attachments])
+      end
+
+      refute_requested()
+    end
+
+    test "a path points to reading the file", %{name: name} do
+      assert {:error, %Error{message: message}} =
+               Emails.send(
+                 name,
+                 @code_send ++ [attachments: [%{filename: "a.pdf", path: "/srv/a.pdf"}]]
+               )
+
+      assert message =~ "File.read"
+    end
+
+    test "never repeats the file's content in an error", %{name: name} do
+      assert {:error, %Error{} = error} =
+               Emails.send(
+                 name,
+                 @code_send ++
+                   [attachments: [%{filename: 1, content: "SECRET-FILE-BYTES"}]]
+               )
+
+      refute inspect(error) =~ "SECRET-FILE-BYTES"
+    end
+
+    test "returns a server's refusal of a field it doesn't take", %{name: name} do
+      expect_reply(
+        refused(400, %{
+          "type" => "validation_error",
+          "code" => "invalid_request",
+          "detail" => "PostHog doesn't take this field yet, so it didn't send the email.",
+          "attr" => "attachments",
+          "why" => "This PostHog version doesn't take the field yet.",
+          "fix" => "Send the email without this field."
+        })
+      )
+
+      assert {:error,
+              %Error{
+                code: "invalid_request",
+                field: "attachments",
+                name: :validation_error,
+                status_code: 400
+              }} =
+               Emails.send(
+                 name,
+                 @code_send ++ [attachments: [%{filename: "a.txt", content: "a"}]]
+               )
+
+      assert_received {:request, :post, @send_url, _opts}
+      refute_received {:request, _, _, _}
+    end
+  end
+
   describe "send/2 argument checks" do
     test "needs exactly one form", %{name: name} do
       assert {:error, %Error{code: "invalid_form"}} = Emails.send(name, to: "user@example.com")
@@ -296,11 +507,16 @@ defmodule PostHog.EmailsTest do
     end
 
     test "refuses an option neither form takes", %{name: name} do
-      assert {:error, %Error{code: "invalid_form", field: "cc", fix: "Remove cc and send again."}} =
+      assert {:error,
+              %Error{
+                code: "invalid_form",
+                field: "headers",
+                fix: "Remove headers and send again."
+              }} =
                Emails.send(name,
                  to: "user@example.com",
                  template_id: @template_id,
-                 cc: "x@example.com"
+                 headers: %{"X-Campaign" => "welcome"}
                )
 
       refute_requested()
