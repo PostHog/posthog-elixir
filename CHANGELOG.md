@@ -1,5 +1,11 @@
 # posthog
 
+## 2.20.1 — 2026-11-06
+
+### Patch changes
+
+- [4206af6](https://github.com/posthog/posthog-elixir/commit/4206af6e244d37d5ca26f623688c4ed67084f15b) Suppress local-evaluation definition warnings for client-only flags without changing local evaluation or unresolved reasons. — Thanks @marandaneto!
+
 ## 2.20.0 — 2026-11-05
 
 ### Minor changes
