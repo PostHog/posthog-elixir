@@ -62,10 +62,11 @@ defmodule PostHog.Emails do
 
   ## Message categories
 
-  Without `:category`, an email is transactional. To send marketing email, such as a product
-  update, pass the key of one of the project's marketing message categories. PostHog then
-  honors the recipient's opt-outs and adds unsubscribe headers, and the content must link to
-  `{{ unsubscribe_url }}`:
+  Without `:category`, content from your code is transactional, and a template made in PostHog
+  sends in the template's own category. To send marketing email from your code, such as a
+  product update, pass the key of one of the project's marketing message categories. PostHog
+  then honors the recipient's opt-outs and adds unsubscribe headers, and the content must link
+  to `{{ unsubscribe_url }}`:
 
       PostHog.Emails.send(
         to: "user@example.com",
@@ -181,8 +182,8 @@ defmodule PostHog.Emails do
     `idempotency_key_reused`.
   - `:max_retries` - overrides the config's `:email_request_max_retries` for this send. `0`
     turns retries off.
-  - `:category` - the email's message category, a `t:category/0`. Left out, the email is
-    transactional.
+  - `:category` - the email's message category, a `t:category/0`. Left out, content from your
+    code is transactional, and a template made in PostHog sends in its own category.
 
   A template made in PostHog takes:
 
@@ -224,16 +225,16 @@ defmodule PostHog.Emails do
   @typedoc """
   An email's message category: `"transactional" | String.t()`.
 
-  Left out, or `"transactional"` (`transactional_category/0`), the email is transactional.
-  Any other value is the key of one of the project's marketing message categories, such as
+  `"transactional"` (`transactional_category/0`) makes the email transactional. Any other value is the key of one of the project's marketing message categories, such as
   `"product-updates"`, and the email is a marketing email in that category. A marketing email
   honors the recipient's opt-outs, so PostHog refuses it with `recipient_opted_out` when the
   recipient opted out of the category or of all marketing. Its `:html`, or its `:text` when it
   has no `:html`, must contain `{{ unsubscribe_url }}`, which PostHog replaces with the
   recipient's preferences link.
 
-  A template made in PostHog sends in the template's own category. On a send with
-  `:template_id`, leave `:category` out or pass the template's category.
+  Left out, content from your code is transactional, and a template made in PostHog sends in
+  the template's own category. On a send with `:template_id`, leave `:category` out or pass
+  the template's category: `"transactional"` for a transactional template, else its key.
   """
   @type category() :: String.t()
 
