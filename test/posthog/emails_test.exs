@@ -15,6 +15,22 @@ defmodule PostHog.EmailsTest.ReqTestClient do
   defdelegate request(client, method, url, opts), to: Client
 end
 
+defmodule PostHog.EmailsTest.StorageServer do
+  @moduledoc false
+  # A storage host on a real socket, which reports each upload to the test.
+  @behaviour Plug
+
+  @impl true
+  def init(test_pid), do: test_pid
+
+  @impl true
+  def call(conn, test_pid) do
+    {:ok, body, conn} = Plug.Conn.read_body(conn)
+    send(test_pid, {:stored, conn.method, conn.request_path, conn.req_headers, body})
+    Plug.Conn.send_resp(conn, 200, "")
+  end
+end
+
 defmodule PostHog.EmailsTest do
   use ExUnit.Case, async: true
 
@@ -51,7 +67,10 @@ defmodule PostHog.EmailsTest do
         send(test_pid, {:slept, ms})
         if context[:stop_instance_on_sleep], do: stop_supervised!(context.test)
       end)
-      |> Map.put(:email_upload_adapter, {Req.Plug, plug: {Req.Test, PostHog.EmailsTest.Storage}})
+      |> Map.put(
+        :email_upload_adapter,
+        context[:upload_adapter] || {Req.Plug, plug: {Req.Test, PostHog.EmailsTest.Storage}}
+      )
 
     start_link_supervised!({PostHog.Supervisor, config})
     %{name: context.test}
@@ -478,6 +497,27 @@ defmodule PostHog.EmailsTest do
       assert [_ask, {:put, @put_url, put}, _send] = requests()
       header_names = for {key, _value} <- put[:headers], do: key
       assert Enum.sort(header_names) == ["content-length", "x-amz-checksum-sha256"]
+    end
+
+    # The installed Req's default adapter, over a real socket, as in production.
+    @tag upload_adapter: :none
+    test "uploads over HTTP with Req's default adapter", %{name: name} do
+      {:ok, server} =
+        start_supervised(
+          {Bandit, plug: {PostHog.EmailsTest.StorageServer, self()}, ip: :loopback, port: 0}
+        )
+
+      {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
+      url = "http://127.0.0.1:#{port}/team/1/file?X-Amz-Signature=signed"
+
+      expect_reply(slots([Map.put(to_upload(@pdf), "url", url)]))
+      expect_reply(accepted())
+
+      assert {:ok, _} = Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+
+      assert_received {:stored, "PUT", "/team/1/file", headers, @pdf}
+      refute List.keymember?(headers, "authorization", 0)
+      assert {"x-amz-checksum-sha256", :crypto.hash(:sha256, @pdf) |> Base.encode64()} in headers
     end
 
     test "uploads nothing when PostHog has every file", %{name: name} do

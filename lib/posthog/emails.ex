@@ -719,7 +719,7 @@ defmodule PostHog.Emails do
          timeout_ms: config.email_request_timeout_ms,
          max_retries: config.email_request_max_retries,
          sleep: Map.get(config, :email_sleep, &Process.sleep/1),
-         upload_adapter: Map.get(config, :email_upload_adapter)
+         upload_adapter: Map.get(config, :email_upload_adapter, :none)
        }}
     end
   end
@@ -851,7 +851,7 @@ defmodule PostHog.Emails do
   end
 
   # Req's own default adapter, which differs between Req versions, unless a test sets one.
-  defp with_upload_adapter(request, nil), do: request
+  defp with_upload_adapter(request, :none), do: request
 
   defp with_upload_adapter(request, {adapter, options}),
     do: %{request | adapter: adapter, options: Map.merge(request.options, Map.new(options))}
