@@ -113,6 +113,19 @@ defmodule PostHog.EmailsTest do
              }
     end
 
+    test "sends the category it is given", %{name: name} do
+      expect_reply(accepted())
+
+      assert {:ok, _} =
+               Emails.send(name,
+                 to: "user@example.com",
+                 template_id: @template_id,
+                 category: Emails.transactional_category()
+               )
+
+      assert %{"category" => "transactional"} = sent_body()
+    end
+
     test "never takes the distinct ID from the process context", %{name: name} do
       PostHog.set_context(name, %{distinct_id: "context_user"})
       expect_reply(accepted())
@@ -262,6 +275,34 @@ defmodule PostHog.EmailsTest do
                  subject: "Hi",
                  html: "<p/>",
                  reply_to: [:nope]
+               )
+
+      refute_requested()
+    end
+
+    test "sends a marketing category", %{name: name} do
+      expect_reply(accepted())
+
+      assert {:ok, _} =
+               Emails.send(name,
+                 to: "user@example.com",
+                 template_key: "product-update",
+                 subject: "What's new",
+                 html: "<p>New</p> {{ unsubscribe_url }}",
+                 category: "product-updates"
+               )
+
+      assert %{"category" => "product-updates"} = sent_body()
+    end
+
+    test "refuses a category that is not a string", %{name: name} do
+      assert {:error, %Error{code: "invalid_form", field: "category"}} =
+               Emails.send(name,
+                 to: "user@example.com",
+                 template_key: "receipt",
+                 subject: "Hi",
+                 html: "<p/>",
+                 category: :transactional
                )
 
       refute_requested()
@@ -525,11 +566,17 @@ defmodule PostHog.EmailsTest do
                )
     end
 
-    test "does not retry a monthly quota, a conflict or a suppressed recipient", %{name: name} do
+    test "does not retry a monthly quota, a conflict or a refused recipient or category", %{
+      name: name
+    } do
       for {status, code, error_name} <- [
             {429, "quota_limited", :monthly_quota_exceeded},
             {409, "template_outdated", :validation_error},
             {422, "recipient_suppressed", :validation_error},
+            {422, "recipient_opted_out", :validation_error},
+            {400, "unknown_category", :validation_error},
+            {400, "category_mismatch", :validation_error},
+            {400, "unsubscribe_link_required", :validation_error},
             {422, "idempotency_key_reused", :invalid_idempotent_request},
             {400, "invalid_recipient", :validation_error},
             {401, "authentication_failed", :missing_api_key},

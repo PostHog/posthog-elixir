@@ -112,6 +112,7 @@ PostHog.Emails
     get/2 doc: documented
     send/1 doc: none
     send/2 doc: documented
+    transactional_category/0 doc: documented
   macros:
     (none)
 

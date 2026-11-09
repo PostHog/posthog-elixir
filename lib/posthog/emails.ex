@@ -1,6 +1,6 @@
 defmodule PostHog.Emails do
   @moduledoc """
-  Send transactional email, such as a password reset or a receipt, and read its status.
+  Send email, such as a password reset, a receipt or a product update, and read its status.
 
   An email goes out in one of two forms:
 
@@ -60,6 +60,24 @@ defmodule PostHog.Emails do
   `{:ok, result}` means PostHog queued the email. Delivery happens later: read it with `get/2`,
   or in the template's workflow in PostHog.
 
+  ## Message categories
+
+  Without `:category`, an email is transactional. To send marketing email, such as a product
+  update, pass the key of one of the project's marketing message categories. PostHog then
+  honors the recipient's opt-outs and adds unsubscribe headers, and the content must link to
+  `{{ unsubscribe_url }}`:
+
+      PostHog.Emails.send(
+        to: "user@example.com",
+        template_key: "product-update",
+        subject: "What's new",
+        html: rendered_html_with_unsubscribe_url,
+        category: "product-updates",
+        distinct_id: "user_123"
+      )
+
+  See `t:category/0`.
+
   ## Where requests go
 
   A client on PostHog Cloud sends to its region's app host, `https://us.posthog.com` or
@@ -103,6 +121,15 @@ defmodule PostHog.Emails do
   - `client_closed`: the PostHog instance stopped while a call waited to retry, so the retry
     was not sent.
 
+  A send with `:category` can also return:
+
+  - `unknown_category` (400): the project has no marketing message category with that key.
+  - `category_mismatch` (400): a send with `:template_id` names a category other than the
+    template's.
+  - `unsubscribe_link_required` (400): a marketing email's content has no
+    `{{ unsubscribe_url }}`.
+  - `recipient_opted_out` (422): the recipient opted out of the category or of all marketing.
+
   An option the SDK refuses returns an error with an `invalid_*` code, such as
   `invalid_template_id`, and the name `:validation_error`, before any request.
 
@@ -135,7 +162,7 @@ defmodule PostHog.Emails do
   @max_retry_delay_ms 30_000
   @log_metadata [posthog_skip_capture: true]
 
-  @shared_fields [:to, :distinct_id, :idempotency_key, :max_retries]
+  @shared_fields [:to, :distinct_id, :idempotency_key, :max_retries, :category]
   @template_fields @shared_fields ++ [:template_id, :template_data]
   @code_fields @shared_fields ++
                  [:template_key, :subject, :html, :text, :from, :reply_to, :capture_engagement]
@@ -154,6 +181,8 @@ defmodule PostHog.Emails do
     `idempotency_key_reused`.
   - `:max_retries` - overrides the config's `:email_request_max_retries` for this send. `0`
     turns retries off.
+  - `:category` - the email's message category, a `t:category/0`. Left out, the email is
+    transactional.
 
   A template made in PostHog takes:
 
@@ -181,6 +210,7 @@ defmodule PostHog.Emails do
           | {:distinct_id, String.t() | nil}
           | {:idempotency_key, String.t() | nil}
           | {:max_retries, non_neg_integer() | nil}
+          | {:category, category() | nil}
           | {:template_id, String.t()}
           | {:template_data, map() | nil}
           | {:template_key, String.t()}
@@ -190,6 +220,38 @@ defmodule PostHog.Emails do
           | {:from, String.t() | nil}
           | {:reply_to, String.t() | [String.t()] | nil}
           | {:capture_engagement, boolean() | nil}
+
+  @typedoc """
+  An email's message category: `"transactional" | String.t()`.
+
+  Left out, or `"transactional"` (`transactional_category/0`), the email is transactional.
+  Any other value is the key of one of the project's marketing message categories, such as
+  `"product-updates"`, and the email is a marketing email in that category. A marketing email
+  honors the recipient's opt-outs, so PostHog refuses it with `recipient_opted_out` when the
+  recipient opted out of the category or of all marketing. Its `:html`, or its `:text` when it
+  has no `:html`, must contain `{{ unsubscribe_url }}`, which PostHog replaces with the
+  recipient's preferences link.
+
+  A template made in PostHog sends in the template's own category. On a send with
+  `:template_id`, leave `:category` out or pass the template's category.
+  """
+  @type category() :: String.t()
+
+  @doc """
+  The built-in category of transactional email, `"transactional"`.
+
+  ## Examples
+
+      PostHog.Emails.send(
+        to: "user@example.com",
+        template_key: "password-reset",
+        subject: "Reset your password",
+        html: rendered_html,
+        category: PostHog.Emails.transactional_category()
+      )
+  """
+  @spec transactional_category() :: category()
+  def transactional_category, do: "transactional"
 
   @doc """
   Queues one email, from a template made in PostHog or from content your code rendered.
@@ -287,6 +349,7 @@ defmodule PostHog.Emails do
 
   defp prepare(options) do
     with :ok <- check_recipient(options),
+         :ok <- check_category(options),
          {:ok, content} <- content(options),
          {:ok, idempotency_key} <- idempotency_key(options),
          {:ok, max_retries} <- max_retries(options),
@@ -306,6 +369,12 @@ defmodule PostHog.Emails do
       true ->
         :ok
     end
+  end
+
+  defp check_category(options) do
+    if not_string?(options, :category),
+      do: invalid("invalid_form", "category must be a string.", "category"),
+      else: :ok
   end
 
   defp content(%{template_id: _, template_key: _}), do: invalid_form()
@@ -335,7 +404,7 @@ defmodule PostHog.Emails do
         with :ok <- refuse_fields_outside(options, :template) do
           {:ok,
            options
-           |> Map.take([:to, :distinct_id])
+           |> Map.take([:to, :distinct_id, :category])
            |> Map.merge(%{template_id: String.downcase(template_id), message_data: template_data})}
         end
     end
@@ -347,7 +416,7 @@ defmodule PostHog.Emails do
          :ok <- check_code_fields(options) do
       {:ok,
        options
-       |> Map.take([:to, :distinct_id, :template_key, :subject, :html, :text, :from])
+       |> Map.take([:to, :distinct_id, :category, :template_key, :subject, :html, :text, :from])
        |> Map.put(:capture_engagement, Map.get(options, :capture_engagement, true))
        |> put_reply_to(options)}
     end
