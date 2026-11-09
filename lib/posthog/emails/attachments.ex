@@ -65,11 +65,11 @@ defmodule PostHog.Emails.Attachments do
   end
 
   @doc """
-  Names the option a refusal of the upload request is about. PostHog names the upload request's
-  `files`, and the caller passed `attachments`.
+  Names the option a refusal of the upload request is about: `attachments`, or one of them.
+  PostHog names the upload request's `files`, and the caller passed `attachments`.
   """
   @spec field(String.t() | nil, [file()]) :: String.t() | nil
-  def field("files", _files), do: "attachments"
+  def field(attr, _files) when attr in [nil, "files"], do: "attachments"
 
   def field("files__" <> rest, files) do
     with [index | _] <- String.split(rest, "__"),

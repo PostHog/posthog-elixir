@@ -615,6 +615,21 @@ defmodule PostHog.EmailsTest do
       assert [{:post, @uploads_url, _}, {:post, @uploads_url, _}] = requests()
     end
 
+    test "a PostHog without the upload route sends nothing", %{name: name} do
+      expect_reply(
+        refused(404, %{
+          "type" => "invalid_request",
+          "code" => "not_found",
+          "detail" => "Not found."
+        })
+      )
+
+      assert {:error, %Error{code: "not_found", status_code: 404, field: "attachments"}} =
+               Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+
+      assert [{:post, @uploads_url, _}] = requests()
+    end
+
     test "doesn't retry the daily upload quota, and retries unavailable storage", %{name: name} do
       expect_reply(
         refused(429, %{"code" => "upload_quota_exceeded", "detail" => "Enough today."})
