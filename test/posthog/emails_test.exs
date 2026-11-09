@@ -121,14 +121,22 @@ defmodule PostHog.EmailsTest do
       refute Map.has_key?(sent_body(), "distinct_id")
     end
 
-    test "refuses a code form field", %{name: name} do
-      assert {:error,
-              %Error{code: "invalid_form", field: "subject", name: :validation_error} = error} =
-               Emails.send(name, to: "user@example.com", template_id: @template_id, subject: "Hi")
+    for {field, value} <- [subject: "Hi", track_opens_and_clicks: false] do
+      test "refuses the code form field #{field}", %{name: name} do
+        field_name = Atom.to_string(unquote(field))
 
-      assert error.fix =~ "template_key"
-      assert error.why =~ "template made in PostHog"
-      refute_requested()
+        assert {:error,
+                %Error{code: "invalid_form", field: ^field_name, name: :validation_error} = error} =
+                 Emails.send(
+                   name,
+                   [to: "user@example.com", template_id: @template_id] ++
+                     [{unquote(field), unquote(value)}]
+                 )
+
+        assert error.fix =~ "template_key"
+        assert error.why =~ "template made in PostHog"
+        refute_requested()
+      end
     end
 
     test "refuses a template ID that is not a UUID", %{name: name} do
