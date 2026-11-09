@@ -719,7 +719,7 @@ defmodule PostHog.Emails do
          timeout_ms: config.email_request_timeout_ms,
          max_retries: config.email_request_max_retries,
          sleep: Map.get(config, :email_sleep, &Process.sleep/1),
-         upload_options: Map.get(config, :email_upload_options, [])
+         upload_adapter: Map.get(config, :email_upload_adapter, {Req.Finch, []})
        }}
     end
   end
@@ -827,27 +827,29 @@ defmodule PostHog.Emails do
     run_request(connection, timeout_ms, fn -> module.request(client, method, url, options) end)
   end
 
-  # A plain request, not one through the api_client, whose defaults, such as headers a custom client
-  # adds, are meant for PostHog. Req.new/1 also merges the app's Req.default_options, such as an
-  # auth or compress_body set for other requests, so the upload keeps only its own options. The
-  # storage gets the bytes and the headers PostHog signed the upload with, nothing else.
+  # A bare request: not through the api_client, whose defaults, such as headers a custom client
+  # adds, are meant for PostHog, and without Req's steps and the app's Req.default_options, such as
+  # an auth or compress_body set for other requests. The storage gets the bytes and the headers
+  # PostHog signed the upload with, nothing else.
   defp send_upload(connection, upload, content, timeout_ms) do
-    options =
-      [
+    {adapter, adapter_options} = connection.upload_adapter
+
+    request =
+      Req.Request.new(
         method: :put,
         url: upload.url,
-        headers: upload.headers,
+        headers: for({name, value} <- upload.headers, do: {String.downcase(name), value}),
         body: content,
-        retry: false,
-        redirect: false,
-        decode_body: false,
-        receive_timeout: timeout_ms
-      ] ++ connection.upload_options
+        adapter: adapter,
+        options: [receive_timeout: timeout_ms] ++ adapter_options
+      )
 
-    request = Req.new(options)
-    request = %{request | options: Map.take(request.options, Keyword.keys(options))}
-
-    run_request(connection, timeout_ms, fn -> Req.request(request) end)
+    run_request(connection, timeout_ms, fn ->
+      case Req.Request.run_request(request) do
+        {_request, %Req.Response{} = response} -> {:ok, response}
+        {_request, exception} -> {:error, exception}
+      end
+    end)
   end
 
   # Each request checks that the instance still runs, so a send stopped between its steps sends

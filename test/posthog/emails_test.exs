@@ -51,7 +51,7 @@ defmodule PostHog.EmailsTest do
         send(test_pid, {:slept, ms})
         if context[:stop_instance_on_sleep], do: stop_supervised!(context.test)
       end)
-      |> Map.put(:email_upload_options, plug: {Req.Test, PostHog.EmailsTest.Storage})
+      |> Map.put(:email_upload_adapter, {Req.Plug, plug: {Req.Test, PostHog.EmailsTest.Storage}})
 
     start_link_supervised!({PostHog.Supervisor, config})
     %{name: context.test}
@@ -392,7 +392,8 @@ defmodule PostHog.EmailsTest do
       Req.Test.expect(PostHog.EmailsTest.Storage, fn conn ->
         {:ok, body, conn} = Plug.Conn.read_body(conn)
         url = "#{conn.scheme}://#{conn.host}#{conn.request_path}?#{conn.query_string}"
-        send(test_pid, {:request, :put, url, [headers: conn.req_headers, body: body]})
+        headers = for {name, value} <- conn.req_headers, do: {String.downcase(name), value}
+        send(test_pid, {:request, :put, url, [headers: headers, body: body]})
 
         case reply do
           :stored ->
@@ -475,11 +476,7 @@ defmodule PostHog.EmailsTest do
       assert {:ok, _} = Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
 
       assert [_ask, {:put, @put_url, put}, _send] = requests()
-
-      # Req's own user-agent and accept-encoding aside, as any HTTP client's.
-      header_names =
-        for {key, _value} <- put[:headers], key not in ["user-agent", "accept-encoding"], do: key
-
+      header_names = for {key, _value} <- put[:headers], do: key
       assert Enum.sort(header_names) == ["content-length", "x-amz-checksum-sha256"]
     end
 
@@ -1594,7 +1591,12 @@ defmodule PostHog.EmailsReqDefaultsTest do
   setup context do
     Mox.stub_with(API.Mock, API.Stub)
     previous = Application.fetch_env(:req, :default_options)
-    Application.put_env(:req, :default_options, auth: {:bearer, "app-wide"}, compress_body: true)
+
+    Application.put_env(:req, :default_options,
+      auth: {:bearer, "app-wide"},
+      headers: [{"x-app-wide", "1"}],
+      plug: {Req.Test, PostHog.EmailsReqDefaultsTest.AppWide}
+    )
 
     on_exit(fn ->
       case previous do
@@ -1613,7 +1615,7 @@ defmodule PostHog.EmailsReqDefaultsTest do
         enable_local_evaluation: false
       ]
       |> PostHog.Config.validate!()
-      |> Map.put(:email_upload_options, plug: {Req.Test, __MODULE__})
+      |> Map.put(:email_upload_adapter, {Req.Plug, plug: {Req.Test, __MODULE__}})
 
     start_link_supervised!({PostHog.Supervisor, config})
     %{name: context.test}
@@ -1664,7 +1666,6 @@ defmodule PostHog.EmailsReqDefaultsTest do
              )
 
     assert_received {:stored, headers, ^file}
-    refute List.keymember?(headers, "authorization", 0)
-    refute List.keymember?(headers, "content-encoding", 0)
+    assert Enum.map(headers, &elem(&1, 0)) == ["content-length"]
   end
 end

@@ -26,9 +26,11 @@ defmodule PostHog.Emails.Attachments do
   """
   @spec prepare(term(), [String.t()]) :: {:ok, [file()]} | {:error, Error.t()}
   def prepare(attachments, bodies) when is_list(attachments) do
+    # Hashing reads every byte, so it waits until the files are known to fit.
     with :ok <- check_count(attachments),
-         {:ok, files} <- check_each(attachments) do
-      check_size(files, bodies)
+         {:ok, files} <- check_each(attachments),
+         :ok <- check_size(files, bodies) do
+      {:ok, Enum.map(files, &hash/1)}
     end
   end
 
@@ -151,7 +153,7 @@ defmodule PostHog.Emails.Attachments do
            "Keep the email under 40 MB after Base64 encoding, about 29 MB of files: attach fewer or smaller files, or link to large files from the email body."
        )}
     else
-      {:ok, files}
+      :ok
     end
   end
 
@@ -168,25 +170,24 @@ defmodule PostHog.Emails.Attachments do
 
     with :ok <- check_keys(attachment, field),
          :ok <- check_values(attachment, field) do
-      sha256 = :crypto.hash(:sha256, attachment.content) |> Base.encode16(case: :lower)
-
       {:ok,
        %{
          field: field,
          filename: attachment.filename,
          content: attachment.content,
-         sha256: sha256,
          size: byte_size(attachment.content),
-         reference:
-           attachment
-           |> Map.take([:filename, :content_type, :content_id])
-           |> Map.put(:sha256, sha256)
+         reference: Map.take(attachment, [:filename, :content_type, :content_id])
        }}
     end
   end
 
   defp file(_attachment, field),
     do: invalid("An attachment is a map with filename and content.", field)
+
+  defp hash(file) do
+    sha256 = :crypto.hash(:sha256, file.content) |> Base.encode16(case: :lower)
+    %{file | reference: Map.put(file.reference, :sha256, sha256)} |> Map.put(:sha256, sha256)
+  end
 
   defp check_keys(attachment, field) do
     unknown = attachment |> Map.keys() |> Enum.reject(&(&1 in @fields)) |> Enum.sort()
