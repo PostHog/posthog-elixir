@@ -182,11 +182,12 @@ defmodule PostHog.Emails do
   - `:capture_engagement` - whether PostHog captures the email's opens and clicks as events of
     the recipient. Defaults to `true`. A project whose admin turned engagement capture off
     captures nothing, whatever the send asks.
-  - `:track_opens_and_clicks` - whether the email carries open and click tracking: PostHog's
-    open pixel and links rewritten to count clicks. Defaults to `true`. With `false`, the email
-    goes out without either, so PostHog can't count its opens and clicks. Independent of
-    `:capture_engagement`, which decides whether engagement events are captured on the
-    recipient's person. Left out of the request unless you set it.
+  - `:track_opens_and_clicks` - whether PostHog tracks opens and clicks of the email. Defaults
+    to `true`. With `false`, the email goes out without PostHog's open pixel, so PostHog can't
+    count its opens. PostHog doesn't track clicks on emails sent from code, so their links are
+    never rewritten either way. Independent of `:capture_engagement`, which decides whether
+    engagement events are captured on the recipient's person. Left out of the request unless
+    you set it.
 
   An option set to `nil` counts as left out.
   """
