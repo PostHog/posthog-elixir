@@ -103,7 +103,8 @@ defmodule PostHog.Emails do
   Your app must be able to reach the storage host that PostHog's answer names. If an upload
   fails, the SDK sends nothing and returns `attachment_upload_failed` with what the storage
   answered. An upload gets the request timeout plus one second per MB of the file, and retries
-  as a send does, as well as when the storage answers HTTP 500, 502 or 504.
+  as a send does, as well as when the storage answers HTTP 500, 502 or 504. It ignores your
+  app's `Req.default_options`, which are meant for other requests.
 
   ## Timeouts, retries and idempotency
 
@@ -827,7 +828,9 @@ defmodule PostHog.Emails do
   end
 
   # A plain request, not one through the api_client, whose defaults, such as headers a custom client
-  # adds, are meant for PostHog. The storage gets only the headers PostHog signed the upload with.
+  # adds, are meant for PostHog. Req.new/1 also merges the app's Req.default_options, such as an
+  # auth or compress_body set for other requests, so the upload keeps only its own options. The
+  # storage gets the bytes and the headers PostHog signed the upload with, nothing else.
   defp send_upload(connection, upload, content, timeout_ms) do
     options =
       [
@@ -841,7 +844,10 @@ defmodule PostHog.Emails do
         receive_timeout: timeout_ms
       ] ++ connection.upload_options
 
-    run_request(connection, timeout_ms, fn -> Req.request(options) end)
+    request = Req.new(options)
+    request = %{request | options: Map.take(request.options, Keyword.keys(options))}
+
+    run_request(connection, timeout_ms, fn -> Req.request(request) end)
   end
 
   # Each request checks that the instance still runs, so a send stopped between its steps sends
@@ -967,7 +973,7 @@ defmodule PostHog.Emails do
   # A send carries an idempotency key, so a retry can't queue a second email. A status read changes nothing.
   # An upload writes the same bytes to the same key, and S3 asks clients to retry its 500s.
   defp retryable?(%Error{code: "attachment_upload_failed", status_code: status}),
-    do: status in [500, 502, 503, 504]
+    do: status in [429, 500, 502, 503, 504]
 
   defp retryable?(%Error{status_code: nil, code: code}), do: code == "network_error"
   defp retryable?(%Error{status_code: 409, code: code}), do: code == "idempotency_key_in_flight"

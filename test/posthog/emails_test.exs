@@ -549,10 +549,11 @@ defmodule PostHog.EmailsTest do
       assert [{:post, @uploads_url, _}, {:put, @put_url, _}] = requests()
     end
 
-    @tag config: [email_request_max_retries: 3]
+    @tag config: [email_request_max_retries: 4]
     test "retries an upload the storage couldn't take, then sends", %{name: name} do
       expect_reply(slots([to_upload(@pdf)]))
       expect_storage({:refused, 503, "SlowDown", "Please reduce your request rate."})
+      expect_storage({:refused, 429, "TooManyRequests", "Please slow down."})
       expect_storage({:refused, 500, "InternalError", "We encountered an internal error."})
       expect_storage(:closed)
       expect_storage(:stored)
@@ -562,6 +563,7 @@ defmodule PostHog.EmailsTest do
 
       assert [
                {:post, @uploads_url, _},
+               {:put, _, _},
                {:put, _, _},
                {:put, _, _},
                {:put, _, _},
@@ -1574,5 +1576,95 @@ defmodule PostHog.EmailsTest do
 
       assert System.monotonic_time(:millisecond) - started < 1_000
     end
+  end
+end
+
+defmodule PostHog.EmailsReqDefaultsTest do
+  # Req.default_options is app-wide, so this runs alone, after the async tests.
+  use ExUnit.Case, async: false
+
+  import Mox
+
+  alias PostHog.API
+  alias PostHog.Emails
+
+  setup :verify_on_exit!
+  setup {Req.Test, :verify_on_exit!}
+
+  setup context do
+    Mox.stub_with(API.Mock, API.Stub)
+    previous = Application.fetch_env(:req, :default_options)
+    Application.put_env(:req, :default_options, auth: {:bearer, "app-wide"}, compress_body: true)
+
+    on_exit(fn ->
+      case previous do
+        {:ok, options} -> Application.put_env(:req, :default_options, options)
+        :error -> Application.delete_env(:req, :default_options)
+      end
+    end)
+
+    config =
+      [
+        api_host: "https://us.i.posthog.com",
+        api_key: "phc_project_key",
+        secret_key: "phs_secret_key",
+        api_client_module: API.Mock,
+        supervisor_name: context.test,
+        enable_local_evaluation: false
+      ]
+      |> PostHog.Config.validate!()
+      |> Map.put(:email_upload_options, plug: {Req.Test, __MODULE__})
+
+    start_link_supervised!({PostHog.Supervisor, config})
+    %{name: context.test}
+  end
+
+  test "an upload ignores the app's Req defaults", %{name: name} do
+    file = "file bytes"
+    sha256 = :crypto.hash(:sha256, file) |> Base.encode16(case: :lower)
+
+    expect(API.Mock, :request, fn _client, :post, _url, _opts ->
+      {:ok,
+       %{
+         status: 200,
+         headers: %{},
+         body: %{
+           "files" => [
+             %{
+               "sha256" => sha256,
+               "status" => "upload",
+               "url" => "https://files.example.com/a?X-Amz-Signature=signed",
+               "method" => "PUT",
+               "headers" => %{"Content-Length" => "10"}
+             }
+           ]
+         }
+       }}
+    end)
+
+    expect(API.Mock, :request, fn _client, :post, _url, _opts ->
+      {:ok, %{status: 202, headers: %{}, body: %{"message_id" => "m"}}}
+    end)
+
+    test_pid = self()
+
+    Req.Test.expect(__MODULE__, fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      send(test_pid, {:stored, conn.req_headers, body})
+      Plug.Conn.send_resp(conn, 200, "")
+    end)
+
+    assert {:ok, _} =
+             Emails.send(name,
+               to: "user@example.com",
+               template_key: "receipt",
+               subject: "Hi",
+               html: "<p/>",
+               attachments: [%{filename: "a.txt", content: file}]
+             )
+
+    assert_received {:stored, headers, ^file}
+    refute List.keymember?(headers, "authorization", 0)
+    refute List.keymember?(headers, "content-encoding", 0)
   end
 end
