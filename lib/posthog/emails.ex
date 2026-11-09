@@ -719,7 +719,7 @@ defmodule PostHog.Emails do
          timeout_ms: config.email_request_timeout_ms,
          max_retries: config.email_request_max_retries,
          sleep: Map.get(config, :email_sleep, &Process.sleep/1),
-         upload_adapter: Map.get(config, :email_upload_adapter, {Req.Finch, []})
+         upload_adapter: Map.get(config, :email_upload_adapter)
        }}
     end
   end
@@ -832,17 +832,15 @@ defmodule PostHog.Emails do
   # an auth or compress_body set for other requests. The storage gets the bytes and the headers
   # PostHog signed the upload with, nothing else.
   defp send_upload(connection, upload, content, timeout_ms) do
-    {adapter, adapter_options} = connection.upload_adapter
-
     request =
       Req.Request.new(
         method: :put,
         url: upload.url,
         headers: for({name, value} <- upload.headers, do: {String.downcase(name), value}),
         body: content,
-        adapter: adapter,
-        options: [receive_timeout: timeout_ms] ++ adapter_options
+        options: [receive_timeout: timeout_ms]
       )
+      |> with_upload_adapter(connection.upload_adapter)
 
     run_request(connection, timeout_ms, fn ->
       case Req.Request.run_request(request) do
@@ -851,6 +849,12 @@ defmodule PostHog.Emails do
       end
     end)
   end
+
+  # Req's own default adapter, which differs between Req versions, unless a test sets one.
+  defp with_upload_adapter(request, nil), do: request
+
+  defp with_upload_adapter(request, {adapter, options}),
+    do: %{request | adapter: adapter, options: Map.merge(request.options, Map.new(options))}
 
   # Each request checks that the instance still runs, so a send stopped between its steps sends
   # nothing more.
