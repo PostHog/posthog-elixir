@@ -162,7 +162,8 @@ defmodule PostHog.EmailsTest do
   end
 
   describe "send/2 with content from code" do
-    test "posts the rendered content with engagement capture on by default", %{name: name} do
+    test "posts the rendered content with engagement capture on and tracking left out by default",
+         %{name: name} do
       expect_reply(accepted())
 
       assert {:ok, %Emails.SendResult{id: @message_id}} =
@@ -212,6 +213,30 @@ defmodule PostHog.EmailsTest do
                "reply_to" => ["a@example.com", "b@example.com"],
                "capture_engagement" => false
              }
+    end
+
+    for track_opens_and_clicks <- [true, false] do
+      test "sends track_opens_and_clicks #{track_opens_and_clicks}", %{name: name} do
+        expect_reply(accepted())
+
+        assert {:ok, _} =
+                 Emails.send(name,
+                   to: "user@example.com",
+                   template_key: "receipt",
+                   subject: "Your receipt",
+                   text: "Thanks",
+                   track_opens_and_clicks: unquote(track_opens_and_clicks)
+                 )
+
+        assert sent_body() == %{
+                 "to" => "user@example.com",
+                 "template_key" => "receipt",
+                 "subject" => "Your receipt",
+                 "text" => "Thanks",
+                 "capture_engagement" => true,
+                 "track_opens_and_clicks" => unquote(track_opens_and_clicks)
+               }
+      end
     end
 
     test "needs html, text or both", %{name: name} do
@@ -267,17 +292,20 @@ defmodule PostHog.EmailsTest do
       refute_requested()
     end
 
-    test "refuses a capture_engagement that is not a boolean", %{name: name} do
-      assert {:error, %Error{code: "invalid_form", field: "capture_engagement"}} =
-               Emails.send(name,
-                 to: "user@example.com",
-                 template_key: "receipt",
-                 subject: "Hi",
-                 html: "<p/>",
-                 capture_engagement: "yes"
-               )
+    for field <- [:capture_engagement, :track_opens_and_clicks] do
+      test "refuses a #{field} that is not a boolean", %{name: name} do
+        field = unquote(field)
+        field_name = Atom.to_string(field)
 
-      refute_requested()
+        assert {:error, %Error{code: "invalid_form", field: ^field_name}} =
+                 Emails.send(
+                   name,
+                   [to: "user@example.com", template_key: "receipt", subject: "Hi", html: "<p/>"] ++
+                     [{field, "yes"}]
+                 )
+
+        refute_requested()
+      end
     end
   end
 

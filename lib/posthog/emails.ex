@@ -138,7 +138,16 @@ defmodule PostHog.Emails do
   @shared_fields [:to, :distinct_id, :idempotency_key, :max_retries]
   @template_fields @shared_fields ++ [:template_id, :template_data]
   @code_fields @shared_fields ++
-                 [:template_key, :subject, :html, :text, :from, :reply_to, :capture_engagement]
+                 [
+                   :template_key,
+                   :subject,
+                   :html,
+                   :text,
+                   :from,
+                   :reply_to,
+                   :capture_engagement,
+                   :track_opens_and_clicks
+                 ]
 
   @typedoc """
   Options for `send/2`. Pass `:template_id` or `:template_key`, never both.
@@ -173,6 +182,11 @@ defmodule PostHog.Emails do
   - `:capture_engagement` - whether PostHog captures the email's opens and clicks as events of
     the recipient. Defaults to `true`. A project whose admin turned engagement capture off
     captures nothing, whatever the send asks.
+  - `:track_opens_and_clicks` - whether the email carries open and click tracking: PostHog's
+    open pixel and links rewritten to count clicks. Defaults to `true`. With `false`, the email
+    goes out without either, so PostHog can't count its opens and clicks. Independent of
+    `:capture_engagement`, which decides whether engagement events are captured on the
+    recipient's person. Left out of the request unless you set it.
 
   An option set to `nil` counts as left out.
   """
@@ -190,6 +204,7 @@ defmodule PostHog.Emails do
           | {:from, String.t() | nil}
           | {:reply_to, String.t() | [String.t()] | nil}
           | {:capture_engagement, boolean() | nil}
+          | {:track_opens_and_clicks, boolean() | nil}
 
   @doc """
   Queues one email, from a template made in PostHog or from content your code rendered.
@@ -347,7 +362,16 @@ defmodule PostHog.Emails do
          :ok <- check_code_fields(options) do
       {:ok,
        options
-       |> Map.take([:to, :distinct_id, :template_key, :subject, :html, :text, :from])
+       |> Map.take([
+         :to,
+         :distinct_id,
+         :template_key,
+         :subject,
+         :html,
+         :text,
+         :from,
+         :track_opens_and_clicks
+       ])
        |> Map.put(:capture_engagement, Map.get(options, :capture_engagement, true))
        |> put_reply_to(options)}
     end
@@ -402,6 +426,13 @@ defmodule PostHog.Emails do
       not is_boolean(Map.get(options, :capture_engagement, true)) ->
         invalid("invalid_form", "capture_engagement must be true or false.", "capture_engagement")
 
+      not is_boolean(Map.get(options, :track_opens_and_clicks, true)) ->
+        invalid(
+          "invalid_form",
+          "track_opens_and_clicks must be true or false.",
+          "track_opens_and_clicks"
+        )
+
       true ->
         :ok
     end
@@ -444,7 +475,7 @@ defmodule PostHog.Emails do
       {why, how} =
         case form do
           :template ->
-            {"A template made in PostHog sets its own sender, subject and content, and follows the project's engagement setting.",
+            {"A template made in PostHog sets its own sender, subject, content and tracking, and follows the project's engagement setting.",
              "send content from your code with template_key"}
 
           :code ->
