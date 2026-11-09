@@ -171,10 +171,10 @@ defmodule PostHog.Emails do
     project's default sender.
   - `:reply_to` - one address or a list of addresses.
   - `:capture_engagement` - whether PostHog captures the email's engagement events, such as
-    opens and clicks, on the recipient's person. Defaults to `true`. Turning it off doesn't
-    change the email: PostHog still adds its open pixel and rewrites links to count opens and
-    clicks. A project whose admin turned engagement capture off captures nothing, whatever the
-    send asks.
+    deliveries and opens, on the recipient's person. Defaults to `true`. Turning it off doesn't
+    change the email: PostHog still adds its open pixel to count opens. It never rewrites the
+    email's links, so it counts no clicks. A project whose admin turned engagement capture off
+    captures nothing, whatever the send asks.
 
   An option set to `nil` counts as left out.
   """
