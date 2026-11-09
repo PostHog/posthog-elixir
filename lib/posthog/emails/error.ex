@@ -11,15 +11,18 @@ defmodule PostHog.Emails.Error do
   - `:code` - PostHog's error code, such as `"quota_limited"` or `"recipient_suppressed"`, or an
     SDK code: `"missing_secret_key"`, `"missing_app_host"`, `"client_disabled"`,
     `"client_closed"`, `"network_error"`, `"api_error"` (an answer without a code),
-    `"unexpected_error"`, `"attachment_upload_failed"`, `"too_many_attachments"` or
-    `"message_too_large"` for files the SDK refused before any request, or an `"invalid_*"`
-    code for an option the SDK refused before any request.
+    `"unexpected_error"`, `"too_many_attachments"` or `"message_too_large"` for files that
+    make the email too large, which the SDK checks before any request and PostHog checks again,
+    `"attachment_upload_failed"` when the storage refused an upload, or an `"invalid_*"` code
+    for an option the SDK refused before any request.
   - `:message` - human-readable message.
-  - `:status_code` - the HTTP status, when PostHog answered.
+  - `:status_code` - the HTTP status, when PostHog answered, or the storage's for
+    `"attachment_upload_failed"`.
   - `:why` and `:fix` - why PostHog refused the email and how to fix it, when it said.
   - `:docs_url` - a link to the docs for the error, when PostHog sent one.
   - `:field` - the option the error is about, such as `"to"`.
-  - `:retry_after_ms` - how long PostHog asked the client to wait before it sends again.
+  - `:retry_after_ms` - how long PostHog, or the storage, asked the client to wait before it
+    sends again.
   """
 
   @typedoc "A coarse category of the failure."
@@ -68,6 +71,8 @@ defmodule PostHog.Emails.Error do
   end
 
   defp name(_status, "missing_secret_key"), do: :missing_api_key
+  # The storage answered, so its status says nothing about PostHog's key or scope.
+  defp name(_status, "attachment_upload_failed"), do: :application_error
   defp name(401, _code), do: :missing_api_key
   defp name(nil, "network_error"), do: :service_unavailable
   defp name(nil, "invalid_" <> _), do: :validation_error
@@ -75,7 +80,6 @@ defmodule PostHog.Emails.Error do
   defp name(nil, code) when code in ["too_many_attachments", "message_too_large"],
     do: :validation_error
 
-  defp name(_status, "attachment_upload_failed"), do: :application_error
   defp name(nil, _code), do: :application_error
   defp name(400, _code), do: :validation_error
   defp name(403, _code), do: :invalid_permission

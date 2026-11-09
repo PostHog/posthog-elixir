@@ -51,6 +51,7 @@ defmodule PostHog.EmailsTest do
         send(test_pid, {:slept, ms})
         if context[:stop_instance_on_sleep], do: stop_supervised!(context.test)
       end)
+      |> Map.put(:email_upload_options, plug: {Req.Test, PostHog.EmailsTest.Storage})
 
     start_link_supervised!({PostHog.Supervisor, config})
     %{name: context.test}
@@ -379,18 +380,37 @@ defmodule PostHog.EmailsTest do
       }
     end
 
-    defp slots(answers), do: {:ok, %{status: 200, headers: %{}, body: %{"files" => answers}}}
-    defp stored, do: {:ok, %{status: 200, headers: %{}, body: ""}}
+    setup {Req.Test, :verify_on_exit!}
 
-    defp bucket_refused(status, code, message),
-      do:
-        {:ok,
-         %{
-           status: status,
-           headers: %{"content-type" => "application/xml"},
-           body:
-             ~s(<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>#{code}</Code><Message>#{message}</Message><Resource>/team/1/file</Resource></Error>)
-         }}
+    defp slots(answers), do: {:ok, %{status: 200, headers: %{}, body: %{"files" => answers}}}
+
+    # The storage, behind the SDK's real Req request: :stored, {:refused, status, code, message},
+    # or a transport error's reason.
+    defp expect_storage(reply) do
+      test_pid = self()
+
+      Req.Test.expect(PostHog.EmailsTest.Storage, fn conn ->
+        {:ok, body, conn} = Plug.Conn.read_body(conn)
+        url = "#{conn.scheme}://#{conn.host}#{conn.request_path}?#{conn.query_string}"
+        send(test_pid, {:request, :put, url, [headers: conn.req_headers, body: body]})
+
+        case reply do
+          :stored ->
+            Plug.Conn.send_resp(conn, 200, "")
+
+          {:refused, status, code, message} ->
+            conn
+            |> Plug.Conn.put_resp_content_type("application/xml")
+            |> Plug.Conn.send_resp(
+              status,
+              ~s(<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>#{code}</Code><Message>#{message}</Message><Resource>/team/1/file</Resource></Error>)
+            )
+
+          reason ->
+            Req.Test.transport_error(conn, reason)
+        end
+      end)
+    end
 
     defp requests do
       receive do
@@ -404,7 +424,7 @@ defmodule PostHog.EmailsTest do
 
     test "uploads the files PostHog asks for, then sends their references", %{name: name} do
       expect_reply(slots([to_upload(@pdf), present(@logo)]))
-      expect_reply(stored())
+      expect_storage(:stored)
       expect_reply(accepted())
 
       assert {:ok, %Emails.SendResult{id: @message_id}} =
@@ -432,7 +452,7 @@ defmodule PostHog.EmailsTest do
       assert header(ask, "authorization") == "Bearer phs_secret_key"
 
       assert put[:body] == @pdf
-      assert header(put, "Content-Length") == "8"
+      assert header(put, "content-length") == "8"
 
       assert header(put, "x-amz-checksum-sha256") ==
                :crypto.hash(:sha256, @pdf) |> Base.encode64()
@@ -447,15 +467,19 @@ defmodule PostHog.EmailsTest do
              ]
     end
 
-    test "uploads without the secret key or any PostHog header", %{name: name} do
+    test "uploads with only the headers PostHog gave, not the client's", %{name: name} do
       expect_reply(slots([to_upload(@pdf)]))
-      expect_reply(stored())
+      expect_storage(:stored)
       expect_reply(accepted())
 
       assert {:ok, _} = Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
 
       assert [_ask, {:put, @put_url, put}, _send] = requests()
-      header_names = Enum.map(put[:headers], fn {key, _value} -> String.downcase(key) end)
+
+      # Req's own user-agent and accept-encoding aside, as any HTTP client's.
+      header_names =
+        for {key, _value} <- put[:headers], key not in ["user-agent", "accept-encoding"], do: key
+
       assert Enum.sort(header_names) == ["content-length", "x-amz-checksum-sha256"]
     end
 
@@ -470,7 +494,7 @@ defmodule PostHog.EmailsTest do
 
     test "asks once for a file attached twice, and sends both references", %{name: name} do
       expect_reply(slots([to_upload(@pdf)]))
-      expect_reply(stored())
+      expect_storage(:stored)
       expect_reply(accepted())
 
       assert {:ok, _} =
@@ -492,12 +516,9 @@ defmodule PostHog.EmailsTest do
     test "sends nothing after a failed upload, and returns the storage's answer", %{name: name} do
       expect_reply(slots([present(@logo), to_upload(@pdf)]))
 
-      expect_reply(
-        bucket_refused(
-          400,
-          "BadDigest",
-          "The SHA256 you specified did not match the calculated checksum."
-        )
+      expect_storage(
+        {:refused, 400, "BadDigest",
+         "The SHA256 you specified did not match the calculated checksum."}
       )
 
       assert {:error, %Error{} = error} =
@@ -528,22 +549,53 @@ defmodule PostHog.EmailsTest do
       assert [{:post, @uploads_url, _}, {:put, @put_url, _}] = requests()
     end
 
+    @tag config: [email_request_max_retries: 3]
     test "retries an upload the storage couldn't take, then sends", %{name: name} do
       expect_reply(slots([to_upload(@pdf)]))
-      expect_reply(bucket_refused(503, "SlowDown", "Please reduce your request rate."))
-      expect_reply({:error, %Req.TransportError{reason: :closed}})
-      expect_reply(stored())
+      expect_storage({:refused, 503, "SlowDown", "Please reduce your request rate."})
+      expect_storage({:refused, 500, "InternalError", "We encountered an internal error."})
+      expect_storage(:closed)
+      expect_storage(:stored)
       expect_reply(accepted())
 
       assert {:ok, _} = Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
 
-      assert [{:post, _, _}, {:put, _, _}, {:put, _, _}, {:put, _, _}, {:post, @send_url, _}] =
-               requests()
+      assert [
+               {:post, @uploads_url, _},
+               {:put, _, _},
+               {:put, _, _},
+               {:put, _, _},
+               {:put, _, _},
+               {:post, @send_url, _}
+             ] = requests()
+    end
+
+    test "doesn't retry an upload the storage refused", %{name: name} do
+      expect_reply(slots([to_upload(@pdf)]))
+      expect_storage({:refused, 403, "AccessDenied", "Request has expired."})
+
+      assert {:error,
+              %Error{
+                code: "attachment_upload_failed",
+                name: :application_error,
+                status_code: 403
+              }} = Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+
+      refute_received {:slept, _}
+      assert [{:post, _, _}, {:put, _, _}] = requests()
+    end
+
+    test "a storage 401 doesn't blame the PostHog key", %{name: name} do
+      expect_reply(slots([to_upload(@pdf)]))
+      expect_storage({:refused, 401, "Unauthorized", "Proxy needs a login."})
+
+      assert {:error, %Error{code: "attachment_upload_failed", name: :application_error}} =
+               Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
     end
 
     test "an upload that keeps failing at the network sends nothing", %{name: name} do
       expect_reply(slots([to_upload(@pdf)]))
-      expect_reply({:error, %Req.TransportError{reason: :econnrefused}})
+      expect_storage(:econnrefused)
 
       assert {:error, %Error{code: "attachment_upload_failed", status_code: nil} = error} =
                Emails.send(
@@ -557,9 +609,48 @@ defmodule PostHog.EmailsTest do
       assert [{:post, _, _}, {:put, _, _}] = requests()
     end
 
+    test "a send whose instance stops between its steps sends nothing more", %{name: name} do
+      test_pid = self()
+
+      expect(API.Mock, :request, fn _client, :post, @uploads_url, _opts ->
+        send(test_pid, {:asked, self()})
+
+        receive do
+          :answer -> slots([to_upload(@pdf)])
+        end
+      end)
+
+      sending =
+        Task.async(fn -> Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}])) end)
+
+      assert_receive {:asked, worker}
+      stop_supervised!(name)
+      send(worker, :answer)
+
+      assert {:error, %Error{code: "client_closed"} = error} = Task.await(sending)
+      assert error.message =~ "no email was sent"
+    end
+
+    test "a template send takes empty lists as left out", %{name: name} do
+      expect_reply(accepted())
+
+      assert {:ok, _} =
+               Emails.send(name,
+                 to: "user@example.com",
+                 template_id: @template_id,
+                 reply_to: [],
+                 cc: [],
+                 bcc: [],
+                 attachments: []
+               )
+
+      body = sent_body()
+      refute Enum.any?(["reply_to", "cc", "bcc", "attachments"], &Map.has_key?(body, &1))
+    end
+
     test "a send retry doesn't upload again", %{name: name} do
       expect_reply(slots([to_upload(@pdf)]))
-      expect_reply(stored())
+      expect_storage(:stored)
       expect_reply(refused(503, %{"code" => "service_unavailable"}))
       expect_reply(accepted())
 
@@ -612,7 +703,13 @@ defmodule PostHog.EmailsTest do
       assert {:error, %Error{code: "field_not_accepted", field: "attachments"}} =
                Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
 
-      assert [{:post, @uploads_url, _}, {:post, @uploads_url, _}] = requests()
+      expect_reply(refused(401, %{"code" => "authentication_failed", "detail" => "Bad key."}))
+
+      assert {:error, %Error{code: "authentication_failed", field: nil}} =
+               Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+
+      assert [{:post, @uploads_url, _}, {:post, @uploads_url, _}, {:post, @uploads_url, _}] =
+               requests()
     end
 
     test "a PostHog without the upload route sends nothing", %{name: name} do
@@ -635,7 +732,7 @@ defmodule PostHog.EmailsTest do
         refused(429, %{"code" => "upload_quota_exceeded", "detail" => "Enough today."})
       )
 
-      assert {:error, %Error{code: "upload_quota_exceeded", status_code: 429}} =
+      assert {:error, %Error{code: "upload_quota_exceeded", status_code: 429, field: nil}} =
                Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
 
       refute_received {:slept, _}

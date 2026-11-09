@@ -93,14 +93,17 @@ defmodule PostHog.Emails do
   A send with files takes three steps:
 
   1. The SDK hashes each file with SHA-256 and asks PostHog which files it doesn't have yet.
-  2. It uploads each of those straight to PostHog's file storage, with the headers PostHog
-     gave and without your secret key. A file PostHog already has, such as the same terms PDF
-     sent to every customer, uploads nothing again.
+  2. It uploads each of those straight to PostHog's file storage with a plain `Req` request,
+     carrying only the headers PostHog gave. The upload doesn't go through
+     `:api_client_module`, so no secret key or header of your client reaches the storage. A
+     file PostHog already has, such as the same terms PDF sent to every customer, uploads
+     nothing again.
   3. Once every upload succeeded, it sends the email, which names each file by its hash.
 
   Your app must be able to reach the storage host that PostHog's answer names. If an upload
   fails, the SDK sends nothing and returns `attachment_upload_failed` with what the storage
-  answered. An upload gets the request timeout plus one second per MB of the file.
+  answered. An upload gets the request timeout plus one second per MB of the file, and retries
+  as a send does, as well as when the storage answers HTTP 500, 502 or 504.
 
   ## Timeouts, retries and idempotency
 
@@ -132,8 +135,8 @@ defmodule PostHog.Emails do
     project.
   - `client_disabled`: the PostHog instance is not running or has no `:api_key`, so it sends
     nothing.
-  - `client_closed`: the PostHog instance stopped while a call waited to retry, so the retry
-    was not sent.
+  - `client_closed`: the PostHog instance stopped during a call, so the call made no further
+    request, and a send sent no email.
 
   A send with files can also return:
 
@@ -151,8 +154,9 @@ defmodule PostHog.Emails do
 
   ## Testing
 
-  Requests go through the configured `:api_client_module`, so a `Mox` mock of
-  `PostHog.API.Client` sees every email request without network calls.
+  Requests to PostHog go through the configured `:api_client_module`, so a `Mox` mock of
+  `PostHog.API.Client` sees them without network calls. Attachment uploads go to the storage
+  host instead, so test a send with files against an answer that marks every file `present`.
   """
 
   import Kernel, except: [send: 2]
@@ -391,7 +395,7 @@ defmodule PostHog.Emails do
 
     connection
     |> with_retries(max_retries, fn ->
-      case send_request(connection, :put, upload.url, upload.headers, file.content, timeout_ms) do
+      case send_upload(connection, upload, file.content, timeout_ms) do
         {:ok, status, _body, _retry_after_ms} when status in 200..299 ->
           {:ok, :uploaded}
 
@@ -422,13 +426,17 @@ defmodule PostHog.Emails do
 
   defp prepare_send(options) when is_list(options) or is_map(options) do
     if is_map(options) or Keyword.keyword?(options) do
-      options |> Enum.reject(fn {_key, value} -> is_nil(value) end) |> Map.new() |> prepare()
+      options |> Enum.reject(&left_out?/1) |> Map.new() |> prepare()
     else
       invalid_options()
     end
   end
 
   defp prepare_send(_options), do: invalid_options()
+
+  # Options are often built generically, so an empty list counts as left out on both forms.
+  defp left_out?({key, []}) when key in [:attachments | @address_fields], do: true
+  defp left_out?({_key, value}), do: is_nil(value)
 
   defp invalid_options,
     do: {:error, Error.new("invalid_form", "send takes a keyword list or a map of options.")}
@@ -709,7 +717,8 @@ defmodule PostHog.Emails do
          migrated_from: Map.get(config, :migrated_from),
          timeout_ms: config.email_request_timeout_ms,
          max_retries: config.email_request_max_retries,
-         sleep: Map.get(config, :email_sleep, &Process.sleep/1)
+         sleep: Map.get(config, :email_sleep, &Process.sleep/1),
+         upload_options: Map.get(config, :email_upload_options, [])
        }}
     end
   end
@@ -733,7 +742,7 @@ defmodule PostHog.Emails do
         {:error,
          Error.new(
            "client_closed",
-           "The PostHog instance #{inspect(name)} stopped before the retry, so #{nothing_done}."
+           "The PostHog instance #{inspect(name)} stopped during the call, so #{nothing_done}."
          )}
     end
   end
@@ -814,19 +823,43 @@ defmodule PostHog.Emails do
       ] ++ if(body, do: [body: body], else: [])
 
     %{module: module, client: client} = connection.api_client
+    run_request(connection, timeout_ms, fn -> module.request(client, method, url, options) end)
+  end
 
-    case within_deadline(timeout_ms, fn -> call_client(module, client, method, url, options) end) do
-      {:ok, %{status: status} = response} when is_integer(status) ->
-        {:ok, status, Map.get(response, :body), retry_after_ms(Map.get(response, :headers))}
+  # A plain request, not one through the api_client, whose defaults, such as headers a custom client
+  # adds, are meant for PostHog. The storage gets only the headers PostHog signed the upload with.
+  defp send_upload(connection, upload, content, timeout_ms) do
+    options =
+      [
+        method: :put,
+        url: upload.url,
+        headers: upload.headers,
+        body: content,
+        retry: false,
+        redirect: false,
+        decode_body: false,
+        receive_timeout: timeout_ms
+      ] ++ connection.upload_options
 
-      {:error, _reason} ->
-        {:error, Error.new("network_error", "The request to PostHog failed.")}
+    run_request(connection, timeout_ms, fn -> Req.request(options) end)
+  end
+
+  # Each request checks that the instance still runs, so a send stopped between its steps sends
+  # nothing more.
+  defp run_request(connection, timeout_ms, request) do
+    with :ok <- check_running(connection),
+         {:ok, %{status: status} = response} when is_integer(status) <-
+           within_deadline(timeout_ms, fn -> call_client(request) end) do
+      {:ok, status, Map.get(response, :body), retry_after_ms(Map.get(response, :headers))}
+    else
+      {:error, %Error{} = error} -> {:error, error}
+      {:error, _reason} -> {:error, Error.new("network_error", "The request to PostHog failed.")}
     end
   end
 
   # Finch raises, rather than returns, when no pooled connection frees up in time.
-  defp call_client(module, client, method, url, options) do
-    module.request(client, method, url, options)
+  defp call_client(request) do
+    request.()
   rescue
     exception in RuntimeError ->
       if String.starts_with?(exception.message, "Finch was unable to provide a connection"),
@@ -926,18 +959,16 @@ defmodule PostHog.Emails do
 
           delay_ms ->
             connection.sleep.(delay_ms)
-            retry(connection, max_retries, attempt_once, attempt + 1)
+            with_retries(connection, max_retries, attempt_once, attempt + 1)
         end
     end
   end
 
-  defp retry(connection, max_retries, attempt_once, attempt) do
-    with :ok <- check_running(connection) do
-      with_retries(connection, max_retries, attempt_once, attempt)
-    end
-  end
-
   # A send carries an idempotency key, so a retry can't queue a second email. A status read changes nothing.
+  # An upload writes the same bytes to the same key, and S3 asks clients to retry its 500s.
+  defp retryable?(%Error{code: "attachment_upload_failed", status_code: status}),
+    do: status in [500, 502, 503, 504]
+
   defp retryable?(%Error{status_code: nil, code: code}), do: code == "network_error"
   defp retryable?(%Error{status_code: 409, code: code}), do: code == "idempotency_key_in_flight"
   # Waiting doesn't fix a monthly quota.
@@ -998,7 +1029,7 @@ defmodule PostHog.Emails do
 
   defp parse_uploads_reply(reply, files) do
     {:error, error} = reply_error(reply)
-    {:error, %{error | field: Attachments.field(error.field, files)}}
+    {:error, %{error | field: Attachments.field(error, files)}}
   end
 
   defp warnings(warnings) when is_list(warnings) do

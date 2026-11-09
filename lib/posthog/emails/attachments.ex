@@ -64,12 +64,19 @@ defmodule PostHog.Emails.Attachments do
 
   @doc """
   Names the option a refusal of the upload request is about: `attachments`, or one of them.
-  PostHog names the upload request's `files`, and the caller passed `attachments`.
+  PostHog names the upload request's `files`, and the caller passed `attachments`. A refusal of
+  the files without a field, such as a PostHog without the upload route, is about
+  `attachments`; one about the key, the scope, a rate limit or an outage names no option.
   """
-  @spec field(String.t() | nil, [file()]) :: String.t() | nil
-  def field(attr, _files) when attr in [nil, "files"], do: "attachments"
+  @spec field(Error.t(), [file()]) :: String.t() | nil
+  def field(%Error{field: nil, status_code: status}, _files) when status in [400, 404, 413, 422],
+    do: "attachments"
 
-  def field("files__" <> rest, files) do
+  def field(%Error{field: "files"}, _files), do: "attachments"
+  def field(%Error{field: "files__" <> rest}, files), do: file_field(rest, files)
+  def field(%Error{field: field}, _files), do: field
+
+  defp file_field(rest, files) do
     with [index | _] <- String.split(rest, "__"),
          {index, ""} <- Integer.parse(index),
          %{field: field} <- Enum.at(distinct(files), index) do
@@ -78,8 +85,6 @@ defmodule PostHog.Emails.Attachments do
       _other -> "attachments"
     end
   end
-
-  def field(attr, _files), do: attr
 
   @doc "The error of an upload that failed, with what the storage answered, if anything."
   @spec upload_failed(file(), String.t(), pos_integer() | nil, term()) :: Error.t()
