@@ -10,8 +10,10 @@ defmodule PostHog.Emails.Error do
   - `:name` - the category, one of `t:name/0`.
   - `:code` - PostHog's error code, such as `"quota_limited"` or `"recipient_suppressed"`, or an
     SDK code: `"missing_secret_key"`, `"missing_app_host"`, `"client_disabled"`,
-    `"client_closed"`, `"network_error"`, `"api_error"` (an answer without a code), `"unexpected_error"`, or an
-    `"invalid_*"` code for an option the SDK refused before any request.
+    `"client_closed"`, `"network_error"`, `"api_error"` (an answer without a code),
+    `"unexpected_error"`, `"attachment_upload_failed"`, `"too_many_attachments"` or
+    `"message_too_large"` for files the SDK refused before any request, or an `"invalid_*"`
+    code for an option the SDK refused before any request.
   - `:message` - human-readable message.
   - `:status_code` - the HTTP status, when PostHog answered.
   - `:why` and `:fix` - why PostHog refused the email and how to fix it, when it said.
@@ -69,6 +71,11 @@ defmodule PostHog.Emails.Error do
   defp name(401, _code), do: :missing_api_key
   defp name(nil, "network_error"), do: :service_unavailable
   defp name(nil, "invalid_" <> _), do: :validation_error
+
+  defp name(nil, code) when code in ["too_many_attachments", "message_too_large"],
+    do: :validation_error
+
+  defp name(_status, "attachment_upload_failed"), do: :application_error
   defp name(nil, _code), do: :application_error
   defp name(400, _code), do: :validation_error
   defp name(403, _code), do: :invalid_permission

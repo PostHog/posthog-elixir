@@ -85,13 +85,31 @@ defmodule PostHog.Emails do
   from `:api_host` with that key. When `:api_host` is a proxy that must not see the key, set
   `enable_local_evaluation: false` as well.
 
+  ## Attachments
+
+  An email carries at most 10 files and 40 MB after Base64 encoding, about 29 MB of files. The
+  SDK checks both before any request, counting each file and body as Base64, as PostHog does.
+
+  A send with files takes three steps:
+
+  1. The SDK hashes each file with SHA-256 and asks PostHog which files it doesn't have yet.
+  2. It uploads each of those straight to PostHog's file storage, with the headers PostHog
+     gave and without your secret key. A file PostHog already has, such as the same terms PDF
+     sent to every customer, uploads nothing again.
+  3. Once every upload succeeded, it sends the email, which names each file by its hash.
+
+  Your app must be able to reach the storage host that PostHog's answer names. If an upload
+  fails, the SDK sends nothing and returns `attachment_upload_failed` with what the storage
+  answered. An upload gets the request timeout plus one second per MB of the file.
+
   ## Timeouts, retries and idempotency
 
   Each request times out after `:email_request_timeout_ms` (15 seconds by default). A send
   retries network errors, rate limits, an idempotency key still in flight and an unavailable
   service `:email_request_max_retries` times (2 by default), waiting about 1 and then 2 seconds,
   or the server's `Retry-After` when it is longer. A `Retry-After` over 30 seconds fails at once
-  with `:retry_after_ms` set. A monthly quota is never retried.
+  with `:retry_after_ms` set. A monthly quota and the day's upload quota are never retried.
+  The upload steps of a send with files retry the same way.
 
   Every attempt sends the same idempotency key, so a retry never sends twice. Without
   `:idempotency_key`, the SDK makes a UUID for the call. When a job runner such as Oban
@@ -117,6 +135,17 @@ defmodule PostHog.Emails do
   - `client_closed`: the PostHog instance stopped while a call waited to retry, so the retry
     was not sent.
 
+  A send with files can also return:
+
+  - `too_many_attachments` or `message_too_large`: over 10 files, or over 40 MB after Base64
+    encoding. The SDK checks both before any request, and PostHog checks them again.
+  - `attachment_upload_failed`: an upload to PostHog's file storage failed, so no email was
+    sent. The message has the storage's answer.
+  - `attachment_not_uploaded`: PostHog has no uploaded file with a hash the send names.
+  - `upload_quota_exceeded` (429): the project uploaded as many file bytes as it can today.
+    Files PostHog already has don't count.
+  - `field_not_accepted`: the project can't send files yet.
+
   An option the SDK refuses returns an error with an `invalid_*` code, such as
   `invalid_template_id`, and the name `:validation_error`, before any request.
 
@@ -130,12 +159,14 @@ defmodule PostHog.Emails do
 
   require Logger
 
+  alias PostHog.Emails.Attachments
   alias PostHog.Emails.Error
   alias PostHog.Emails.SendResult
   alias PostHog.Emails.Status
   alias PostHog.Emails.Warning
 
   @send_path "/api/projects/@current/messaging/send/email/"
+  @uploads_path "/api/projects/@current/messaging/attachments/uploads/"
   @status_path "/api/projects/@current/messaging/emails/"
   @us_app_host "https://us.posthog.com"
   @eu_app_host "https://eu.posthog.com"
@@ -165,8 +196,6 @@ defmodule PostHog.Emails do
                    :capture_engagement
                  ]
   @address_fields [:reply_to, :cc, :bcc]
-  @attachment_fields [:filename, :content, :content_type, :content_id]
-  @attachment_field_names Enum.map(@attachment_fields, &Atom.to_string/1)
   @template_owned_fields [:cc, :bcc, :attachments]
 
   @typedoc """
@@ -201,20 +230,21 @@ defmodule PostHog.Emails do
   - `:reply_to` - one address or a list of addresses.
   - `:cc` and `:bcc` - one address or a list of at most 10 bare addresses, such as
     `"finance@example.com"`, that get a visible or a hidden copy.
-  - `:attachments` - a list of files, at most 10 and 512 KB in total. Each is a map with
-    `:filename`, `:content` (the file's bytes, such as `File.read!/1` returns), and optionally
-    `:content_type`, such as `"application/pdf"`, and `:content_id`, which shows the file
-    inline: reference it in `:html` as `<img src="cid:logo">` with `content_id: "logo"`. The
-    SDK encodes the bytes as Base64. Pass raw bytes, not Base64, or the content is encoded twice. PostHog can't fetch a file from a path or URL. A file the
-    SDK can't send returns the error code `invalid_attachment`.
+  - `:attachments` - a list of files: at most 10 files and 40 MB per email after Base64
+    encoding, about 29 MB of files. Each is a map with `:filename`, `:content` (the file's
+    bytes, such as `File.read!/1` returns), and optionally `:content_type`, such as
+    `"application/pdf"`, and `:content_id`, which shows the file inline: reference it in
+    `:html` as `<img src="cid:logo">` with `content_id: "logo"`. Pass raw bytes, not Base64.
+    PostHog can't fetch a file from a path or URL. A file the SDK can't send returns the error
+    code `invalid_attachment`. See "Attachments" in `PostHog.Emails` for how files travel.
   - `:capture_engagement` - whether PostHog captures the email's opens and clicks as events of
     the recipient. Defaults to `true`. A project whose admin turned engagement capture off
     captures nothing, whatever the send asks.
 
   An option set to `nil` counts as left out, and so does an empty `:reply_to`, `:cc`, `:bcc` or
-  `:attachments` list. PostHog holds the limits. A PostHog version that doesn't take a field
-  yet, such as `:attachments`, refuses the send with an error whose `:field` names it, and never
-  drops the field to send the rest.
+  `:attachments` list. A PostHog version that doesn't take a field yet, such as `:attachments`,
+  refuses the send with an error whose `:field` names it, and never drops the field to send the
+  rest.
   """
   @type send_option() ::
           {:to, String.t()}
@@ -235,8 +265,8 @@ defmodule PostHog.Emails do
           | {:capture_engagement, boolean() | nil}
 
   @typedoc """
-  A file sent with the email. `:content` is the file's raw bytes, which the SDK encodes as
-  Base64. Don't pass content that is already Base64: it would be encoded twice.
+  A file sent with the email. `:content` is the file's raw bytes, such as `File.read!/1`
+  returns. Don't pass content that is already Base64: the recipient would get the Base64 text.
   """
   @type attachment() :: %{
           required(:filename) => String.t(),
@@ -273,6 +303,7 @@ defmodule PostHog.Emails do
   def send(name \\ PostHog, options) do
     with {:ok, prepared} <- prepare_send(options),
          {:ok, connection} <- connect(name, :send),
+         :ok <- upload(connection, prepared),
          {:ok, result} <- deliver(connection, prepared) do
       log_warnings(result)
       {:ok, result}
@@ -324,6 +355,69 @@ defmodule PostHog.Emails do
     end)
   end
 
+  # Files are uploaded straight to PostHog's file storage, which never gets the secret key.
+  defp upload(_connection, %{files: []}), do: :ok
+
+  defp upload(connection, prepared) do
+    max_retries = prepared.max_retries || connection.max_retries
+
+    with {:ok, uploads} <- ask_where_to_upload(connection, prepared.files, max_retries) do
+      put_files(connection, uploads, max_retries)
+    end
+  end
+
+  defp put_files(_connection, [], _max_retries), do: :ok
+
+  defp put_files(connection, [{file, upload} | uploads], max_retries) do
+    with :ok <- put_file(connection, file, upload, max_retries) do
+      put_files(connection, uploads, max_retries)
+    end
+  end
+
+  defp ask_where_to_upload(connection, files, max_retries) do
+    headers = [{"content-type", "application/json"} | headers(connection)]
+    body = Jason.encode!(Attachments.upload_request(files))
+
+    with_retries(connection, max_retries, fn ->
+      connection
+      |> request(:post, @uploads_path, headers, body)
+      |> parse_uploads_reply(files)
+    end)
+  end
+
+  defp put_file(connection, file, upload, max_retries) do
+    # A large file takes longer to send than a request without one.
+    timeout_ms = connection.timeout_ms + div(file.size, 1_000_000) * 1_000
+
+    connection
+    |> with_retries(max_retries, fn ->
+      case send_request(connection, :put, upload.url, upload.headers, file.content, timeout_ms) do
+        {:ok, status, _body, _retry_after_ms} when status in 200..299 ->
+          {:ok, :uploaded}
+
+        {:ok, status, body, retry_after_ms} ->
+          {:error,
+           %{
+             Attachments.upload_failed(file, upload.url, status, body)
+             | retry_after_ms: retry_after_ms
+           }}
+
+        {:error, error} ->
+          {:error, error}
+      end
+    end)
+    |> case do
+      {:ok, :uploaded} ->
+        :ok
+
+      {:error, %Error{code: "network_error"}} ->
+        {:error, Attachments.upload_failed(file, upload.url, nil, nil)}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
   # Options
 
   defp prepare_send(options) when is_list(options) or is_map(options) do
@@ -341,11 +435,12 @@ defmodule PostHog.Emails do
 
   defp prepare(options) do
     with :ok <- check_recipient(options),
-         {:ok, content} <- content(options),
+         {:ok, {content, files}} <- content(options),
          {:ok, idempotency_key} <- idempotency_key(options),
          {:ok, max_retries} <- max_retries(options),
          {:ok, body} <- encode(content, options) do
-      {:ok, %{body: body, idempotency_key: idempotency_key, max_retries: max_retries}}
+      {:ok,
+       %{body: body, files: files, idempotency_key: idempotency_key, max_retries: max_retries}}
     end
   end
 
@@ -388,9 +483,12 @@ defmodule PostHog.Emails do
       true ->
         with :ok <- refuse_fields_outside(options, :template) do
           {:ok,
-           options
-           |> Map.take([:to, :distinct_id])
-           |> Map.merge(%{template_id: String.downcase(template_id), message_data: template_data})}
+           {options
+            |> Map.take([:to, :distinct_id])
+            |> Map.merge(%{
+              template_id: String.downcase(template_id),
+              message_data: template_data
+            }), []}}
         end
     end
   end
@@ -399,13 +497,17 @@ defmodule PostHog.Emails do
     with :ok <- check_template_key(template_key),
          :ok <- refuse_fields_outside(options, :code),
          :ok <- check_code_fields(options),
-         {:ok, attachments} <- attachments(Map.get(options, :attachments, [])) do
+         {:ok, files} <-
+           Attachments.prepare(
+             Map.get(options, :attachments, []),
+             Enum.flat_map([:html, :text], &List.wrap(options[&1]))
+           ) do
       {:ok,
-       options
-       |> Map.take([:to, :distinct_id, :template_key, :subject, :html, :text, :from])
-       |> Map.put(:capture_engagement, Map.get(options, :capture_engagement, true))
-       |> put_addresses(options)
-       |> put_if_any(:attachments, attachments)}
+       {options
+        |> Map.take([:to, :distinct_id, :template_key, :subject, :html, :text, :from])
+        |> Map.put(:capture_engagement, Map.get(options, :capture_engagement, true))
+        |> put_addresses(options)
+        |> put_if_any(:attachments, Enum.map(files, & &1.reference)), files}}
     end
   end
 
@@ -479,80 +581,6 @@ defmodule PostHog.Emails do
   defp addresses?(address) when is_binary(address), do: nonblank?(address)
   defp addresses?(addresses) when is_list(addresses), do: Enum.all?(addresses, &nonblank?/1)
   defp addresses?(_addresses), do: false
-
-  defp attachments(attachments) when is_list(attachments) do
-    attachments
-    |> Enum.with_index()
-    |> Enum.reduce_while({:ok, []}, fn {attachment, index}, {:ok, encoded} ->
-      case attachment(attachment, "attachments__#{index}") do
-        {:ok, attachment} -> {:cont, {:ok, [attachment | encoded]}}
-        error -> {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, encoded} -> {:ok, Enum.reverse(encoded)}
-      error -> error
-    end
-  end
-
-  defp attachments(_attachments),
-    do: invalid_attachment("attachments must be a list of files.", "attachments")
-
-  defp attachment(attachment, field) when is_map(attachment) and not is_struct(attachment) do
-    attachment = Map.reject(attachment, fn {_key, value} -> is_nil(value) end)
-    unknown = attachment |> Map.keys() |> Enum.reject(&(&1 in @attachment_fields)) |> Enum.sort()
-
-    cond do
-      Map.has_key?(attachment, :path) ->
-        invalid_attachment(
-          "PostHog can't fetch an attachment from a path or URL. Read the file, for example " <>
-            "with File.read!/1, and pass its bytes as content.",
-          field <> "__path"
-        )
-
-      unknown != [] ->
-        unknown_attachment_key(key_to_report(unknown), field)
-
-      not is_binary(attachment[:filename]) ->
-        invalid_attachment("An attachment needs its filename as a string.", field <> "__filename")
-
-      not is_binary(attachment[:content]) ->
-        invalid_attachment(
-          "An attachment needs content: the file's bytes as a binary.",
-          field <> "__content"
-        )
-
-      key = Enum.find([:content_type, :content_id], &not_string?(attachment, &1)) ->
-        invalid_attachment("An attachment's #{key} must be a string.", "#{field}__#{key}")
-
-      true ->
-        {:ok, Map.update!(attachment, :content, &Base.encode64/1)}
-    end
-  end
-
-  defp attachment(_attachment, field),
-    do: invalid_attachment("An attachment is a map with filename and content.", field)
-
-  defp key_to_report(unknown_keys),
-    do: Enum.find(unknown_keys, hd(unknown_keys), &(&1 in @attachment_field_names))
-
-  defp unknown_attachment_key(key, field) when key in @attachment_field_names,
-    do:
-      invalid_attachment(
-        ~s(Attachment keys are atoms: use :#{key}, not "#{key}".),
-        "#{field}__#{key}"
-      )
-
-  defp unknown_attachment_key(key, field) when is_atom(key) or is_binary(key),
-    do: invalid_attachment(attachment_keys_message(key), "#{field}__#{key}")
-
-  defp unknown_attachment_key(key, field),
-    do: invalid_attachment(attachment_keys_message(inspect(key)), field)
-
-  defp attachment_keys_message(key),
-    do: "An attachment takes filename, content, content_type and content_id, not #{key}."
-
-  defp invalid_attachment(message, field), do: invalid("invalid_attachment", message, field)
 
   defp refuse_fields_outside(options, form) do
     {fields, other_fields} =
@@ -771,6 +799,15 @@ defmodule PostHog.Emails do
   # Requests
 
   defp request(connection, method, path, headers, body) do
+    url = connection.app_host <> path
+
+    case send_request(connection, method, url, headers, body, connection.timeout_ms) do
+      {:ok, status, body, retry_after_ms} -> {:ok, status, fields(body), retry_after_ms}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp send_request(connection, method, url, headers, body, timeout_ms) do
     # The SDK parses the body itself, so a malformed acceptance stays an api_error with its status.
     options =
       [
@@ -779,17 +816,14 @@ defmodule PostHog.Emails do
         redirect: false,
         compress_body: false,
         decode_body: false,
-        receive_timeout: connection.timeout_ms
+        receive_timeout: timeout_ms
       ] ++ if(body, do: [body: body], else: [])
 
     %{module: module, client: client} = connection.api_client
 
-    case within_deadline(connection.timeout_ms, fn ->
-           call_client(module, client, method, connection.app_host <> path, options)
-         end) do
+    case within_deadline(timeout_ms, fn -> call_client(module, client, method, url, options) end) do
       {:ok, %{status: status} = response} when is_integer(status) ->
-        {:ok, status, fields(Map.get(response, :body)),
-         retry_after_ms(Map.get(response, :headers))}
+        {:ok, status, Map.get(response, :body), retry_after_ms(Map.get(response, :headers))}
 
       {:error, _reason} ->
         {:error, Error.new("network_error", "The request to PostHog failed.")}
@@ -912,8 +946,10 @@ defmodule PostHog.Emails do
   # A send carries an idempotency key, so a retry can't queue a second email. A status read changes nothing.
   defp retryable?(%Error{status_code: nil, code: code}), do: code == "network_error"
   defp retryable?(%Error{status_code: 409, code: code}), do: code == "idempotency_key_in_flight"
-  # Waiting doesn't fix a monthly quota.
-  defp retryable?(%Error{status_code: 429, code: code}), do: code != "quota_limited"
+  # Waiting doesn't fix a monthly quota, or the day's upload quota.
+  defp retryable?(%Error{status_code: 429, code: code}),
+    do: code not in ["quota_limited", "upload_quota_exceeded"]
+
   defp retryable?(%Error{status_code: status}), do: status == 503
 
   defp retry_delay_ms(error, attempt, max_retries) do
@@ -952,6 +988,24 @@ defmodule PostHog.Emails do
   end
 
   defp parse_send_reply(reply), do: reply_error(reply)
+
+  defp parse_uploads_reply({:ok, status, fields, _retry_after}, files) when status in 200..299 do
+    case Attachments.uploads(fields, files) do
+      {:ok, uploads} ->
+        {:ok, uploads}
+
+      :error ->
+        {:error,
+         Error.new("api_error", "PostHog answered the upload request in a way the SDK can't use.",
+           status_code: status
+         )}
+    end
+  end
+
+  defp parse_uploads_reply(reply, files) do
+    {:error, error} = reply_error(reply)
+    {:error, %{error | field: Attachments.field(error.field, files)}}
+  end
 
   defp warnings(warnings) when is_list(warnings) do
     for %{} = warning <- warnings do

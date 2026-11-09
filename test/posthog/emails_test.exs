@@ -28,6 +28,7 @@ defmodule PostHog.EmailsTest do
   setup :verify_on_exit!
 
   @send_url "https://us.posthog.com/api/projects/@current/messaging/send/email/"
+  @uploads_url "https://us.posthog.com/api/projects/@current/messaging/attachments/uploads/"
   @template_id "0190F6D2-7C1E-7B3A-9F5E-1C2D3E4F5A6B"
   @message_id "01a18356-c56c-0001-e494-7666bc915188"
 
@@ -281,59 +282,31 @@ defmodule PostHog.EmailsTest do
     end
   end
 
-  describe "send/2 with cc, bcc and attachments" do
+  describe "send/2 with cc and bcc" do
     @code_send [to: "user@example.com", template_key: "receipt", subject: "Hi", html: "<p/>"]
-    @pdf <<37, 80, 68, 70, 45, 0, 255, 10>>
 
-    test "posts copies and Base64 attachments", %{name: name} do
+    test "posts copies, a string as a one-item list", %{name: name} do
       expect_reply(accepted())
 
       assert {:ok, %Emails.SendResult{id: @message_id}} =
                Emails.send(
                  name,
                  @code_send ++
-                   [
-                     cc: "finance@example.com",
-                     bcc: ["audit@example.com", "archive@example.com"],
-                     attachments: [
-                       %{filename: "invoice.pdf", content: @pdf, content_type: "application/pdf"},
-                       %{filename: "logo.png", content: "png bytes", content_id: "logo"}
-                     ]
-                   ]
+                   [cc: "finance@example.com", bcc: ["audit@example.com", "archive@example.com"]]
                )
 
       body = sent_body()
       assert body["cc"] == ["finance@example.com"]
       assert body["bcc"] == ["audit@example.com", "archive@example.com"]
-
-      assert body["attachments"] == [
-               %{
-                 "filename" => "invoice.pdf",
-                 "content" => Base.encode64(@pdf),
-                 "content_type" => "application/pdf"
-               },
-               %{
-                 "filename" => "logo.png",
-                 "content" => Base.encode64("png bytes"),
-                 "content_id" => "logo"
-               }
-             ]
     end
 
-    test "leaves out empty lists and nil attachment fields", %{name: name} do
+    test "leaves out empty lists", %{name: name} do
       expect_reply(accepted())
 
       assert {:ok, _} =
                Emails.send(
                  name,
-                 @code_send ++
-                   [
-                     reply_to: [],
-                     cc: [],
-                     bcc: nil,
-                     attachments: [],
-                     distinct_id: "user_123"
-                   ]
+                 @code_send ++ [reply_to: [], cc: [], bcc: nil, attachments: []]
                )
 
       body = sent_body()
@@ -341,20 +314,10 @@ defmodule PostHog.EmailsTest do
       refute Map.has_key?(body, "cc")
       refute Map.has_key?(body, "bcc")
       refute Map.has_key?(body, "attachments")
-
-      expect_reply(accepted())
-
-      assert {:ok, _} =
-               Emails.send(
-                 name,
-                 @code_send ++
-                   [attachments: [%{filename: "a.txt", content: "a", content_type: nil}]]
-               )
-
-      assert sent_body()["attachments"] == [%{"filename" => "a.txt", "content" => "YQ=="}]
+      refute_requested()
     end
 
-    test "a template send refuses them before any request", %{name: name} do
+    test "a template send refuses them and attachments before any request", %{name: name} do
       for {field, value} <- [
             cc: "finance@example.com",
             bcc: "audit@example.com",
@@ -375,42 +338,360 @@ defmodule PostHog.EmailsTest do
       refute_requested()
     end
 
-    test "asks for atom keys when an attachment has string keys", %{name: name} do
-      assert {:error,
-              %Error{code: "invalid_attachment", field: "attachments__0__content"} = error} =
-               Emails.send(
-                 name,
-                 @code_send ++ [attachments: [%{"filename" => "a.txt", "content" => "a"}]]
-               )
-
-      assert error.message =~ ~s(:content, not "content")
-
-      assert {:error, %Error{field: "attachments__0__content"}} =
-               Emails.send(
-                 name,
-                 @code_send ++
-                   [attachments: [%{"filename" => "a.txt", "content" => "a", "cid" => "logo"}]]
-               )
-
-      refute_requested()
-    end
-
-    test "refuses an attachment key that has no string form", %{name: name} do
-      attachment = %{{:extra, :field} => true, filename: "a.txt", content: "a"}
-
-      assert {:error, %Error{code: "invalid_attachment", field: "attachments__0"} = error} =
-               Emails.send(name, @code_send ++ [attachments: [attachment]])
-
-      assert error.message =~ "{:extra, :field}"
-      refute_requested()
-    end
-
     test "refuses cc and bcc that are not addresses", %{name: name} do
       for {field, value} <- [cc: [:nope], bcc: " ", cc: %{a: 1}] do
         assert {:error, %Error{code: "invalid_form", field: field_name}} =
                  Emails.send(name, @code_send ++ [{field, value}])
 
         assert field_name == to_string(field)
+      end
+
+      refute_requested()
+    end
+  end
+
+  describe "send/2 with attachments" do
+    @code_send [to: "user@example.com", template_key: "receipt", subject: "Hi", html: "<p/>"]
+    @pdf <<37, 80, 68, 70, 45, 0, 255, 10>>
+    @logo "png bytes"
+    @put_url "https://files.example.com/team/1/file?X-Amz-Signature=signed-secret"
+
+    defp sha256(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
+
+    defp present(bytes),
+      do: %{
+        "sha256" => sha256(bytes),
+        "status" => "present",
+        "expires_at" => "2026-12-16T09:00:00Z"
+      }
+
+    defp to_upload(bytes) do
+      %{
+        "sha256" => sha256(bytes),
+        "status" => "upload",
+        "url" => @put_url,
+        "method" => "PUT",
+        "headers" => %{
+          "Content-Length" => to_string(byte_size(bytes)),
+          "x-amz-checksum-sha256" => :crypto.hash(:sha256, bytes) |> Base.encode64()
+        },
+        "url_expires_at" => "2026-11-09T10:15:00Z"
+      }
+    end
+
+    defp slots(answers), do: {:ok, %{status: 200, headers: %{}, body: %{"files" => answers}}}
+    defp stored, do: {:ok, %{status: 200, headers: %{}, body: ""}}
+
+    defp bucket_refused(status, code, message),
+      do:
+        {:ok,
+         %{
+           status: status,
+           headers: %{"content-type" => "application/xml"},
+           body:
+             ~s(<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>#{code}</Code><Message>#{message}</Message><Resource>/team/1/file</Resource></Error>)
+         }}
+
+    defp requests do
+      receive do
+        {:request, method, url, opts} -> [{method, url, opts} | requests()]
+      after
+        0 -> []
+      end
+    end
+
+    defp with_files(attachments), do: @code_send ++ [attachments: attachments]
+
+    test "uploads the files PostHog asks for, then sends their references", %{name: name} do
+      expect_reply(slots([to_upload(@pdf), present(@logo)]))
+      expect_reply(stored())
+      expect_reply(accepted())
+
+      assert {:ok, %Emails.SendResult{id: @message_id}} =
+               Emails.send(
+                 name,
+                 with_files([
+                   %{filename: "invoice.pdf", content: @pdf, content_type: "application/pdf"},
+                   %{filename: "logo.png", content: @logo, content_id: "logo"}
+                 ])
+               )
+
+      assert [
+               {:post, @uploads_url, ask},
+               {:put, @put_url, put},
+               {:post, @send_url, send}
+             ] = requests()
+
+      assert Jason.decode!(ask[:body]) == %{
+               "files" => [
+                 %{"sha256" => sha256(@pdf), "size" => byte_size(@pdf)},
+                 %{"sha256" => sha256(@logo), "size" => byte_size(@logo)}
+               ]
+             }
+
+      assert header(ask, "authorization") == "Bearer phs_secret_key"
+
+      assert put[:body] == @pdf
+      assert header(put, "Content-Length") == "8"
+
+      assert header(put, "x-amz-checksum-sha256") ==
+               :crypto.hash(:sha256, @pdf) |> Base.encode64()
+
+      assert Jason.decode!(send[:body])["attachments"] == [
+               %{
+                 "sha256" => sha256(@pdf),
+                 "filename" => "invoice.pdf",
+                 "content_type" => "application/pdf"
+               },
+               %{"sha256" => sha256(@logo), "filename" => "logo.png", "content_id" => "logo"}
+             ]
+    end
+
+    test "uploads without the secret key or any PostHog header", %{name: name} do
+      expect_reply(slots([to_upload(@pdf)]))
+      expect_reply(stored())
+      expect_reply(accepted())
+
+      assert {:ok, _} = Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+
+      assert [_ask, {:put, @put_url, put}, _send] = requests()
+      header_names = Enum.map(put[:headers], fn {key, _value} -> String.downcase(key) end)
+      assert Enum.sort(header_names) == ["content-length", "x-amz-checksum-sha256"]
+    end
+
+    test "uploads nothing when PostHog has every file", %{name: name} do
+      expect_reply(slots([present(@pdf)]))
+      expect_reply(accepted())
+
+      assert {:ok, _} = Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+
+      assert [{:post, @uploads_url, _}, {:post, @send_url, _}] = requests()
+    end
+
+    test "asks once for a file attached twice, and sends both references", %{name: name} do
+      expect_reply(slots([to_upload(@pdf)]))
+      expect_reply(stored())
+      expect_reply(accepted())
+
+      assert {:ok, _} =
+               Emails.send(
+                 name,
+                 with_files([
+                   %{filename: "a.pdf", content: @pdf},
+                   %{filename: "copy.pdf", content: @pdf}
+                 ])
+               )
+
+      assert [{:post, _, ask}, {:put, _, _}, {:post, _, send}] = requests()
+      assert [%{"sha256" => sha}] = Jason.decode!(ask[:body])["files"]
+
+      assert [%{"sha256" => ^sha}, %{"sha256" => ^sha}] =
+               Jason.decode!(send[:body])["attachments"]
+    end
+
+    test "sends nothing after a failed upload, and returns the storage's answer", %{name: name} do
+      expect_reply(slots([present(@logo), to_upload(@pdf)]))
+
+      expect_reply(
+        bucket_refused(
+          400,
+          "BadDigest",
+          "The SHA256 you specified did not match the calculated checksum."
+        )
+      )
+
+      assert {:error, %Error{} = error} =
+               Emails.send(
+                 name,
+                 with_files([
+                   %{filename: "logo.png", content: @logo},
+                   %{filename: "invoice.pdf", content: @pdf}
+                 ])
+               )
+
+      assert %Error{
+               code: "attachment_upload_failed",
+               name: :application_error,
+               status_code: 400,
+               field: "attachments__1"
+             } = error
+
+      assert error.message =~ "invoice.pdf"
+      assert error.message =~ "files.example.com"
+      assert error.message =~ "BadDigest"
+      assert error.message =~ "did not match the calculated checksum."
+      refute error.message =~ ".."
+      assert error.why =~ "no email was sent"
+      refute inspect(error) =~ "signed-secret"
+      refute inspect(error) =~ @pdf
+
+      assert [{:post, @uploads_url, _}, {:put, @put_url, _}] = requests()
+    end
+
+    test "retries an upload the storage couldn't take, then sends", %{name: name} do
+      expect_reply(slots([to_upload(@pdf)]))
+      expect_reply(bucket_refused(503, "SlowDown", "Please reduce your request rate."))
+      expect_reply({:error, %Req.TransportError{reason: :closed}})
+      expect_reply(stored())
+      expect_reply(accepted())
+
+      assert {:ok, _} = Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+
+      assert [{:post, _, _}, {:put, _, _}, {:put, _, _}, {:put, _, _}, {:post, @send_url, _}] =
+               requests()
+    end
+
+    test "an upload that keeps failing at the network sends nothing", %{name: name} do
+      expect_reply(slots([to_upload(@pdf)]))
+      expect_reply({:error, %Req.TransportError{reason: :econnrefused}})
+
+      assert {:error, %Error{code: "attachment_upload_failed", status_code: nil} = error} =
+               Emails.send(
+                 name,
+                 with_files([%{filename: "a.pdf", content: @pdf}]) ++ [max_retries: 0]
+               )
+
+      assert error.message =~ "files.example.com"
+      assert error.field == "attachments__0"
+      refute inspect(error) =~ "signed-secret"
+      assert [{:post, _, _}, {:put, _, _}] = requests()
+    end
+
+    test "a send retry doesn't upload again", %{name: name} do
+      expect_reply(slots([to_upload(@pdf)]))
+      expect_reply(stored())
+      expect_reply(refused(503, %{"code" => "service_unavailable"}))
+      expect_reply(accepted())
+
+      assert {:ok, _} = Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+
+      assert [
+               {:post, @uploads_url, _},
+               {:put, _, _},
+               {:post, @send_url, first},
+               {:post, @send_url, second}
+             ] =
+               requests()
+
+      assert header(first, "idempotency-key") == header(second, "idempotency-key")
+    end
+
+    test "returns PostHog's refusal of the uploads, naming the attachment", %{name: name} do
+      expect_reply(
+        refused(400, %{
+          "type" => "invalid_request",
+          "code" => "message_too_large",
+          "detail" =>
+            "These files are too large for one email, so PostHog didn't prepare the uploads.",
+          "attr" => "files__1__size",
+          "why" => "An email can be at most 40 MB after Base64 encoding, about 29 MB of files.",
+          "fix" => "Send fewer or smaller files."
+        })
+      )
+
+      assert {:error,
+              %Error{
+                code: "message_too_large",
+                status_code: 400,
+                field: "attachments__2__content",
+                why: "An email can be at most 40 MB" <> _
+              }} =
+               Emails.send(
+                 name,
+                 with_files([
+                   %{filename: "a.png", content: @logo},
+                   %{filename: "b.png", content: @logo},
+                   %{filename: "c.pdf", content: @pdf}
+                 ])
+               )
+
+      expect_reply(
+        refused(400, %{"code" => "field_not_accepted", "attr" => "files", "detail" => "Not yet."})
+      )
+
+      assert {:error, %Error{code: "field_not_accepted", field: "attachments"}} =
+               Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+
+      assert [{:post, @uploads_url, _}, {:post, @uploads_url, _}] = requests()
+    end
+
+    test "doesn't retry the daily upload quota, and retries unavailable storage", %{name: name} do
+      expect_reply(
+        refused(429, %{"code" => "upload_quota_exceeded", "detail" => "Enough today."})
+      )
+
+      assert {:error, %Error{code: "upload_quota_exceeded", status_code: 429}} =
+               Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+
+      refute_received {:slept, _}
+
+      expect_reply(refused(503, %{"code" => "delivery_unavailable"}))
+      expect_reply(slots([present(@pdf)]))
+      expect_reply(accepted())
+
+      assert {:ok, _} = Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+      assert_received {:slept, _}
+    end
+
+    test "an answer the SDK can't use sends nothing", %{name: name} do
+      for answer <- [
+            [],
+            [%{"sha256" => sha256(@logo), "status" => "present"}],
+            [%{"sha256" => sha256(@pdf), "status" => "copied"}],
+            [Map.delete(to_upload(@pdf), "url")],
+            [Map.put(to_upload(@pdf), "url", "ftp://files.example.com/a")],
+            [Map.put(to_upload(@pdf), "method", "POST")],
+            [Map.put(to_upload(@pdf), "headers", %{"Content-Length" => 8})]
+          ] do
+        expect_reply(slots(answer))
+
+        assert {:error, %Error{code: "api_error", status_code: 200}} =
+                 Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+
+        assert [{:post, @uploads_url, _}] = requests()
+      end
+    end
+
+    test "refuses more than 10 files before any request", %{name: name} do
+      files = for i <- 1..11, do: %{filename: "#{i}.txt", content: "file #{i}"}
+
+      assert {:error,
+              %Error{
+                code: "too_many_attachments",
+                name: :validation_error,
+                field: "attachments"
+              } = error} = Emails.send(name, with_files(files))
+
+      assert error.fix =~ "10"
+      refute_requested()
+    end
+
+    test "refuses an email over 40 MB after Base64 encoding before any request", %{name: name} do
+      largest_that_fits = 29_182_875
+      file = :binary.copy(<<0>>, largest_that_fits)
+
+      expect_reply(slots([present(file)]))
+      expect_reply(accepted())
+
+      assert {:ok, _} =
+               Emails.send(
+                 name,
+                 @code_send ++ [html: "", attachments: [%{filename: "a", content: file}]]
+               )
+
+      assert [_ask, _send] = requests()
+
+      for options <- [
+            [html: "", attachments: [%{filename: "a", content: file <> <<0>>}]],
+            [html: "<p>", attachments: [%{filename: "a", content: file}]],
+            [html: "", text: "x", attachments: [%{filename: "a", content: file}]]
+          ] do
+        assert {:error,
+                %Error{code: "message_too_large", name: :validation_error, field: "attachments"} =
+                  error} = Emails.send(name, @code_send ++ options)
+
+        assert error.why =~ "40 MB"
+        assert error.fix =~ "29 MB"
       end
 
       refute_requested()
@@ -426,6 +707,7 @@ defmodule PostHog.EmailsTest do
             {[%{filename: "a.txt", content: "a", cid: "logo"}], "attachments__0__cid"},
             {[%{"filename" => "a.txt", "content" => "a"}], "attachments__0__content"},
             {[%{filename: "a.txt"}], "attachments__0__content"},
+            {[%{filename: "a.txt", content: ""}], "attachments__0__content"},
             {[%{filename: "a.txt", content: [97]}], "attachments__0__content"},
             {[%{filename: "a.txt", content: <<1::3>>}], "attachments__0__content"},
             {[%{content: "a"}], "attachments__0__filename"},
@@ -436,59 +718,72 @@ defmodule PostHog.EmailsTest do
           ] do
         assert {:error,
                 %Error{code: "invalid_attachment", name: :validation_error, field: ^field}} =
-                 Emails.send(name, @code_send ++ [attachments: attachments])
+                 Emails.send(name, with_files(attachments))
       end
 
       refute_requested()
     end
 
-    test "a path points to reading the file", %{name: name} do
-      assert {:error, %Error{message: message}} =
+    test "asks for atom keys when an attachment has string keys", %{name: name} do
+      assert {:error,
+              %Error{code: "invalid_attachment", field: "attachments__0__content"} = error} =
+               Emails.send(name, with_files([%{"filename" => "a.txt", "content" => "a"}]))
+
+      assert error.message =~ ~s(:content, not "content")
+
+      assert {:error, %Error{field: "attachments__0__content"}} =
                Emails.send(
                  name,
-                 @code_send ++ [attachments: [%{filename: "a.pdf", path: "/srv/a.pdf"}]]
+                 with_files([%{"filename" => "a.txt", "content" => "a", "cid" => "logo"}])
                )
+
+      refute_requested()
+    end
+
+    test "refuses an attachment key that has no string form", %{name: name} do
+      attachment = %{{:extra, :field} => true, filename: "a.txt", content: "a"}
+
+      assert {:error, %Error{code: "invalid_attachment", field: "attachments__0"} = error} =
+               Emails.send(name, with_files([attachment]))
+
+      assert error.message =~ "{:extra, :field}"
+      refute_requested()
+    end
+
+    test "a path points to reading the file", %{name: name} do
+      assert {:error, %Error{message: message}} =
+               Emails.send(name, with_files([%{filename: "a.pdf", path: "/srv/a.pdf"}]))
 
       assert message =~ "File.read"
     end
 
     test "never repeats the file's content in an error", %{name: name} do
       assert {:error, %Error{} = error} =
-               Emails.send(
-                 name,
-                 @code_send ++
-                   [attachments: [%{filename: 1, content: "SECRET-FILE-BYTES"}]]
-               )
+               Emails.send(name, with_files([%{filename: 1, content: "SECRET-FILE-BYTES"}]))
 
       refute inspect(error) =~ "SECRET-FILE-BYTES"
     end
 
-    test "returns a server's refusal of a field it doesn't take", %{name: name} do
+    test "returns a send's refusal of a file it can't find", %{name: name} do
+      expect_reply(slots([present(@pdf)]))
+
       expect_reply(
         refused(400, %{
-          "type" => "validation_error",
-          "code" => "invalid_request",
-          "detail" => "PostHog doesn't take this field yet, so it didn't send the email.",
-          "attr" => "attachments",
-          "why" => "This PostHog version doesn't take the field yet.",
-          "fix" => "Send the email without this field."
+          "type" => "invalid_request",
+          "code" => "attachment_not_uploaded",
+          "detail" => "A file this email names isn't uploaded, so PostHog didn't send the email.",
+          "attr" => "attachments__0__sha256",
+          "why" => "This project has no uploaded file with this SHA-256.",
+          "fix" => "Upload the file and wait for its upload to succeed, then send again."
         })
       )
 
       assert {:error,
               %Error{
-                code: "invalid_request",
-                field: "attachments",
-                name: :validation_error,
+                code: "attachment_not_uploaded",
+                field: "attachments__0__sha256",
                 status_code: 400
-              }} =
-               Emails.send(
-                 name,
-                 @code_send ++ [attachments: [%{filename: "a.txt", content: "a"}]]
-               )
-
-      assert_received {:request, :post, @send_url, _opts}
-      refute_received {:request, _, _, _}
+              }} = Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
     end
   end
 
