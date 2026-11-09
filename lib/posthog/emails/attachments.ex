@@ -1,7 +1,5 @@
 defmodule PostHog.Emails.Attachments do
   @moduledoc false
-  # The files of a send: their checks before any request, the upload request, PostHog's answer to
-  # it, and the errors of an upload. `PostHog.Emails` makes the requests.
 
   alias PostHog.Emails.Error
 
@@ -90,7 +88,7 @@ defmodule PostHog.Emails.Attachments do
 
     answer =
       if status,
-        do: "the storage answered #{storage_answer(status, body)}",
+        do: "the storage answered #{s3_error(status, body)}",
         else: "the request failed"
 
     Error.new(
@@ -136,7 +134,7 @@ defmodule PostHog.Emails.Attachments do
   defp check_size(files, bodies) do
     sizes = Enum.map(files, & &1.size) ++ Enum.map(bodies, &byte_size/1)
 
-    if message_bytes(sizes) > @max_message_bytes do
+    if base64_message_bytes(sizes) > @max_message_bytes do
       {:error,
        Error.new(
          "message_too_large",
@@ -152,8 +150,7 @@ defmodule PostHog.Emails.Attachments do
     end
   end
 
-  # PostHog's own estimate: each file and body as Base64 in 76-character lines, plus headers.
-  defp message_bytes(sizes) do
+  defp base64_message_bytes(sizes) do
     Enum.reduce(sizes, @headers_and_mime_boundaries_bytes, fn size, total ->
       total + ceil_div(ceil_div(size, 3) * 4 * 78, 76)
     end)
@@ -268,8 +265,7 @@ defmodule PostHog.Emails.Attachments do
 
   defp upload(_answer), do: :error
 
-  # S3 answers an error as XML with a Code and a Message.
-  defp storage_answer(status, body) when is_binary(body) do
+  defp s3_error(status, body) when is_binary(body) do
     case {xml_text(body, "Code"), xml_text(body, "Message")} do
       {nil, _message} ->
         "HTTP #{status}"
@@ -282,7 +278,7 @@ defmodule PostHog.Emails.Attachments do
     end
   end
 
-  defp storage_answer(status, _body), do: "HTTP #{status}"
+  defp s3_error(status, _body), do: "HTTP #{status}"
 
   defp xml_text(body, tag) do
     case Regex.run(~r{<#{tag}>([^<]*)</#{tag}>}, body, capture: :all_but_first) do

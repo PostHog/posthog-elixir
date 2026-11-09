@@ -331,7 +331,7 @@ defmodule PostHog.EmailsTest do
                  ])
 
         assert field_name == to_string(field)
-        assert error.why =~ "recipients and content from the template"
+        assert error.why =~ "sets its own sender, copies, subject, content and attachments"
         assert error.fix =~ "template_key"
       end
 

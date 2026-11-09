@@ -196,7 +196,6 @@ defmodule PostHog.Emails do
                    :capture_engagement
                  ]
   @address_fields [:reply_to, :cc, :bcc]
-  @template_owned_fields [:cc, :bcc, :attachments]
 
   @typedoc """
   Options for `send/2`. Pass `:template_id` or `:template_key`, never both.
@@ -355,7 +354,6 @@ defmodule PostHog.Emails do
     end)
   end
 
-  # Files are uploaded straight to PostHog's file storage, which never gets the secret key.
   defp upload(_connection, %{files: []}), do: :ok
 
   defp upload(connection, prepared) do
@@ -385,9 +383,11 @@ defmodule PostHog.Emails do
     end)
   end
 
+  defp upload_timeout_ms(connection, file),
+    do: connection.timeout_ms + div(file.size, 1_000_000) * 1_000
+
   defp put_file(connection, file, upload, max_retries) do
-    # A large file takes longer to send than a request without one.
-    timeout_ms = connection.timeout_ms + div(file.size, 1_000_000) * 1_000
+    timeout_ms = upload_timeout_ms(connection, file)
 
     connection
     |> with_retries(max_retries, fn ->
@@ -435,10 +435,12 @@ defmodule PostHog.Emails do
 
   defp prepare(options) do
     with :ok <- check_recipient(options),
-         {:ok, {content, files}} <- content(options),
+         {:ok, content} <- content(options),
+         {:ok, files} <- attachments(options),
          {:ok, idempotency_key} <- idempotency_key(options),
          {:ok, max_retries} <- max_retries(options),
-         {:ok, body} <- encode(content, options) do
+         {:ok, body} <-
+           encode(put_if_any(content, :attachments, Enum.map(files, & &1.reference)), options) do
       {:ok,
        %{body: body, files: files, idempotency_key: idempotency_key, max_retries: max_retries}}
     end
@@ -483,12 +485,9 @@ defmodule PostHog.Emails do
       true ->
         with :ok <- refuse_fields_outside(options, :template) do
           {:ok,
-           {options
-            |> Map.take([:to, :distinct_id])
-            |> Map.merge(%{
-              template_id: String.downcase(template_id),
-              message_data: template_data
-            }), []}}
+           options
+           |> Map.take([:to, :distinct_id])
+           |> Map.merge(%{template_id: String.downcase(template_id), message_data: template_data})}
         end
     end
   end
@@ -496,19 +495,20 @@ defmodule PostHog.Emails do
   defp code_content(%{template_key: template_key} = options) do
     with :ok <- check_template_key(template_key),
          :ok <- refuse_fields_outside(options, :code),
-         :ok <- check_code_fields(options),
-         {:ok, files} <-
-           Attachments.prepare(
-             Map.get(options, :attachments, []),
-             Enum.flat_map([:html, :text], &List.wrap(options[&1]))
-           ) do
+         :ok <- check_code_fields(options) do
       {:ok,
-       {options
-        |> Map.take([:to, :distinct_id, :template_key, :subject, :html, :text, :from])
-        |> Map.put(:capture_engagement, Map.get(options, :capture_engagement, true))
-        |> put_addresses(options)
-        |> put_if_any(:attachments, Enum.map(files, & &1.reference)), files}}
+       options
+       |> Map.take([:to, :distinct_id, :template_key, :subject, :html, :text, :from])
+       |> Map.put(:capture_engagement, Map.get(options, :capture_engagement, true))
+       |> put_addresses(options)}
     end
+  end
+
+  defp attachments(options) do
+    Attachments.prepare(
+      Map.get(options, :attachments, []),
+      Enum.flat_map([:html, :text], &List.wrap(options[&1]))
+    )
   end
 
   defp check_template_key(template_key) do
@@ -598,13 +598,6 @@ defmodule PostHog.Emails do
     end
   end
 
-  defp template_owns(field) when field in @template_owned_fields,
-    do: "A send with template_id takes its recipients and content from the template."
-
-  defp template_owns(_field),
-    do:
-      "A template made in PostHog sets its own sender, subject and content, and follows the project's engagement setting."
-
   defp field_outside_error(form, field, other_form_takes_it?) do
     form_field = if form == :template, do: "template_id", else: "template_key"
     message = "A send with #{form_field} doesn't take #{field}, so no email was sent."
@@ -613,7 +606,8 @@ defmodule PostHog.Emails do
       {why, how} =
         case form do
           :template ->
-            {template_owns(field), "send content from your code with template_key"}
+            {"A template made in PostHog sets its own sender, copies, subject, content and attachments, and follows the project's engagement setting.",
+             "send content from your code with template_key"}
 
           :code ->
             {"A send with template_key takes its content from your code.",
@@ -946,7 +940,7 @@ defmodule PostHog.Emails do
   # A send carries an idempotency key, so a retry can't queue a second email. A status read changes nothing.
   defp retryable?(%Error{status_code: nil, code: code}), do: code == "network_error"
   defp retryable?(%Error{status_code: 409, code: code}), do: code == "idempotency_key_in_flight"
-  # Waiting doesn't fix a monthly quota, or the day's upload quota.
+  # Waiting doesn't fix a monthly quota.
   defp retryable?(%Error{status_code: 429, code: code}),
     do: code not in ["quota_limited", "upload_quota_exceeded"]
 
