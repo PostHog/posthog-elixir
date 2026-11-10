@@ -948,7 +948,6 @@ defmodule PostHog.EmailsTest do
                 status_code: 403
               }} = Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
 
-      refute_received {:slept, _}
       assert [_one_put] = FakePostHog.received(fake, :storage)
       assert FakePostHog.messages(fake) == []
     end
@@ -1106,7 +1105,7 @@ defmodule PostHog.EmailsTest do
       assert {:error, %Error{code: "upload_quota_exceeded", status_code: 429, field: nil}} =
                Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
 
-      refute_received {:slept, _}
+      assert [_one_request] = FakePostHog.received(fake, :uploads)
       assert FakePostHog.messages(fake) == []
 
       FakePostHog.fail_next(fake, :uploads, {503, %{"code" => "delivery_unavailable"}})
@@ -1114,7 +1113,8 @@ defmodule PostHog.EmailsTest do
       assert {:ok, %Emails.SendResult{id: id}} =
                Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
 
-      assert_received {:slept, _}
+      # The quota request, then the unavailable one and its retry.
+      assert [_quota, _unavailable, _retry] = FakePostHog.received(fake, :uploads)
       assert [{^id, _email}] = FakePostHog.messages(fake)
     end
 
