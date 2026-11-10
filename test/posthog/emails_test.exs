@@ -57,9 +57,7 @@ defmodule PostHog.EmailsTest.FakePostHog do
   # only when its upload matches what was signed, as S3 checks a presigned PUT: the signed URL,
   # the signed headers, no second credential or unsigned x-amz- header, and the bytes. The send
   # route accepts an email only when PostHog has every file it names and the email fits PostHog's
-  # 40 MB estimate. Like PostHog, it can hold a project to a daily upload quota: the upload route
-  # refuses to sign uploads beyond what is left of it, and every file the storage keeps counts
-  # against it. A test reads back the stored files, the accepted emails and what the send route
+  # 40 MB estimate. A test reads back the stored files, the accepted emails and what the send route
   # received, and can make a route's next request fail, wait or hold.
   #
   # The routes are :uploads and :send on PostHog, and :storage. Uploads are signed for
@@ -82,8 +80,6 @@ defmodule PostHog.EmailsTest.FakePostHog do
       files: %{},
       signed: %{},
       messages: [],
-      upload_quota: nil,
-      uploaded_bytes: 0,
       received: %{uploads: [], storage: [], send: []},
       next: %{uploads: [], storage: [], send: []}
     }
@@ -109,9 +105,6 @@ defmodule PostHog.EmailsTest.FakePostHog do
   @doc "Deletes a stored file, as when it expires."
   def delete_file(fake, bytes),
     do: Agent.update(fake, &%{&1 | files: Map.delete(&1.files, sha256(bytes))})
-
-  @doc "Holds the project to a daily upload quota of `bytes`, counting the files stored today."
-  def set_upload_quota(fake, bytes), do: Agent.update(fake, &%{&1 | upload_quota: bytes})
 
   @doc "Signs later uploads for the storage at `url`."
   def set_storage_url(fake, url), do: Agent.update(fake, &%{&1 | storage_url: url})
@@ -232,43 +225,20 @@ defmodule PostHog.EmailsTest.FakePostHog do
   end
 
   defp sign_uploads(conn, %{"files" => files}, fake) when is_list(files) do
-    case Agent.get_and_update(fake, &sign_within_quota(files, &1)) do
-      {:ok, answers} ->
-        json(conn, 200, %{"files" => answers})
+    answers =
+      Agent.get_and_update(
+        fake,
+        &Enum.map_reduce(files, &1, fn file, state -> sign(file, state) end)
+      )
 
-      :quota_exceeded ->
-        json(
-          conn,
-          429,
-          refusal(
-            "upload_quota_exceeded",
-            "This project uploaded as many file bytes as it can today.",
-            nil
-          )
-        )
-    end
+    json(conn, 200, %{"files" => answers})
   end
 
   defp sign_uploads(conn, _request, _fake),
     do: json(conn, 400, refusal("required", "This field is required.", "files"))
 
-  # Each file to upload counts in full, before any is signed.
-  defp sign_within_quota(files, state) do
-    to_upload =
-      for %{"size" => size, "sha256" => sha256} <- files, not stored?(state, sha256), do: size
-
-    if state.upload_quota && state.uploaded_bytes + Enum.sum(to_upload) > state.upload_quota do
-      {:quota_exceeded, state}
-    else
-      {answers, state} = Enum.map_reduce(files, state, &sign/2)
-      {{:ok, answers}, state}
-    end
-  end
-
-  defp stored?(state, sha256), do: Map.has_key?(state.files, sha256)
-
   defp sign(%{"sha256" => sha256, "size" => size}, state) do
-    if stored?(state, sha256) do
+    if Map.has_key?(state.files, sha256) do
       {%{"sha256" => sha256, "status" => "present", "expires_at" => "2026-12-16T09:00:00Z"},
        state}
     else
@@ -407,13 +377,7 @@ defmodule PostHog.EmailsTest.FakePostHog do
         s3_error(conn, 400, "BadDigest", "The SHA256 you specified did not match.")
 
       true ->
-        Agent.update(fake, fn state ->
-          %{
-            state
-            | files: Map.put(state.files, signed.sha256, request.body),
-              uploaded_bytes: state.uploaded_bytes + byte_size(request.body)
-          }
-        end)
+        Agent.update(fake, &put_in(&1.files[signed.sha256], request.body))
 
         Plug.Conn.send_resp(conn, 200, "")
     end
@@ -895,10 +859,9 @@ defmodule PostHog.EmailsTest do
       assert [{^id, _email}] = FakePostHog.messages(fake)
     end
 
-    # With no upload quota left, any upload would be refused.
-    test "uploads nothing when PostHog has every file", %{name: name, fake: fake} do
+    # PostHog answers present with no upload URL, so the file can only be sent by reference.
+    test "sends a file PostHog already has by reference", %{name: name, fake: fake} do
       FakePostHog.put_files(fake, [@pdf])
-      FakePostHog.set_upload_quota(fake, 0)
 
       assert {:ok, _} = Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
 
@@ -907,13 +870,10 @@ defmodule PostHog.EmailsTest do
       assert sha == sha256(@pdf)
     end
 
-    # The quota leaves room for one upload of each file.
-    test "uploads a file attached twice once, and sends both references", %{
+    test "sends a file attached twice as two references to one stored file", %{
       name: name,
       fake: fake
     } do
-      FakePostHog.set_upload_quota(fake, byte_size(@pdf) + byte_size(@logo))
-
       assert {:ok, _} =
                Emails.send(
                  name,
@@ -933,9 +893,6 @@ defmodule PostHog.EmailsTest do
                email["attachments"]
 
       assert sha == sha256(@pdf)
-
-      assert {:ok, _} = Emails.send(name, with_files([%{filename: "logo.png", content: @logo}]))
-      assert FakePostHog.files(fake) == %{sha256(@pdf) => @pdf, sha256(@logo) => @logo}
     end
 
     test "sends nothing after a failed upload, and returns the storage's answer", %{
@@ -1161,18 +1118,17 @@ defmodule PostHog.EmailsTest do
       refute Enum.any?(["reply_to", "cc", "bcc", "attachments"], &Map.has_key?(email, &1))
     end
 
-    # The quota leaves room for one upload of each file.
-    test "a send retry doesn't upload again", %{name: name, fake: fake} do
-      FakePostHog.set_upload_quota(fake, byte_size(@pdf) + byte_size(@logo))
+    test "retries an unavailable send with files, and the email goes out once", %{
+      name: name,
+      fake: fake
+    } do
       FakePostHog.fail_next(fake, :send, {503, %{"code" => "service_unavailable"}})
 
       assert {:ok, %Emails.SendResult{id: id}} =
                Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
 
       assert [{^id, _email}] = FakePostHog.messages(fake)
-
-      assert {:ok, _} = Emails.send(name, with_files([%{filename: "logo.png", content: @logo}]))
-      assert FakePostHog.files(fake) == %{sha256(@pdf) => @pdf, sha256(@logo) => @logo}
+      assert FakePostHog.files(fake) == %{sha256(@pdf) => @pdf}
     end
 
     test "returns PostHog's refusal of the uploads, naming the attachment", %{
