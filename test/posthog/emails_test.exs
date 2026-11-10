@@ -121,7 +121,7 @@ defmodule PostHog.EmailsTest do
       refute Map.has_key?(sent_body(), "distinct_id")
     end
 
-    for {field, value} <- [subject: "Hi", track_opens_and_clicks: false] do
+    for {field, value} <- [subject: "Hi", tracking: false] do
       test "refuses the code form field #{field}", %{name: name} do
         field_name = Atom.to_string(unquote(field))
 
@@ -223,8 +223,16 @@ defmodule PostHog.EmailsTest do
              }
     end
 
-    for track_opens_and_clicks <- [true, false] do
-      test "sends track_opens_and_clicks #{track_opens_and_clicks}", %{name: name} do
+    for {tracking, sent} <- [
+          {true, true},
+          {false, false},
+          {quote(do: %{clicks: true}), quote(do: %{"clicks" => true})},
+          {quote(do: %{opens: false, clicks: nil, engagement: false}),
+           quote(do: %{"opens" => false, "engagement" => false})},
+          {quote(do: %{}), quote(do: %{})}
+        ] do
+      test "sends tracking #{Macro.to_string(tracking)} in place of capture_engagement",
+           %{name: name} do
         expect_reply(accepted())
 
         assert {:ok, _} =
@@ -233,7 +241,7 @@ defmodule PostHog.EmailsTest do
                    template_key: "receipt",
                    subject: "Your receipt",
                    text: "Thanks",
-                   track_opens_and_clicks: unquote(track_opens_and_clicks)
+                   tracking: unquote(tracking)
                  )
 
         assert sent_body() == %{
@@ -241,10 +249,25 @@ defmodule PostHog.EmailsTest do
                  "template_key" => "receipt",
                  "subject" => "Your receipt",
                  "text" => "Thanks",
-                 "capture_engagement" => true,
-                 "track_opens_and_clicks" => unquote(track_opens_and_clicks)
+                 "tracking" => unquote(sent)
                }
       end
+    end
+
+    test "sends capture_engagement next to tracking when the caller sets both", %{name: name} do
+      expect_reply(accepted())
+
+      assert {:ok, _} =
+               Emails.send(name,
+                 to: "user@example.com",
+                 template_key: "receipt",
+                 subject: "Your receipt",
+                 text: "Thanks",
+                 tracking: true,
+                 capture_engagement: false
+               )
+
+      assert %{"tracking" => true, "capture_engagement" => false} = sent_body()
     end
 
     test "needs html, text or both", %{name: name} do
@@ -300,8 +323,12 @@ defmodule PostHog.EmailsTest do
       refute_requested()
     end
 
-    for field <- [:capture_engagement, :track_opens_and_clicks] do
-      test "refuses a #{field} that is not a boolean", %{name: name} do
+    for {field, value} <- [
+          capture_engagement: "yes",
+          tracking: "yes",
+          tracking: quote(do: %{clicks: "yes"})
+        ] do
+      test "refuses a #{field} of #{Macro.to_string(value)}", %{name: name} do
         field = unquote(field)
         field_name = Atom.to_string(field)
 
@@ -309,7 +336,7 @@ defmodule PostHog.EmailsTest do
                  Emails.send(
                    name,
                    [to: "user@example.com", template_key: "receipt", subject: "Hi", html: "<p/>"] ++
-                     [{field, "yes"}]
+                     [{field, unquote(value)}]
                  )
 
         refute_requested()

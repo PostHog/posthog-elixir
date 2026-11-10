@@ -145,8 +145,8 @@ defmodule PostHog.Emails do
                    :text,
                    :from,
                    :reply_to,
-                   :capture_engagement,
-                   :track_opens_and_clicks
+                   :tracking,
+                   :capture_engagement
                  ]
 
   @typedoc """
@@ -179,15 +179,18 @@ defmodule PostHog.Emails do
   - `:from` - a verified sender, such as `"Acme <security@example.com>"`. Without it, the
     project's default sender.
   - `:reply_to` - one address or a list of addresses.
-  - `:capture_engagement` - whether PostHog captures the email's opens and clicks as events of
-    the recipient. Defaults to `true`. A project whose admin turned engagement capture off
-    captures nothing, whatever the send asks.
-  - `:track_opens_and_clicks` - whether PostHog tracks opens and clicks of the email. Defaults
-    to `true`. With `false`, the email goes out without PostHog's open pixel, so PostHog can't
-    count its opens. PostHog doesn't track clicks on emails sent from code, so their links are
-    never rewritten either way. Independent of `:capture_engagement`, which decides whether
-    engagement events are captured on the recipient's person. Left out of the request unless
-    you set it.
+  - `:tracking` - what PostHog tracks for the email. Left out, PostHog counts opens and captures
+    engagement events, and doesn't track clicks. `true` turns on opens, clicks and engagement
+    events. `false` turns them all off: the email has no open pixel and no rewritten links, and
+    PostHog captures no engagement events for it. A map such as `%{clicks: true}` sets `:opens`
+    (default `true`), `:clicks` (default `false`) and `:engagement` (default `true`) one by one.
+    Clicks are off by default because PostHog can't tell whether an email's links carry login or
+    reset tokens: turn them on only when the links are safe to rewrite. Click tracking needs open
+    tracking. A project whose admin turned engagement capture off captures nothing, whatever the
+    send says. Sent only when you set it, and needs a PostHog version that takes it.
+  - `:capture_engagement` - deprecated: use `tracking: %{engagement: false}` instead. Whether
+    PostHog captures the email's engagement events. It still works, but a send can't set both.
+    Sent (default `true`) only when `:tracking` is left out, or when you set it.
 
   An option set to `nil` counts as left out.
   """
@@ -204,8 +207,20 @@ defmodule PostHog.Emails do
           | {:text, String.t() | nil}
           | {:from, String.t() | nil}
           | {:reply_to, String.t() | [String.t()] | nil}
+          | {:tracking, tracking() | nil}
           | {:capture_engagement, boolean() | nil}
-          | {:track_opens_and_clicks, boolean() | nil}
+
+  @typedoc """
+  What PostHog tracks for an email sent with `:template_key`. See `:tracking` in
+  `t:send_option/0`.
+  """
+  @type tracking() ::
+          boolean()
+          | %{
+              optional(:opens) => boolean() | nil,
+              optional(:clicks) => boolean() | nil,
+              optional(:engagement) => boolean() | nil
+            }
 
   @doc """
   Queues one email, from a template made in PostHog or from content your code rendered.
@@ -363,17 +378,8 @@ defmodule PostHog.Emails do
          :ok <- check_code_fields(options) do
       {:ok,
        options
-       |> Map.take([
-         :to,
-         :distinct_id,
-         :template_key,
-         :subject,
-         :html,
-         :text,
-         :from,
-         :track_opens_and_clicks
-       ])
-       |> Map.put(:capture_engagement, Map.get(options, :capture_engagement, true))
+       |> Map.take([:to, :distinct_id, :template_key, :subject, :html, :text, :from])
+       |> put_tracking(options)
        |> put_reply_to(options)}
     end
   end
@@ -427,11 +433,11 @@ defmodule PostHog.Emails do
       not is_boolean(Map.get(options, :capture_engagement, true)) ->
         invalid("invalid_form", "capture_engagement must be true or false.", "capture_engagement")
 
-      not is_boolean(Map.get(options, :track_opens_and_clicks, true)) ->
+      not tracking?(Map.get(options, :tracking, true)) ->
         invalid(
           "invalid_form",
-          "track_opens_and_clicks must be true or false.",
-          "track_opens_and_clicks"
+          "tracking must be true, false or a map such as %{clicks: true}.",
+          "tracking"
         )
 
       true ->
@@ -441,6 +447,28 @@ defmodule PostHog.Emails do
 
   defp not_string?(options, field),
     do: Map.has_key?(options, field) and not is_binary(Map.fetch!(options, field))
+
+  defp put_tracking(content, %{tracking: tracking} = options) do
+    tracking = if is_map(tracking), do: Map.reject(tracking, &is_nil(elem(&1, 1))), else: tracking
+
+    case Map.fetch(options, :capture_engagement) do
+      {:ok, capture_engagement} ->
+        Map.merge(content, %{tracking: tracking, capture_engagement: capture_engagement})
+
+      :error ->
+        Map.put(content, :tracking, tracking)
+    end
+  end
+
+  defp put_tracking(content, options),
+    do: Map.put(content, :capture_engagement, Map.get(options, :capture_engagement, true))
+
+  defp tracking?(tracking) when is_boolean(tracking), do: true
+
+  defp tracking?(tracking) when is_map(tracking),
+    do: Enum.all?(tracking, fn {_kind, on} -> is_nil(on) or is_boolean(on) end)
+
+  defp tracking?(_tracking), do: false
 
   defp put_reply_to(content, %{reply_to: reply_to}) when is_binary(reply_to),
     do: Map.put(content, :reply_to, [reply_to])
