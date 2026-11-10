@@ -31,6 +31,25 @@ defmodule PostHog.EmailsTest.StorageServer do
   end
 end
 
+defmodule PostHog.EmailsTest.ApiServer do
+  @moduledoc false
+  # PostHog's send route on a real socket: reports what it received and accepts the email.
+  @behaviour Plug
+
+  @impl true
+  def init(test_pid), do: test_pid
+
+  @impl true
+  def call(conn, test_pid) do
+    {:ok, body, conn} = Plug.Conn.read_body(conn, length: 64_000_000)
+    send(test_pid, {:received, conn.method, conn.request_path, Jason.decode!(body)})
+
+    conn
+    |> Plug.Conn.put_resp_content_type("application/json")
+    |> Plug.Conn.send_resp(202, ~s({"message_id": "01a18356-c56c-0001-e494-7666bc915188"}))
+  end
+end
+
 defmodule PostHog.EmailsTest do
   use ExUnit.Case, async: true
 
@@ -875,15 +894,34 @@ defmodule PostHog.EmailsTest do
       refute_requested()
     end
 
-    test "leaves the size of an email without files to PostHog", %{name: name} do
+    test "leaves the size of an email without files to PostHog", %{test: test} do
+      {:ok, server} =
+        start_supervised(
+          {Bandit, plug: {PostHog.EmailsTest.ApiServer, self()}, ip: :loopback, port: 0}
+        )
+
+      {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
+      host = "http://127.0.0.1:#{port}"
+      name = Module.concat(test, RealClient)
+
+      config =
+        PostHog.Config.validate!(
+          api_host: host,
+          app_host: host,
+          api_key: "phc_project_key",
+          secret_key: "phs_secret_key",
+          supervisor_name: name,
+          enable_local_evaluation: false
+        )
+
+      start_link_supervised!(Supervisor.child_spec({PostHog.Supervisor, config}, id: name))
       html = :binary.copy("a", 40_000_000)
-      expect_reply(accepted())
 
       assert {:ok, %Emails.SendResult{id: @message_id}} =
                Emails.send(name, Keyword.put(@code_send, :html, html))
 
-      assert %{"html" => ^html, "subject" => "Hi"} = sent_body()
-      refute_requested()
+      assert_received {:received, "POST", "/api/projects/@current/messaging/send/email/",
+                       %{"html" => ^html, "subject" => "Hi"}}
     end
 
     # With no subject and an empty body, these sizes leave 3, 73, 77, 147 and 151 bytes of the
