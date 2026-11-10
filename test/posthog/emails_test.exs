@@ -15,11 +15,37 @@ defmodule PostHog.EmailsTest.ReqTestClient do
   defdelegate request(client, method, url, opts), to: Client
 end
 
+defmodule PostHog.EmailsTest.HeaderedClient do
+  @moduledoc false
+  # The default client with Req.Test in place of the network, set up as an app might: its own
+  # authorization and an extra header on every request it makes.
+  @behaviour PostHog.API.Client
+
+  alias PostHog.API.Client
+
+  @impl true
+  def client(api_key, api_host) do
+    default = Client.client(api_key, api_host)
+
+    client =
+      Req.merge(default.client,
+        plug: {Req.Test, PostHog.EmailsTest.ReqTestClient},
+        headers: [{"authorization", "Bearer client-token"}, {"x-client", "app"}]
+      )
+
+    %{default | client: client}
+  end
+
+  @impl true
+  defdelegate request(client, method, url, opts), to: Client
+end
+
 defmodule PostHog.EmailsTest.FakePostHog do
   @moduledoc false
   # PostHog's email routes and its file storage as they behave, behind the SDK's real requests.
   # The upload route signs an upload for each file PostHog doesn't have, the storage keeps a file
-  # only when its upload matches what was signed, as S3 checks a presigned PUT, and the send route
+  # only when its upload matches what was signed, as S3 checks a presigned PUT: the signed URL,
+  # the signed headers and no others but the transport's, and the bytes. The send route
   # accepts an email only when PostHog has every file it names. A test reads back the stored
   # files, the accepted emails and what each route received, and can make a route's next request
   # fail, wait or hold.
@@ -32,6 +58,9 @@ defmodule PostHog.EmailsTest.FakePostHog do
   @send_path "/api/projects/@current/messaging/send/email/"
   @storage_url "https://files.example.com"
   @max_body 64_000_000
+  @signature "X-Amz-Signature=signed-secret"
+  # What the HTTP client adds on a real socket. Any other header would be outside the signature.
+  @transport_headers ["host", "user-agent"]
 
   defmodule Server do
     @moduledoc false
@@ -108,7 +137,7 @@ defmodule PostHog.EmailsTest.FakePostHog do
 
   @doc """
   What the route received, oldest first: the JSON body on PostHog's routes, and the method,
-  path, headers and body on the storage.
+  path, query, headers and body on the storage.
   """
   def received(fake, route), do: Agent.get(fake, &Enum.reverse(&1.received[route]))
 
@@ -123,7 +152,7 @@ defmodule PostHog.EmailsTest.FakePostHog do
     %{
       "sha256" => sha256,
       "status" => "upload",
-      "url" => "#{storage_url}/team/1/#{sha256}?X-Amz-Signature=signed-secret",
+      "url" => "#{storage_url}/team/1/#{sha256}?#{@signature}",
       "method" => "PUT",
       "headers" => %{
         "Content-Length" => to_string(size),
@@ -220,7 +249,8 @@ defmodule PostHog.EmailsTest.FakePostHog do
        state}
     else
       slot = upload_slot(state.storage_url, sha256, size)
-      {slot, put_in(state.signed[URI.parse(slot["url"]).path], %{sha256: sha256, size: size})}
+      %URI{path: path, query: query} = URI.parse(slot["url"])
+      {slot, put_in(state.signed[path], %{sha256: sha256, size: size, query: query})}
     end
   end
 
@@ -269,7 +299,14 @@ defmodule PostHog.EmailsTest.FakePostHog do
   defp storage(conn, fake) do
     {:ok, body, conn} = Plug.Conn.read_body(conn, length: @max_body)
     headers = for {name, value} <- conn.req_headers, do: {String.downcase(name), value}
-    request = %{method: conn.method, path: conn.request_path, headers: headers, body: body}
+
+    request = %{
+      method: conn.method,
+      path: conn.request_path,
+      query: conn.query_string,
+      headers: headers,
+      body: body
+    }
 
     case receive_request(fake, :storage, request) do
       {{:reply, {status, code, message}}, _test} ->
@@ -294,8 +331,7 @@ defmodule PostHog.EmailsTest.FakePostHog do
       List.keymember?(request.headers, "authorization", 0) ->
         s3_error(conn, 400, "InvalidArgument", "Only one auth mechanism allowed.")
 
-      header(request, "x-amz-checksum-sha256") != checksum(signed.sha256) or
-          header(request, "content-length") != to_string(signed.size) ->
+      not signature_matches?(request, signed) ->
         s3_error(conn, 403, "SignatureDoesNotMatch", "The request signature does not match.")
 
       Base.encode64(:crypto.hash(:sha256, request.body)) != checksum(signed.sha256) ->
@@ -305,6 +341,16 @@ defmodule PostHog.EmailsTest.FakePostHog do
         Agent.update(fake, &put_in(&1.files[signed.sha256], request.body))
         Plug.Conn.send_resp(conn, 200, "")
     end
+  end
+
+  # The signed query and headers, and no headers but those and the transport's.
+  defp signature_matches?(request, signed) do
+    allowed = ["content-length", "x-amz-checksum-sha256" | @transport_headers]
+
+    request.query == signed.query and
+      header(request, "x-amz-checksum-sha256") == checksum(signed.sha256) and
+      header(request, "content-length") == to_string(signed.size) and
+      Enum.all?(request.headers, fn {name, _value} -> name in allowed end)
   end
 
   defp header(request, name) do
@@ -709,18 +755,18 @@ defmodule PostHog.EmailsTest do
              ]
     end
 
-    test "the storage gets only the headers PostHog signed, not the client's", %{
+    # The storage refuses a header outside the signed ones, such as the client's.
+    @tag config: [api_client_module: PostHog.EmailsTest.HeaderedClient]
+    test "uploads with only the headers PostHog signed, not the client's", %{
       name: name,
       fake: fake
     } do
-      assert {:ok, _} = Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+      assert {:ok, %Emails.SendResult{id: id}} =
+               Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
 
-      assert [%{headers: headers}] = FakePostHog.received(fake, :storage)
-
-      assert headers |> Enum.map(&elem(&1, 0)) |> Enum.sort() == [
-               "content-length",
-               "x-amz-checksum-sha256"
-             ]
+      assert FakePostHog.files(fake) == %{sha256(@pdf) => @pdf}
+      assert [{^id, %{"attachments" => [%{"sha256" => sha}]}}] = FakePostHog.messages(fake)
+      assert sha == sha256(@pdf)
     end
 
     # The installed Req's default adapter, over a real socket, as in production.
@@ -737,8 +783,6 @@ defmodule PostHog.EmailsTest do
 
       assert FakePostHog.files(fake) == %{sha256(@pdf) => @pdf}
       assert [{^id, _email}] = FakePostHog.messages(fake)
-      assert [%{headers: headers}] = FakePostHog.received(fake, :storage)
-      refute List.keymember?(headers, "authorization", 0)
     end
 
     test "uploads nothing when PostHog has every file", %{name: name, fake: fake} do
