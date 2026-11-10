@@ -16,6 +16,7 @@ defmodule PostHog.Emails.MessageCategory do
   - `:name` - the name recipients see on their preferences page, such as `"Newsletter"`.
     Required.
   - `:description` - what the category sends, such as `"Monthly product news"`. Optional.
+    Left `nil`, the send keeps the category's current description; `""` clears it.
 
   ## Examples
 

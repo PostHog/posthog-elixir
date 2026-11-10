@@ -304,13 +304,25 @@ defmodule PostHog.EmailsTest do
              } = sent_body()
     end
 
-    test "sends the transactional shorthand, and a category without a description", %{
+    test "sends the shorthand, leaves out an unset description and keeps an empty one", %{
       name: name
     } do
       for {category, sent} <- [
             {Emails.transactional_category(), "transactional"},
             {%MessageCategory{key: "receipts", type: :transactional, name: "Receipts"},
-             %{"key" => "receipts", "type" => "transactional", "name" => "Receipts"}}
+             %{"key" => "receipts", "type" => "transactional", "name" => "Receipts"}},
+            {%MessageCategory{
+               key: "receipts",
+               type: :transactional,
+               name: "Receipts",
+               description: ""
+             },
+             %{
+               "key" => "receipts",
+               "type" => "transactional",
+               "name" => "Receipts",
+               "description" => ""
+             }}
           ] do
         expect_reply(accepted())
 
