@@ -15,6 +15,72 @@ defmodule PostHog.EmailsTest.ReqTestClient do
   defdelegate request(client, method, url, opts), to: Client
 end
 
+defmodule PostHog.EmailsTest.FakeSendEndpoint do
+  @moduledoc false
+  # The send endpoint's category rules over an in-memory store. Like the server, it refuses a key
+  # outside the code send body and a malformed category, upserts a category by key, refuses a
+  # changed type, and keeps the stored description when the field is missing.
+  import Plug.Conn
+
+  @code_keys ~w(to distinct_id template_key subject html text from reply_to capture_engagement category)
+  @category_keys ~w(key type name description)
+  @message_id "01a18356-c56c-0001-e494-7666bc915188"
+
+  def start(req_test_name) do
+    {:ok, store} = Agent.start_link(fn -> %{} end)
+    Req.Test.stub(req_test_name, &serve(&1, store))
+    store
+  end
+
+  def categories(store), do: Agent.get(store, & &1)
+
+  defp serve(conn, store) do
+    {:ok, raw, conn} = read_body(conn)
+    {status, reply} = answer(Jason.decode!(raw), store)
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(status, Jason.encode!(reply))
+  end
+
+  defp answer(body, store) do
+    category = body["category"]
+
+    cond do
+      Map.keys(body) -- @code_keys != [] -> refuse("invalid_input", nil)
+      category in [nil, "transactional"] -> accept()
+      not well_formed?(category) -> refuse("invalid_input", "category")
+      true -> upsert(store, category)
+    end
+  end
+
+  defp well_formed?(%{"key" => key, "type" => type, "name" => name} = category)
+       when is_binary(key) and type in ["marketing", "transactional"] and is_binary(name),
+       do:
+         Map.keys(category) -- @category_keys == [] and
+           is_binary(Map.get(category, "description", ""))
+
+  defp well_formed?(_category), do: false
+
+  defp upsert(store, %{"key" => key, "type" => type} = category) do
+    Agent.get_and_update(store, fn categories ->
+      case categories[key] do
+        %{"type" => stored} when stored != type ->
+          {refuse("category_mismatch", "category"), categories}
+
+        stored ->
+          fields = Map.merge(stored || %{"description" => nil}, Map.delete(category, "key"))
+          {accept(), Map.put(categories, key, fields)}
+      end
+    end)
+  end
+
+  defp accept, do: {202, %{"message_id" => @message_id}}
+
+  defp refuse(code, attr),
+    do: {400, %{"type" => "validation_error", "code" => code, "detail" => code, "attr" => attr}}
+end
+
 defmodule PostHog.EmailsTest do
   use ExUnit.Case, async: true
 
@@ -25,6 +91,7 @@ defmodule PostHog.EmailsTest do
   alias PostHog.Emails
   alias PostHog.Emails.Error
   alias PostHog.Emails.MessageCategory
+  alias PostHog.EmailsTest.FakeSendEndpoint
 
   setup :verify_on_exit!
 
@@ -74,6 +141,14 @@ defmodule PostHog.EmailsTest do
   defp sent_body do
     assert_received {:request, :post, @send_url, opts}
     Jason.decode!(opts[:body])
+  end
+
+  defp send_with_category(name, category, content \\ [text: "Thanks"]) do
+    Emails.send(
+      name,
+      [to: "user@example.com", template_key: "receipt", subject: "Hi", category: category] ++
+        content
+    )
   end
 
   defp header(opts, name) do
@@ -275,68 +350,6 @@ defmodule PostHog.EmailsTest do
                )
 
       refute_requested()
-    end
-
-    test "sends a category defined in code", %{name: name} do
-      expect_reply(accepted())
-
-      assert {:ok, _} =
-               Emails.send(name,
-                 to: "user@example.com",
-                 template_key: "product-update",
-                 subject: "What's new",
-                 html: "<p>New</p> {{ unsubscribe_url }}",
-                 category: %MessageCategory{
-                   key: "newsletter",
-                   type: :marketing,
-                   name: "Newsletter",
-                   description: "Monthly product news"
-                 }
-               )
-
-      assert %{
-               "category" => %{
-                 "key" => "newsletter",
-                 "type" => "marketing",
-                 "name" => "Newsletter",
-                 "description" => "Monthly product news"
-               }
-             } = sent_body()
-    end
-
-    test "sends the shorthand, leaves out an unset description and keeps an empty one", %{
-      name: name
-    } do
-      for {category, sent} <- [
-            {Emails.transactional_category(), "transactional"},
-            {%MessageCategory{key: "receipts", type: :transactional, name: "Receipts"},
-             %{"key" => "receipts", "type" => "transactional", "name" => "Receipts"}},
-            {%MessageCategory{
-               key: "receipts",
-               type: :transactional,
-               name: "Receipts",
-               description: ""
-             },
-             %{
-               "key" => "receipts",
-               "type" => "transactional",
-               "name" => "Receipts",
-               "description" => ""
-             }}
-          ] do
-        expect_reply(accepted())
-
-        assert {:ok, _} =
-                 Emails.send(name,
-                   to: "user@example.com",
-                   template_key: "receipt",
-                   subject: "Your receipt",
-                   text: "Thanks",
-                   category: category
-                 )
-
-        assert sent_body()["category"] == sent
-      end
     end
 
     test "refuses a category that is neither the shorthand nor a MessageCategory", %{name: name} do
@@ -995,6 +1008,48 @@ defmodule PostHog.EmailsTest do
 
   describe "through the default Req client" do
     @describetag config: [api_client_module: PostHog.EmailsTest.ReqTestClient]
+
+    test "a category defined in code is created on its first send", %{name: name} do
+      store = FakeSendEndpoint.start(__MODULE__.ReqTestClient)
+
+      newsletter = %MessageCategory{
+        key: "newsletter",
+        type: :marketing,
+        name: "Newsletter",
+        description: "Monthly product news"
+      }
+
+      assert {:ok, _} = send_with_category(name, newsletter, html: "<p>{{ unsubscribe_url }}</p>")
+
+      assert FakeSendEndpoint.categories(store) == %{
+               "newsletter" => %{
+                 "type" => "marketing",
+                 "name" => "Newsletter",
+                 "description" => "Monthly product news"
+               }
+             }
+    end
+
+    test "an unset description keeps the stored one, and an empty one clears it", %{name: name} do
+      store = FakeSendEndpoint.start(__MODULE__.ReqTestClient)
+      receipts = %MessageCategory{key: "receipts", type: :transactional, name: "Receipts"}
+
+      for {description, stored} <- [
+            {"Order receipts", "Order receipts"},
+            {nil, "Order receipts"},
+            {"", ""}
+          ] do
+        assert {:ok, _} = send_with_category(name, %{receipts | description: description})
+        assert FakeSendEndpoint.categories(store)["receipts"]["description"] == stored
+      end
+    end
+
+    test "the transactional shorthand sends without defining a category", %{name: name} do
+      store = FakeSendEndpoint.start(__MODULE__.ReqTestClient)
+
+      assert {:ok, _} = send_with_category(name, Emails.transactional_category())
+      assert FakeSendEndpoint.categories(store) == %{}
+    end
 
     test "an acceptance with malformed JSON is api_error with its status, not retried", %{
       name: name
