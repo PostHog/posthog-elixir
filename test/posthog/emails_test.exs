@@ -611,15 +611,16 @@ defmodule PostHog.EmailsTest do
 
     @tag config: [email_request_timeout_ms: 50]
     test "gives an upload ten seconds per MB on top of the request timeout", %{name: name} do
-      file = :binary.copy(<<1>>, 1_000_000)
+      file = :binary.copy(<<1>>, 100_000)
       test_pid = self()
 
       expect_reply(slots([to_upload(file)]))
 
       Req.Test.expect(PostHog.EmailsTest.Storage, fn conn ->
-        {:ok, _body, conn} = Plug.Conn.read_body(conn, length: 2_000_000)
+        {:ok, _body, conn} = Plug.Conn.read_body(conn)
         send(test_pid, {:request, :put, nil, []})
-        Process.sleep(1_500)
+        # 100 KB at ten seconds per MB is 1 s on top of the 50 ms request timeout.
+        Process.sleep(950)
         Plug.Conn.send_resp(conn, 200, "")
       end)
 
@@ -872,6 +873,15 @@ defmodule PostHog.EmailsTest do
       end
 
       refute_requested()
+    end
+
+    test "leaves the size of an email without files to PostHog", %{name: name} do
+      expect_reply(accepted())
+
+      assert {:ok, _} =
+               Emails.send(name, Keyword.put(@code_send, :html, :binary.copy("a", 40_000_000)))
+
+      assert [{:post, @send_url, _}] = requests()
     end
 
     # With no subject and an empty body, these sizes leave 3, 73, 77, 147 and 151 bytes of the

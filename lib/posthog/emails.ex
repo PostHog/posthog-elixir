@@ -88,8 +88,8 @@ defmodule PostHog.Emails do
   ## Attachments
 
   An email carries at most 10 files and 40 MB after Base64 encoding, about 29 MB of files. The
-  SDK checks both before any request, counting each file and body as Base64 and the subject as
-  encoded, as PostHog does.
+  SDK checks both before any request of a send with files, counting each file and body as Base64
+  and the subject as 75 bytes per 42 started, as PostHog does.
 
   A send with files takes three steps:
 
@@ -105,8 +105,8 @@ defmodule PostHog.Emails do
   upload doesn't go through a proxy, and it ignores your app's `Req.default_options`, which are
   meant for other requests. If an upload fails, the SDK sends nothing and returns
   `attachment_upload_failed` with what the storage answered. An upload gets the request timeout
-  plus ten seconds per MB of the file, and retries as a send does, as well as when the storage
-  answers HTTP 500, 502 or 504.
+  plus ten seconds per MB of the file. It retries network errors and storage answers of HTTP 429,
+  500, 502, 503 and 504, as a send retries, honouring `Retry-After`.
 
   ## Timeouts, retries and idempotency
 

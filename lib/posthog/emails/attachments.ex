@@ -25,7 +25,7 @@ defmodule PostHog.Emails.Attachments do
 
   @doc """
   Checks the files and the size of the email they make with `bodies` and `subject`, and hashes
-  each file.
+  each file. An email without files is left to PostHog to size, as nothing is uploaded first.
   """
   @spec prepare(term(), [String.t()], String.t()) :: {:ok, [file()]} | {:error, Error.t()}
   def prepare(attachments, bodies, subject) when is_list(attachments) do
@@ -141,6 +141,8 @@ defmodule PostHog.Emails.Attachments do
     end
   end
 
+  defp check_size([], _bodies, _subject), do: :ok
+
   defp check_size(files, bodies, subject) do
     sizes = Enum.map(files, & &1.size) ++ Enum.map(bodies, &byte_size/1)
 
@@ -151,7 +153,7 @@ defmodule PostHog.Emails.Attachments do
          "These files make the email too large to send, so no email was sent.",
          field: "attachments",
          why:
-           "PostHog sends emails up to 40 MB, and Base64 encoding makes each file and body about a third larger, as encoding makes the subject.",
+           "PostHog sends emails up to 40 MB. Base64 makes each file and body about a third larger, and the subject counts 75 bytes per 42 bytes started.",
          fix:
            "Keep the email under 40 MB after Base64 encoding, about 29 MB of files: attach fewer or smaller files, or link to large files from the email body."
        )}
