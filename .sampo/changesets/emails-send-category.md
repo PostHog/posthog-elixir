@@ -2,15 +2,19 @@
 hex/posthog: minor
 ---
 
-`PostHog.Emails.send/2` takes a `:category`. Left out, an email sends as before: content from your code is transactional, and a template made in PostHog sends in its own category. `PostHog.Emails.transactional_category()` makes it transactional. The key of one of the project's marketing message categories sends a marketing email in that category: PostHog honors the recipient's opt-outs and adds unsubscribe headers, and the content must contain `{{ unsubscribe_url }}`.
+A send with `template_key` takes a `:category`. Without it, the email is transactional, as before. A new `%PostHog.Emails.MessageCategory{}` defines the category in code with a `key`, a `type` (`:marketing` or `:transactional`), a `name` and an optional `description`, and PostHog creates it by key on the first send. A marketing category honors the recipient's opt-outs and adds unsubscribe headers, and the content must contain `{{ unsubscribe_url }}`. `PostHog.Emails.transactional_category()` sends a transactional email with no category.
 
 ```elixir
 PostHog.Emails.send(
   to: "user@example.com",
-  template_key: "product-update",
+  template_key: "newsletter-2026-11",
   subject: "What's new",
   html: rendered_html_with_unsubscribe_url,
-  category: "product-updates",
+  category: %PostHog.Emails.MessageCategory{
+    key: "newsletter",
+    type: :marketing,
+    name: "Newsletter"
+  },
   distinct_id: "user_123"
 )
 ```

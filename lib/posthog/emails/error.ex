@@ -9,7 +9,7 @@ defmodule PostHog.Emails.Error do
 
   - `:name` - the category, one of `t:name/0`.
   - `:code` - PostHog's error code, such as `"quota_limited"`, `"recipient_suppressed"` or
-    `"unknown_category"`, or an SDK code: `"missing_secret_key"`, `"missing_app_host"`,
+    `"category_mismatch"`, or an SDK code: `"missing_secret_key"`, `"missing_app_host"`,
     `"client_disabled"`, `"client_closed"`, `"network_error"`, `"api_error"` (an answer without
     a code), `"unexpected_error"`, or an `"invalid_*"` code for an option the SDK refused before
     any request.

@@ -62,22 +62,26 @@ defmodule PostHog.Emails do
 
   ## Message categories
 
-  Without `:category`, content from your code is transactional, and a template made in PostHog
-  sends in the template's own category. To send marketing email from your code, such as a
-  product update, pass the key of one of the project's marketing message categories. PostHog
-  then honors the recipient's opt-outs and adds unsubscribe headers, and the content must link
+  Content from your code is transactional unless its `:category` says otherwise. To send
+  marketing email, such as a newsletter, define its category in code with a
+  `PostHog.Emails.MessageCategory`. PostHog creates the category on the first send with its
+  key, honors the recipient's opt-outs and adds unsubscribe headers, and the content must link
   to `{{ unsubscribe_url }}`:
 
       PostHog.Emails.send(
         to: "user@example.com",
-        template_key: "product-update",
+        template_key: "newsletter-2026-11",
         subject: "What's new",
         html: rendered_html_with_unsubscribe_url,
-        category: "product-updates",
+        category: %PostHog.Emails.MessageCategory{
+          key: "newsletter",
+          type: :marketing,
+          name: "Newsletter"
+        },
         distinct_id: "user_123"
       )
 
-  See `t:category/0`.
+  A template made in PostHog sends in the template's own category. See `t:category/0`.
 
   ## Where requests go
 
@@ -124,11 +128,11 @@ defmodule PostHog.Emails do
 
   A send with `:category` can also return:
 
-  - `unknown_category` (400): the project has no marketing message category with that key.
-  - `category_mismatch` (400): a send with `:template_id` names a category other than the
-    template's.
+  - `category_mismatch` (400): the project has a category with that key and another `:type`.
+  - `too_many_categories` (400): the send would create a category past the project's limit.
   - `unsubscribe_link_required` (400): a marketing email's content has no
     `{{ unsubscribe_url }}`.
+  - `copies_not_allowed` (400): a marketing email has cc or bcc recipients.
   - `recipient_opted_out` (422): the recipient opted out of the category or of all marketing.
 
   An option the SDK refuses returns an error with an `invalid_*` code, such as
@@ -145,6 +149,7 @@ defmodule PostHog.Emails do
   require Logger
 
   alias PostHog.Emails.Error
+  alias PostHog.Emails.MessageCategory
   alias PostHog.Emails.SendResult
   alias PostHog.Emails.Status
   alias PostHog.Emails.Warning
@@ -163,10 +168,19 @@ defmodule PostHog.Emails do
   @max_retry_delay_ms 30_000
   @log_metadata [posthog_skip_capture: true]
 
-  @shared_fields [:to, :distinct_id, :idempotency_key, :max_retries, :category]
+  @shared_fields [:to, :distinct_id, :idempotency_key, :max_retries]
   @template_fields @shared_fields ++ [:template_id, :template_data]
   @code_fields @shared_fields ++
-                 [:template_key, :subject, :html, :text, :from, :reply_to, :capture_engagement]
+                 [
+                   :template_key,
+                   :subject,
+                   :html,
+                   :text,
+                   :from,
+                   :reply_to,
+                   :capture_engagement,
+                   :category
+                 ]
 
   @typedoc """
   Options for `send/2`. Pass `:template_id` or `:template_key`, never both.
@@ -182,8 +196,6 @@ defmodule PostHog.Emails do
     `idempotency_key_reused`.
   - `:max_retries` - overrides the config's `:email_request_max_retries` for this send. `0`
     turns retries off.
-  - `:category` - the email's message category, a `t:category/0`. Left out, content from your
-    code is transactional, and a template made in PostHog sends in its own category.
 
   A template made in PostHog takes:
 
@@ -203,6 +215,8 @@ defmodule PostHog.Emails do
   - `:capture_engagement` - whether PostHog captures the email's opens and clicks as events of
     the recipient. Defaults to `true`. A project whose admin turned engagement capture off
     captures nothing, whatever the send asks.
+  - `:category` - the email's message category, a `t:category/0`. Without it, the email is
+    transactional.
 
   An option set to `nil` counts as left out.
   """
@@ -211,7 +225,6 @@ defmodule PostHog.Emails do
           | {:distinct_id, String.t() | nil}
           | {:idempotency_key, String.t() | nil}
           | {:max_retries, non_neg_integer() | nil}
-          | {:category, category() | nil}
           | {:template_id, String.t()}
           | {:template_data, map() | nil}
           | {:template_key, String.t()}
@@ -221,22 +234,26 @@ defmodule PostHog.Emails do
           | {:from, String.t() | nil}
           | {:reply_to, String.t() | [String.t()] | nil}
           | {:capture_engagement, boolean() | nil}
+          | {:category, category() | nil}
 
   @typedoc """
-  An email's message category: `"transactional" | String.t()`.
+  The message category of content from your code: `transactional_category/0` or a
+  `t:PostHog.Emails.MessageCategory.t/0`.
 
-  `"transactional"` (`transactional_category/0`) makes the email transactional. Any other value is the key of one of the project's marketing message categories, such as
-  `"product-updates"`, and the email is a marketing email in that category. A marketing email
-  honors the recipient's opt-outs, so PostHog refuses it with `recipient_opted_out` when the
-  recipient opted out of the category or of all marketing. Its `:html`, or its `:text` when it
-  has no `:html`, must contain `{{ unsubscribe_url }}`, which PostHog replaces with the
-  recipient's preferences link.
+  - `transactional_category/0`, `"transactional"`, sends a transactional email with no
+    category, the same as leaving `:category` out.
+  - A `PostHog.Emails.MessageCategory` defines the category in code. PostHog creates it by key on
+    the first send, and updates its name and description when they change. A `:transactional`
+    category sends a transactional email filed under it. A `:marketing` category sends a
+    marketing email: PostHog refuses it with `recipient_opted_out` when the recipient opted out
+    of the category or of all marketing, and its `:html`, or its `:text` when it has no
+    `:html`, must contain `{{ unsubscribe_url }}`, which PostHog replaces with the recipient's
+    preferences link.
 
-  Left out, content from your code is transactional, and a template made in PostHog sends in
-  the template's own category. On a send with `:template_id`, leave `:category` out or pass
-  the template's category: `"transactional"` for a transactional template, else its key.
+  A send with `:template_id` takes no `:category`: a template made in PostHog sends in the
+  template's own category.
   """
-  @type category() :: String.t()
+  @type category() :: String.t() | MessageCategory.t()
 
   @doc """
   The built-in category of transactional email, `"transactional"`.
@@ -251,7 +268,7 @@ defmodule PostHog.Emails do
         category: PostHog.Emails.transactional_category()
       )
   """
-  @spec transactional_category() :: category()
+  @spec transactional_category() :: String.t()
   def transactional_category, do: "transactional"
 
   @doc """
@@ -350,7 +367,6 @@ defmodule PostHog.Emails do
 
   defp prepare(options) do
     with :ok <- check_recipient(options),
-         :ok <- check_category(options),
          {:ok, content} <- content(options),
          {:ok, idempotency_key} <- idempotency_key(options),
          {:ok, max_retries} <- max_retries(options),
@@ -370,12 +386,6 @@ defmodule PostHog.Emails do
       true ->
         :ok
     end
-  end
-
-  defp check_category(options) do
-    if not_string?(options, :category),
-      do: invalid("invalid_form", "category must be a string.", "category"),
-      else: :ok
   end
 
   defp content(%{template_id: _, template_key: _}), do: invalid_form()
@@ -405,7 +415,7 @@ defmodule PostHog.Emails do
         with :ok <- refuse_fields_outside(options, :template) do
           {:ok,
            options
-           |> Map.take([:to, :distinct_id, :category])
+           |> Map.take([:to, :distinct_id])
            |> Map.merge(%{template_id: String.downcase(template_id), message_data: template_data})}
         end
     end
@@ -417,9 +427,10 @@ defmodule PostHog.Emails do
          :ok <- check_code_fields(options) do
       {:ok,
        options
-       |> Map.take([:to, :distinct_id, :category, :template_key, :subject, :html, :text, :from])
+       |> Map.take([:to, :distinct_id, :template_key, :subject, :html, :text, :from])
        |> Map.put(:capture_engagement, Map.get(options, :capture_engagement, true))
-       |> put_reply_to(options)}
+       |> put_reply_to(options)
+       |> put_category(options)}
     end
   end
 
@@ -436,8 +447,9 @@ defmodule PostHog.Emails do
   end
 
   defp check_code_fields(options) do
-    with :ok <- check_content(options) do
-      check_sender(options)
+    with :ok <- check_content(options),
+         :ok <- check_sender(options) do
+      check_category(options)
     end
   end
 
@@ -477,6 +489,48 @@ defmodule PostHog.Emails do
     end
   end
 
+  defp check_category(%{category: category}) do
+    if valid_category?(category),
+      do: :ok,
+      else:
+        invalid(
+          "invalid_form",
+          "category must be PostHog.Emails.transactional_category() or a %PostHog.Emails.MessageCategory{} with a string key and name, a type of :marketing or :transactional, and a string or nil description.",
+          "category"
+        )
+  end
+
+  defp check_category(_options), do: :ok
+
+  defp valid_category?("transactional"), do: true
+
+  defp valid_category?(%MessageCategory{
+         key: key,
+         type: type,
+         name: name,
+         description: description
+       }),
+       do:
+         is_binary(key) and type in [:marketing, :transactional] and is_binary(name) and
+           (is_nil(description) or is_binary(description))
+
+  defp valid_category?(_category), do: false
+
+  defp put_category(content, %{category: category}),
+    do: Map.put(content, :category, category_body(category))
+
+  defp put_category(content, _options), do: content
+
+  defp category_body(%MessageCategory{} = category) do
+    %{key: category.key, type: Atom.to_string(category.type), name: category.name}
+    |> put_description(category.description)
+  end
+
+  defp category_body(transactional), do: transactional
+
+  defp put_description(body, nil), do: body
+  defp put_description(body, description), do: Map.put(body, :description, description)
+
   defp not_string?(options, field),
     do: Map.has_key?(options, field) and not is_binary(Map.fetch!(options, field))
 
@@ -514,7 +568,7 @@ defmodule PostHog.Emails do
       {why, how} =
         case form do
           :template ->
-            {"A template made in PostHog sets its own sender, subject and content, and follows the project's engagement setting.",
+            {"A template made in PostHog sets its own sender, subject, content and category, and follows the project's engagement setting.",
              "send content from your code with template_key"}
 
           :code ->

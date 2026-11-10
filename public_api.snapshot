@@ -123,6 +123,13 @@ PostHog.Emails.Error
   macros:
     (none)
 
+PostHog.Emails.MessageCategory
+  module_doc: documented
+  functions:
+    (none)
+  macros:
+    (none)
+
 PostHog.Emails.SendResult
   module_doc: documented
   functions:

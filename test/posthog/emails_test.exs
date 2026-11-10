@@ -24,6 +24,7 @@ defmodule PostHog.EmailsTest do
   alias PostHog.API
   alias PostHog.Emails
   alias PostHog.Emails.Error
+  alias PostHog.Emails.MessageCategory
 
   setup :verify_on_exit!
 
@@ -113,19 +114,6 @@ defmodule PostHog.EmailsTest do
              }
     end
 
-    test "sends the category it is given", %{name: name} do
-      expect_reply(accepted())
-
-      assert {:ok, _} =
-               Emails.send(name,
-                 to: "user@example.com",
-                 template_id: @template_id,
-                 category: Emails.transactional_category()
-               )
-
-      assert %{"category" => "transactional"} = sent_body()
-    end
-
     test "never takes the distinct ID from the process context", %{name: name} do
       PostHog.set_context(name, %{distinct_id: "context_user"})
       expect_reply(accepted())
@@ -135,12 +123,21 @@ defmodule PostHog.EmailsTest do
     end
 
     test "refuses a code form field", %{name: name} do
-      assert {:error,
-              %Error{code: "invalid_form", field: "subject", name: :validation_error} = error} =
-               Emails.send(name, to: "user@example.com", template_id: @template_id, subject: "Hi")
+      for {field, value} <- [subject: "Hi", category: Emails.transactional_category()] do
+        expected_field = to_string(field)
 
-      assert error.fix =~ "template_key"
-      assert error.why =~ "template made in PostHog"
+        assert {:error,
+                %Error{code: "invalid_form", field: ^expected_field, name: :validation_error} =
+                  error} =
+                 Emails.send(
+                   name,
+                   [to: "user@example.com", template_id: @template_id] ++ [{field, value}]
+                 )
+
+        assert error.fix =~ "template_key"
+        assert error.why =~ "template made in PostHog"
+      end
+
       refute_requested()
     end
 
@@ -280,7 +277,7 @@ defmodule PostHog.EmailsTest do
       refute_requested()
     end
 
-    test "sends a marketing category", %{name: name} do
+    test "sends a category defined in code", %{name: name} do
       expect_reply(accepted())
 
       assert {:ok, _} =
@@ -289,21 +286,69 @@ defmodule PostHog.EmailsTest do
                  template_key: "product-update",
                  subject: "What's new",
                  html: "<p>New</p> {{ unsubscribe_url }}",
-                 category: "product-updates"
+                 category: %MessageCategory{
+                   key: "newsletter",
+                   type: :marketing,
+                   name: "Newsletter",
+                   description: "Monthly product news"
+                 }
                )
 
-      assert %{"category" => "product-updates"} = sent_body()
+      assert %{
+               "category" => %{
+                 "key" => "newsletter",
+                 "type" => "marketing",
+                 "name" => "Newsletter",
+                 "description" => "Monthly product news"
+               }
+             } = sent_body()
     end
 
-    test "refuses a category that is not a string", %{name: name} do
-      assert {:error, %Error{code: "invalid_form", field: "category"}} =
-               Emails.send(name,
-                 to: "user@example.com",
-                 template_key: "receipt",
-                 subject: "Hi",
-                 html: "<p/>",
-                 category: :transactional
-               )
+    test "sends the transactional shorthand, and a category without a description", %{
+      name: name
+    } do
+      for {category, sent} <- [
+            {Emails.transactional_category(), "transactional"},
+            {%MessageCategory{key: "receipts", type: :transactional, name: "Receipts"},
+             %{"key" => "receipts", "type" => "transactional", "name" => "Receipts"}}
+          ] do
+        expect_reply(accepted())
+
+        assert {:ok, _} =
+                 Emails.send(name,
+                   to: "user@example.com",
+                   template_key: "receipt",
+                   subject: "Your receipt",
+                   text: "Thanks",
+                   category: category
+                 )
+
+        assert sent_body()["category"] == sent
+      end
+    end
+
+    test "refuses a category that is neither the shorthand nor a MessageCategory", %{name: name} do
+      category = %MessageCategory{key: "newsletter", type: :marketing, name: "Newsletter"}
+
+      for invalid <- [
+            "newsletter",
+            :transactional,
+            %{key: "newsletter", type: :marketing, name: "Newsletter"},
+            %{category | type: "marketing"},
+            %{category | type: :bulk},
+            %{category | key: nil},
+            %{category | name: :newsletter},
+            %{category | description: 1}
+          ] do
+        assert {:error, %Error{code: "invalid_form", field: "category"}} =
+                 Emails.send(name,
+                   to: "user@example.com",
+                   template_key: "receipt",
+                   subject: "Hi",
+                   html: "<p/>",
+                   category: invalid
+                 )
+      end
 
       refute_requested()
     end
@@ -574,9 +619,10 @@ defmodule PostHog.EmailsTest do
             {409, "template_outdated", :validation_error},
             {422, "recipient_suppressed", :validation_error},
             {422, "recipient_opted_out", :validation_error},
-            {400, "unknown_category", :validation_error},
             {400, "category_mismatch", :validation_error},
+            {400, "too_many_categories", :validation_error},
             {400, "unsubscribe_link_required", :validation_error},
+            {400, "copies_not_allowed", :validation_error},
             {422, "idempotency_key_reused", :invalid_idempotent_request},
             {400, "invalid_recipient", :validation_error},
             {401, "authentication_failed", :missing_api_key},
