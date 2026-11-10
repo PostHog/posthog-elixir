@@ -876,12 +876,14 @@ defmodule PostHog.EmailsTest do
     end
 
     test "leaves the size of an email without files to PostHog", %{name: name} do
+      html = :binary.copy("a", 40_000_000)
       expect_reply(accepted())
 
-      assert {:ok, _} =
-               Emails.send(name, Keyword.put(@code_send, :html, :binary.copy("a", 40_000_000)))
+      assert {:ok, %Emails.SendResult{id: @message_id}} =
+               Emails.send(name, Keyword.put(@code_send, :html, html))
 
-      assert [{:post, @send_url, _}] = requests()
+      assert %{"html" => ^html, "subject" => "Hi"} = sent_body()
+      refute_requested()
     end
 
     # With no subject and an empty body, these sizes leave 3, 73, 77, 147 and 151 bytes of the
