@@ -105,7 +105,8 @@ defmodule PostHog.Emails do
   Uploads go only over https, so a file and its signed URL never travel unencrypted. When
   PostHog names a plain-HTTP upload URL, the SDK uploads nothing, sends nothing, and returns
   `api_error` on the attachment. An `:app_host` on plain HTTP, as in local development, allows
-  plain-HTTP uploads too.
+  plain-HTTP uploads too. An upload never follows a redirect, which would carry the file to
+  another URL: the storage's redirect fails the upload with `attachment_upload_failed`.
 
   Your app must be able to reach the storage host that PostHog's answer names directly: an
   upload doesn't go through a proxy, and it ignores your app's `Req.default_options`, which are
@@ -840,8 +841,9 @@ defmodule PostHog.Emails do
   # A bare request: not through the api_client, whose defaults, such as headers a custom client
   # adds, are meant for PostHog, and without Req's steps and the app's Req.default_options, such as
   # an auth or compress_body set for other requests. The storage gets the bytes and the headers
-  # PostHog signed the upload with, nothing else. It reads only the start of the storage's answer,
-  # so a storage that answers without end can't fill the app's memory.
+  # PostHog signed the upload with, nothing else. Without Req's steps it never follows a redirect,
+  # so the file goes only to the URL PostHog signed. It reads only the start of the storage's
+  # answer, so a storage that answers without end can't fill the app's memory.
   defp send_upload(connection, upload, content, timeout_ms) do
     request =
       Req.Request.new(

@@ -40,6 +40,16 @@ defmodule PostHog.EmailsTest.HeaderedClient do
   defdelegate request(client, method, url, opts), to: Client
 end
 
+defmodule PostHog.EmailsTest.OtherHost do
+  @moduledoc false
+  # A host the storage redirects to. It tells the test about every request it gets.
+
+  def serve(conn, test) do
+    send(test, {:other_host, conn.method, conn.request_path})
+    Plug.Conn.send_resp(conn, 200, "")
+  end
+end
+
 defmodule PostHog.EmailsTest.FakePostHog do
   @moduledoc false
   # PostHog's email routes and its file storage as they behave, behind the SDK's real requests.
@@ -111,6 +121,7 @@ defmodule PostHog.EmailsTest.FakePostHog do
   and `{status, s3_code, s3_message}` or a transport error's reason, such as `:econnrefused`, on
   the storage. `{status, s3_code, s3_message, :endless}` follows the storage's error with
   padding that doesn't end until the client stops reading, a little every 10 ms.
+  `{:redirect, status, location}` redirects the storage's next request to `location`.
   """
   def fail_next(fake, route, reply), do: script(fake, route, {:reply, reply})
 
@@ -351,6 +362,11 @@ defmodule PostHog.EmailsTest.FakePostHog do
     }
 
     case receive_request(fake, :storage, request) do
+      {{:reply, {:redirect, status, location}}, _test} ->
+        conn
+        |> Plug.Conn.put_resp_header("location", location)
+        |> Plug.Conn.send_resp(status, "")
+
       {{:reply, {status, code, message, :endless}}, _test} ->
         endless_s3_error(conn, status, code, message)
 
@@ -1005,6 +1021,44 @@ defmodule PostHog.EmailsTest do
                )
 
       assert FakePostHog.files(fake) == %{sha256(file) => file}
+    end
+
+    @tag upload_adapter: :none
+    @tag config: [
+           api_client_module: PostHog.EmailsTest.ReqTestClient,
+           app_host: "http://localhost:8010"
+         ]
+    test "doesn't follow the storage's redirect with the file", %{name: name, fake: fake} do
+      {:ok, storage} =
+        start_supervised({Bandit, plug: {&FakePostHog.serve/2, fake}, ip: :loopback, port: 0})
+
+      {:ok, other_host} =
+        start_supervised(
+          Supervisor.child_spec(
+            {Bandit,
+             plug: {&PostHog.EmailsTest.OtherHost.serve/2, self()}, ip: :loopback, port: 0},
+            id: :other_host
+          )
+        )
+
+      {:ok, {_ip, storage_port}} = ThousandIsland.listener_info(storage)
+      {:ok, {_ip, other_port}} = ThousandIsland.listener_info(other_host)
+      FakePostHog.set_storage_url(fake, "http://127.0.0.1:#{storage_port}")
+      elsewhere = "http://127.0.0.1:#{other_port}/elsewhere"
+
+      for status <- [307, 308] do
+        FakePostHog.fail_next(fake, :storage, {:redirect, status, elsewhere})
+
+        assert {:error, %Error{code: "attachment_upload_failed", status_code: ^status} = error} =
+                 Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+
+        assert error.field == "attachments__0"
+        assert error.message =~ "a.pdf"
+        refute inspect(error) =~ "elsewhere"
+        refute inspect(error) =~ "signed-secret"
+        refute_received {:other_host, _method, _path}
+        assert nothing_sent?(fake)
+      end
     end
 
     # Reading the whole answer would outlast the upload's deadline of about a second.
