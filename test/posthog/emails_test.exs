@@ -2000,23 +2000,18 @@ defmodule PostHog.EmailsReqDefaultsTest do
   # Req.default_options is app-wide, so this runs alone, after the async tests.
   use ExUnit.Case, async: false
 
-  import Mox
-
-  alias PostHog.API
   alias PostHog.Emails
+  alias PostHog.EmailsTest.FakePostHog
 
-  setup :verify_on_exit!
   setup {Req.Test, :verify_on_exit!}
 
   setup context do
-    Mox.stub_with(API.Mock, API.Stub)
     previous = Application.fetch_env(:req, :default_options)
 
-    Application.put_env(:req, :default_options,
-      auth: {:bearer, "app-wide"},
-      headers: [{"x-app-wide", "1"}],
-      plug: {Req.Test, PostHog.EmailsReqDefaultsTest.AppWide}
-    )
+    # Defaults an app might set for its own requests. The storage refuses either on an upload, as
+    # S3 does on a presigned PUT: a query that isn't the signed one, and gzipped bytes that no
+    # longer match the signed checksum.
+    Application.put_env(:req, :default_options, params: [app: "1"], compress_body: true)
 
     on_exit(fn ->
       case previous do
@@ -2030,53 +2025,27 @@ defmodule PostHog.EmailsReqDefaultsTest do
         api_host: "https://us.i.posthog.com",
         api_key: "phc_project_key",
         secret_key: "phs_secret_key",
-        api_client_module: API.Mock,
+        api_client_module: PostHog.EmailsTest.ReqTestClient,
         supervisor_name: context.test,
         enable_local_evaluation: false
       ]
       |> PostHog.Config.validate!()
-      |> Map.put(:email_upload_adapter, {Req.Plug, plug: {Req.Test, __MODULE__}})
+      # The installed Req's default adapter over a real socket: Req.Test's plug would unzip a body.
+      |> Map.put(:email_upload_adapter, :none)
 
     start_link_supervised!({PostHog.Supervisor, config})
-    %{name: context.test}
+    %{name: context.test, fake: FakePostHog.start!()}
   end
 
-  test "an upload ignores the app's Req defaults", %{name: name} do
+  test "an upload ignores the app's Req defaults", %{name: name, fake: fake} do
+    {:ok, server} =
+      start_supervised({Bandit, plug: {FakePostHog.Server, fake}, ip: :loopback, port: 0})
+
+    {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
+    FakePostHog.set_storage_url(fake, "http://127.0.0.1:#{port}")
     file = "file bytes"
-    sha256 = :crypto.hash(:sha256, file) |> Base.encode16(case: :lower)
 
-    expect(API.Mock, :request, fn _client, :post, _url, _opts ->
-      {:ok,
-       %{
-         status: 200,
-         headers: %{},
-         body: %{
-           "files" => [
-             %{
-               "sha256" => sha256,
-               "status" => "upload",
-               "url" => "https://files.example.com/a?X-Amz-Signature=signed",
-               "method" => "PUT",
-               "headers" => %{"Content-Length" => "10"}
-             }
-           ]
-         }
-       }}
-    end)
-
-    expect(API.Mock, :request, fn _client, :post, _url, _opts ->
-      {:ok, %{status: 202, headers: %{}, body: %{"message_id" => "m"}}}
-    end)
-
-    test_pid = self()
-
-    Req.Test.expect(__MODULE__, fn conn ->
-      {:ok, body, conn} = Plug.Conn.read_body(conn)
-      send(test_pid, {:stored, conn.req_headers, body})
-      Plug.Conn.send_resp(conn, 200, "")
-    end)
-
-    assert {:ok, _} =
+    assert {:ok, %Emails.SendResult{id: id}} =
              Emails.send(name,
                to: "user@example.com",
                template_key: "receipt",
@@ -2085,7 +2054,8 @@ defmodule PostHog.EmailsReqDefaultsTest do
                attachments: [%{filename: "a.txt", content: file}]
              )
 
-    assert_received {:stored, headers, ^file}
-    assert Enum.map(headers, &elem(&1, 0)) == ["content-length"]
+    sha256 = :crypto.hash(:sha256, file) |> Base.encode16(case: :lower)
+    assert FakePostHog.files(fake) == %{sha256 => file}
+    assert [{^id, %{"attachments" => [%{"sha256" => ^sha256}]}}] = FakePostHog.messages(fake)
   end
 end
