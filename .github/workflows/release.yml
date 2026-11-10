@@ -222,16 +222,6 @@ jobs:
               "alertContext": "The release workflow failed before completion."
             }
 
-      - name: Notify Slack - Failed
-        if: ${{ failure() && needs.notify-approval-needed.outputs.slack_ts != '' }}
-        uses: posthog/.github/.github/actions/slack-thread-reply@cb0979b67dcd585828b61ac45927eef4da8f6287 # main
-        with:
-          slack_bot_token: ${{ secrets.SLACK_CLIENT_LIBRARIES_BOT_TOKEN }}
-          slack_channel_id: ${{ vars.SLACK_APPROVALS_CLIENT_LIBRARIES_CHANNEL_ID }}
-          thread_ts: ${{ needs.notify-approval-needed.outputs.slack_ts }}
-          message: "❌ Failed to release `posthog-elixir@${{ steps.sampo-release.outputs.new_version }}`! <https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|View logs>"
-          emoji_reaction: "x"
-
   notify-released:
     name: Notify Slack - Released
     needs: [check-changesets, notify-approval-needed, release]
