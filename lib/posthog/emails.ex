@@ -191,6 +191,8 @@ defmodule PostHog.Emails do
     "https://eu.posthog.com" => @eu_app_host
   }
   @max_retry_delay_ms 30_000
+  # Enough of the storage's answer for an S3 error, whose XML is well under 1 KB.
+  @max_storage_answer_bytes 16_384
   @log_metadata [posthog_skip_capture: true]
 
   @shared_fields [:to, :distinct_id, :idempotency_key, :max_retries]
@@ -838,7 +840,8 @@ defmodule PostHog.Emails do
   # A bare request: not through the api_client, whose defaults, such as headers a custom client
   # adds, are meant for PostHog, and without Req's steps and the app's Req.default_options, such as
   # an auth or compress_body set for other requests. The storage gets the bytes and the headers
-  # PostHog signed the upload with, nothing else.
+  # PostHog signed the upload with, nothing else. It reads only the start of the storage's answer,
+  # so a storage that answers without end can't fill the app's memory.
   defp send_upload(connection, upload, content, timeout_ms) do
     request =
       Req.Request.new(
@@ -848,6 +851,7 @@ defmodule PostHog.Emails do
         body: content,
         options: [receive_timeout: timeout_ms]
       )
+      |> Map.put(:into, &keep_start/2)
       |> with_upload_adapter(connection.upload_adapter)
 
     run_request(connection, timeout_ms, fn ->
@@ -856,6 +860,15 @@ defmodule PostHog.Emails do
         {_request, exception} -> {:error, exception}
       end
     end)
+  end
+
+  defp keep_start({:data, data}, {request, response}) do
+    body = response.body <> data
+
+    if byte_size(body) < @max_storage_answer_bytes,
+      do: {:cont, {request, %{response | body: body}}},
+      else:
+        {:halt, {request, %{response | body: binary_part(body, 0, @max_storage_answer_bytes)}}}
   end
 
   # Req's own default adapter, which differs between Req versions, unless a test sets one.

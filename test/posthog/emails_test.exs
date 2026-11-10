@@ -109,7 +109,8 @@ defmodule PostHog.EmailsTest.FakePostHog do
   @doc """
   Answers the route's next request with `reply` instead: `{status, json}` on PostHog's routes,
   and `{status, s3_code, s3_message}` or a transport error's reason, such as `:econnrefused`, on
-  the storage.
+  the storage. `{status, s3_code, s3_message, :endless}` follows the storage's error with
+  padding that doesn't end until the client stops reading, a little every 10 ms.
   """
   def fail_next(fake, route, reply), do: script(fake, route, {:reply, reply})
 
@@ -350,6 +351,9 @@ defmodule PostHog.EmailsTest.FakePostHog do
     }
 
     case receive_request(fake, :storage, request) do
+      {{:reply, {status, code, message, :endless}}, _test} ->
+        endless_s3_error(conn, status, code, message)
+
       {{:reply, {status, code, message}}, _test} ->
         s3_error(conn, status, code, message)
 
@@ -422,11 +426,34 @@ defmodule PostHog.EmailsTest.FakePostHog do
   defp s3_error(conn, status, code, message) do
     conn
     |> Plug.Conn.put_resp_content_type("application/xml")
-    |> Plug.Conn.send_resp(
-      status,
-      ~s(<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>#{code}</Code><Message>#{message}</Message><Resource>/team/1/file</Resource></Error>)
-    )
+    |> Plug.Conn.send_resp(status, s3_error_xml(code, message))
   end
+
+  defp endless_s3_error(conn, status, code, message) do
+    conn =
+      conn
+      |> Plug.Conn.put_resp_content_type("application/xml")
+      |> Plug.Conn.send_chunked(status)
+
+    {:ok, conn} = Plug.Conn.chunk(conn, s3_error_xml(code, message))
+    pad(conn, :binary.copy(" ", 65_536), 3_000)
+  end
+
+  # Stops when the client closes the connection, or after 30 seconds.
+  defp pad(conn, _padding, 0), do: conn
+
+  defp pad(conn, padding, chunks_left) do
+    Process.sleep(10)
+
+    case Plug.Conn.chunk(conn, padding) do
+      {:ok, conn} -> pad(conn, padding, chunks_left - 1)
+      {:error, _closed} -> conn
+    end
+  end
+
+  defp s3_error_xml(code, message),
+    do:
+      ~s(<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>#{code}</Code><Message>#{message}</Message><Resource>/team/1/file</Resource></Error>)
 
   defp sha256(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
   defp checksum(sha256), do: sha256 |> Base.decode16!(case: :lower) |> Base.encode64()
@@ -978,6 +1005,36 @@ defmodule PostHog.EmailsTest do
                )
 
       assert FakePostHog.files(fake) == %{sha256(file) => file}
+    end
+
+    # Reading the whole answer would outlast the upload's deadline of about a second.
+    @tag upload_adapter: :none
+    @tag config: [
+           api_client_module: PostHog.EmailsTest.ReqTestClient,
+           app_host: "http://localhost:8010",
+           email_request_timeout_ms: 1_000
+         ]
+    test "reads only the start of a storage answer that doesn't end", %{name: name, fake: fake} do
+      {:ok, server} =
+        start_supervised({Bandit, plug: {&FakePostHog.serve/2, fake}, ip: :loopback, port: 0})
+
+      {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
+      FakePostHog.set_storage_url(fake, "http://127.0.0.1:#{port}")
+
+      FakePostHog.fail_next(
+        fake,
+        :storage,
+        {403, "AccessDenied", "Request has expired.", :endless}
+      )
+
+      assert {:error, %Error{code: "attachment_upload_failed", status_code: 403} = error} =
+               Emails.send(
+                 name,
+                 with_files([%{filename: "a.pdf", content: @pdf}]) ++ [max_retries: 0]
+               )
+
+      assert error.message =~ "AccessDenied: Request has expired"
+      assert nothing_sent?(fake)
     end
 
     # The refusal is the storage's next answer only, so a retry would succeed.
