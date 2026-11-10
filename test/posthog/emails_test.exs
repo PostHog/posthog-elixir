@@ -43,12 +43,12 @@ end
 defmodule PostHog.EmailsTest.FakePostHog do
   @moduledoc false
   # PostHog's email routes and its file storage as they behave, behind the SDK's real requests.
-  # The upload route signs an upload for each file PostHog doesn't have, the storage keeps a file
+  # The upload route signs an upload for each file PostHog doesn't have. The storage keeps a file
   # only when its upload matches what was signed, as S3 checks a presigned PUT: the signed URL,
-  # the signed headers, no second credential or unsigned x-amz- header, and the bytes. The send route
-  # accepts an email only when PostHog has every file it names. A test reads back the stored
-  # files, the accepted emails and what each route received, and can make a route's next request
-  # fail, wait or hold.
+  # the signed headers, no second credential or unsigned x-amz- header, and the bytes. The send
+  # route accepts an email only when PostHog has every file it names and the email fits PostHog's
+  # 40 MB estimate. A test reads back the stored files, the accepted emails and what each route
+  # received, and can make a route's next request fail, wait or hold.
   #
   # The routes are :uploads and :send on PostHog, and :storage. Uploads are signed for
   # https://files.example.com unless set_storage_url/2 names another host.
@@ -58,6 +58,7 @@ defmodule PostHog.EmailsTest.FakePostHog do
   @send_path "/api/projects/@current/messaging/send/email/"
   @storage_url "https://files.example.com"
   @max_body 64_000_000
+  @max_message_bytes 40_000_000
   @signature "X-Amz-Signature=signed-secret"
   @signed_headers ["content-length", "x-amz-checksum-sha256"]
 
@@ -272,8 +273,29 @@ defmodule PostHog.EmailsTest.FakePostHog do
         )
       )
     else
-      json(conn, 202, %{"message_id" => record_message(fake, email)})
+      if message_bytes(email, files) > @max_message_bytes do
+        json(conn, 400, %{
+          "type" => "invalid_request",
+          "code" => "message_too_large",
+          "detail" => "This email is too large to send, so PostHog didn't send it.",
+          "attr" => nil
+        })
+      else
+        json(conn, 202, %{"message_id" => record_message(fake, email)})
+      end
     end
+  end
+
+  # PostHog's estimate of the sent message: each file and body as folded Base64, 64 KiB for
+  # headers and MIME boundaries, and the subject as 75 bytes per 42 started.
+  defp message_bytes(email, files) do
+    bodies = for key <- ["html", "text"], body = email[key], is_binary(body), do: byte_size(body)
+    sizes = for %{"sha256" => sha256} <- email["attachments"] || [], do: byte_size(files[sha256])
+    subject = byte_size(email["subject"] || "")
+
+    Enum.reduce(bodies ++ sizes, 64 * 1024 + div(subject + 41, 42) * 75, fn size, total ->
+      total + div(div(size + 2, 3) * 4 * 78 + 75, 76)
+    end)
   end
 
   defp record_message(fake, email) do
@@ -1186,10 +1208,11 @@ defmodule PostHog.EmailsTest do
       start_link_supervised!(Supervisor.child_spec({PostHog.Supervisor, config}, id: name))
       html = :binary.copy("a", 40_000_000)
 
-      assert {:ok, %Emails.SendResult{id: id}} =
+      assert {:error, %Error{code: "message_too_large", status_code: 400}} =
                Emails.send(name, Keyword.put(@code_send, :html, html))
 
-      assert [{^id, %{"html" => ^html, "subject" => "Hi"}}] = FakePostHog.messages(fake)
+      assert [%{"html" => ^html, "subject" => "Hi"}] = FakePostHog.received(fake, :send)
+      assert FakePostHog.messages(fake) == []
     end
 
     # With no subject and an empty body, these sizes leave 3, 73, 77, 147 and 151 bytes of the
