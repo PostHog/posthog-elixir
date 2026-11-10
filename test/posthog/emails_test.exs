@@ -45,7 +45,7 @@ defmodule PostHog.EmailsTest.FakePostHog do
   # PostHog's email routes and its file storage as they behave, behind the SDK's real requests.
   # The upload route signs an upload for each file PostHog doesn't have, the storage keeps a file
   # only when its upload matches what was signed, as S3 checks a presigned PUT: the signed URL,
-  # the signed headers and no others but the transport's, and the bytes. The send route
+  # the signed headers, no second credential or unsigned x-amz- header, and the bytes. The send route
   # accepts an email only when PostHog has every file it names. A test reads back the stored
   # files, the accepted emails and what each route received, and can make a route's next request
   # fail, wait or hold.
@@ -59,8 +59,7 @@ defmodule PostHog.EmailsTest.FakePostHog do
   @storage_url "https://files.example.com"
   @max_body 64_000_000
   @signature "X-Amz-Signature=signed-secret"
-  # What the HTTP client adds on a real socket. Any other header would be outside the signature.
-  @transport_headers ["host", "user-agent"]
+  @signed_headers ["content-length", "x-amz-checksum-sha256"]
 
   defmodule Server do
     @moduledoc false
@@ -331,6 +330,14 @@ defmodule PostHog.EmailsTest.FakePostHog do
       List.keymember?(request.headers, "authorization", 0) ->
         s3_error(conn, 400, "InvalidArgument", "Only one auth mechanism allowed.")
 
+      unsigned_amz_header?(request) ->
+        s3_error(
+          conn,
+          403,
+          "AccessDenied",
+          "There were headers present in the request which were not signed."
+        )
+
       not signature_matches?(request, signed) ->
         s3_error(conn, 403, "SignatureDoesNotMatch", "The request signature does not match.")
 
@@ -343,14 +350,17 @@ defmodule PostHog.EmailsTest.FakePostHog do
     end
   end
 
-  # The signed query and headers, and no headers but those and the transport's.
-  defp signature_matches?(request, signed) do
-    allowed = ["content-length", "x-amz-checksum-sha256" | @transport_headers]
+  # S3 ignores ordinary headers it wasn't asked to sign, but refuses an unsigned x-amz- one.
+  defp unsigned_amz_header?(request) do
+    Enum.any?(request.headers, fn {name, _value} ->
+      String.starts_with?(name, "x-amz-") and name not in @signed_headers
+    end)
+  end
 
+  defp signature_matches?(request, signed) do
     request.query == signed.query and
       header(request, "x-amz-checksum-sha256") == checksum(signed.sha256) and
-      header(request, "content-length") == to_string(signed.size) and
-      Enum.all?(request.headers, fn {name, _value} -> name in allowed end)
+      header(request, "content-length") == to_string(signed.size)
   end
 
   defp header(request, name) do
@@ -755,7 +765,7 @@ defmodule PostHog.EmailsTest do
              ]
     end
 
-    # The storage refuses a header outside the signed ones, such as the client's.
+    # The storage refuses a second credential, such as the client's authorization.
     @tag config: [api_client_module: PostHog.EmailsTest.HeaderedClient]
     test "uploads with only the headers PostHog signed, not the client's", %{
       name: name,
