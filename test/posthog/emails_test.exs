@@ -609,6 +609,31 @@ defmodule PostHog.EmailsTest do
              ] = requests()
     end
 
+    @tag config: [email_request_timeout_ms: 50]
+    test "gives an upload ten seconds per MB on top of the request timeout", %{name: name} do
+      file = :binary.copy(<<1>>, 1_000_000)
+      test_pid = self()
+
+      expect_reply(slots([to_upload(file)]))
+
+      Req.Test.expect(PostHog.EmailsTest.Storage, fn conn ->
+        {:ok, _body, conn} = Plug.Conn.read_body(conn, length: 2_000_000)
+        send(test_pid, {:request, :put, nil, []})
+        Process.sleep(1_500)
+        Plug.Conn.send_resp(conn, 200, "")
+      end)
+
+      expect_reply(accepted())
+
+      assert {:ok, _} =
+               Emails.send(
+                 name,
+                 with_files([%{filename: "a.bin", content: file}]) ++ [max_retries: 0]
+               )
+
+      assert [{:post, @uploads_url, _}, {:put, _, _}, {:post, @send_url, _}] = requests()
+    end
+
     test "doesn't retry an upload the storage refused", %{name: name} do
       expect_reply(slots([to_upload(@pdf)]))
       expect_storage({:refused, 403, "AccessDenied", "Request has expired."})
@@ -643,6 +668,7 @@ defmodule PostHog.EmailsTest do
                )
 
       assert error.message =~ "files.example.com"
+      assert error.fix =~ "reach files.example.com directly"
       assert error.field == "attachments__0"
       refute inspect(error) =~ "signed-secret"
       assert [{:post, _, _}, {:put, _, _}] = requests()
@@ -818,7 +844,7 @@ defmodule PostHog.EmailsTest do
     end
 
     test "refuses an email over 40 MB after Base64 encoding before any request", %{name: name} do
-      largest_that_fits = 29_182_875
+      largest_that_fits = 29_182_821
       file = :binary.copy(<<0>>, largest_that_fits)
 
       expect_reply(slots([present(file)]))
@@ -848,6 +874,39 @@ defmodule PostHog.EmailsTest do
       refute_requested()
     end
 
+    # With no subject and an empty body, these sizes leave 3, 73, 77, 147 and 151 bytes of the
+    # 40 MB estimate free, and 29_182_876 none: PostHog counts a subject as 75 bytes per 42
+    # started.
+    for {label, subject, fits, refused} <- [
+          {"of 42 ASCII bytes counts 75", String.duplicate("a", 42), 29_182_821, 29_182_824},
+          {"of 43 bytes counts 150", String.duplicate("a", 43), 29_182_767, 29_182_770},
+          {"of 21 two-byte characters counts 75", String.duplicate("é", 21), 29_182_821,
+           29_182_824},
+          {"that is empty counts nothing", "", 29_182_875, 29_182_876}
+        ] do
+      test "a subject #{label} toward the 40 MB estimate", %{name: name} do
+        send_file = fn size ->
+          Emails.send(
+            name,
+            Keyword.merge(@code_send,
+              subject: unquote(subject),
+              html: "",
+              attachments: [%{filename: "a", content: :binary.copy(<<0>>, size)}]
+            )
+          )
+        end
+
+        assert {:error, %Error{code: "message_too_large"}} = send_file.(unquote(refused))
+        refute_requested()
+
+        file = :binary.copy(<<0>>, unquote(fits))
+        expect_reply(slots([present(file)]))
+        expect_reply(accepted())
+
+        assert {:ok, _} = send_file.(unquote(fits))
+      end
+    end
+
     test "refuses an attachment it can't send, naming the field", %{name: name} do
       for {attachments, field} <- [
             {%{filename: "a.txt", content: "a"}, "attachments"},
@@ -862,6 +921,8 @@ defmodule PostHog.EmailsTest do
             {[%{filename: "a.txt", content: [97]}], "attachments__0__content"},
             {[%{filename: "a.txt", content: <<1::3>>}], "attachments__0__content"},
             {[%{content: "a"}], "attachments__0__filename"},
+            {[%{filename: "", content: "a"}], "attachments__0__filename"},
+            {[%{filename: " ", content: "a"}], "attachments__0__filename"},
             {[%{filename: :a, content: "a"}], "attachments__0__filename"},
             {[%{filename: "a.txt", content: "a", content_type: :pdf}],
              "attachments__0__content_type"},

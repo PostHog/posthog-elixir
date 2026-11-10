@@ -88,7 +88,8 @@ defmodule PostHog.Emails do
   ## Attachments
 
   An email carries at most 10 files and 40 MB after Base64 encoding, about 29 MB of files. The
-  SDK checks both before any request, counting each file and body as Base64, as PostHog does.
+  SDK checks both before any request, counting each file and body as Base64 and the subject as
+  encoded, as PostHog does.
 
   A send with files takes three steps:
 
@@ -100,11 +101,12 @@ defmodule PostHog.Emails do
      nothing again.
   3. Once every upload succeeded, it sends the email, which names each file by its hash.
 
-  Your app must be able to reach the storage host that PostHog's answer names. If an upload
-  fails, the SDK sends nothing and returns `attachment_upload_failed` with what the storage
-  answered. An upload gets the request timeout plus one second per MB of the file, and retries
-  as a send does, as well as when the storage answers HTTP 500, 502 or 504. It ignores your
-  app's `Req.default_options`, which are meant for other requests.
+  Your app must be able to reach the storage host that PostHog's answer names directly: an
+  upload doesn't go through a proxy, and it ignores your app's `Req.default_options`, which are
+  meant for other requests. If an upload fails, the SDK sends nothing and returns
+  `attachment_upload_failed` with what the storage answered. An upload gets the request timeout
+  plus ten seconds per MB of the file, and retries as a send does, as well as when the storage
+  answers HTTP 500, 502 or 504.
 
   ## Timeouts, retries and idempotency
 
@@ -388,8 +390,9 @@ defmodule PostHog.Emails do
     end)
   end
 
+  # Ten seconds per MB: a file that fits still uploads over a link of about 1 Mbit/s.
   defp upload_timeout_ms(connection, file),
-    do: connection.timeout_ms + div(file.size, 1_000_000) * 1_000
+    do: connection.timeout_ms + div(file.size, 100)
 
   defp put_file(connection, file, upload, max_retries) do
     timeout_ms = upload_timeout_ms(connection, file)
@@ -516,7 +519,8 @@ defmodule PostHog.Emails do
   defp attachments(options) do
     Attachments.prepare(
       Map.get(options, :attachments, []),
-      Enum.flat_map([:html, :text], &List.wrap(options[&1]))
+      Enum.flat_map([:html, :text], &List.wrap(options[&1])),
+      Map.get(options, :subject) || ""
     )
   end
 
@@ -803,15 +807,9 @@ defmodule PostHog.Emails do
   # Requests
 
   defp request(connection, method, path, headers, body) do
+    %{module: module, client: client} = connection.api_client
     url = connection.app_host <> path
 
-    case send_request(connection, method, url, headers, body, connection.timeout_ms) do
-      {:ok, status, body, retry_after_ms} -> {:ok, status, fields(body), retry_after_ms}
-      {:error, error} -> {:error, error}
-    end
-  end
-
-  defp send_request(connection, method, url, headers, body, timeout_ms) do
     # The SDK parses the body itself, so a malformed acceptance stays an api_error with its status.
     options =
       [
@@ -820,11 +818,15 @@ defmodule PostHog.Emails do
         redirect: false,
         compress_body: false,
         decode_body: false,
-        receive_timeout: timeout_ms
+        receive_timeout: connection.timeout_ms
       ] ++ if(body, do: [body: body], else: [])
 
-    %{module: module, client: client} = connection.api_client
-    run_request(connection, timeout_ms, fn -> module.request(client, method, url, options) end)
+    case run_request(connection, connection.timeout_ms, fn ->
+           module.request(client, method, url, options)
+         end) do
+      {:ok, status, body, retry_after_ms} -> {:ok, status, fields(body), retry_after_ms}
+      {:error, error} -> {:error, error}
+    end
   end
 
   # A bare request: not through the api_client, whose defaults, such as headers a custom client

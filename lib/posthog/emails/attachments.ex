@@ -6,6 +6,8 @@ defmodule PostHog.Emails.Attachments do
   @max_files 10
   @max_message_bytes 40_000_000
   @headers_and_mime_boundaries_bytes 64 * 1024
+  @subject_bytes_per_encoded_word 42
+  @folded_encoded_word_bytes 75
   @limit "10 files and 40 MB per email after Base64 encoding, about 29 MB of files"
   @fields [:filename, :content, :content_type, :content_id]
   @field_names Enum.map(@fields, &Atom.to_string/1)
@@ -22,19 +24,20 @@ defmodule PostHog.Emails.Attachments do
   @type upload() :: %{url: String.t(), headers: [{String.t(), String.t()}]}
 
   @doc """
-  Checks the files and the size of the email they make with `bodies`, and hashes each file.
+  Checks the files and the size of the email they make with `bodies` and `subject`, and hashes
+  each file.
   """
-  @spec prepare(term(), [String.t()]) :: {:ok, [file()]} | {:error, Error.t()}
-  def prepare(attachments, bodies) when is_list(attachments) do
+  @spec prepare(term(), [String.t()], String.t()) :: {:ok, [file()]} | {:error, Error.t()}
+  def prepare(attachments, bodies, subject) when is_list(attachments) do
     # Hashing reads every byte, so it waits until the files are known to fit.
     with :ok <- check_count(attachments),
          {:ok, files} <- check_each(attachments),
-         :ok <- check_size(files, bodies) do
+         :ok <- check_size(files, bodies, subject) do
       {:ok, Enum.map(files, &hash/1)}
     end
   end
 
-  def prepare(_attachments, _bodies),
+  def prepare(_attachments, _bodies, _subject),
     do: invalid("attachments must be a list of files.", "attachments")
 
   @doc "The body of the upload request: each distinct file once."
@@ -106,7 +109,7 @@ defmodule PostHog.Emails.Attachments do
       why:
         "The SDK sends an email only once each of its files is uploaded, so no email was sent.",
       fix:
-        "Send again. If it keeps failing, check that your app can reach #{host}, and that no proxy changes the upload."
+        "Send again. If it keeps failing, check that your app can reach #{host} directly: uploads don't go through a proxy or your API client's settings."
     )
   end
 
@@ -138,17 +141,17 @@ defmodule PostHog.Emails.Attachments do
     end
   end
 
-  defp check_size(files, bodies) do
+  defp check_size(files, bodies, subject) do
     sizes = Enum.map(files, & &1.size) ++ Enum.map(bodies, &byte_size/1)
 
-    if base64_message_bytes(sizes) > @max_message_bytes do
+    if base64_message_bytes(sizes) + encoded_subject_bytes(subject) > @max_message_bytes do
       {:error,
        Error.new(
          "message_too_large",
          "These files make the email too large to send, so no email was sent.",
          field: "attachments",
          why:
-           "PostHog sends emails up to 40 MB, and Base64 encoding makes each file and body about a third larger.",
+           "PostHog sends emails up to 40 MB, and Base64 encoding makes each file and body about a third larger, as encoding makes the subject.",
          fix:
            "Keep the email under 40 MB after Base64 encoding, about 29 MB of files: attach fewer or smaller files, or link to large files from the email body."
        )}
@@ -162,6 +165,10 @@ defmodule PostHog.Emails.Attachments do
       total + ceil_div(ceil_div(size, 3) * 4 * 78, 76)
     end)
   end
+
+  # A subject is sent as encoded words of 42 bytes each, folded onto lines of 75.
+  defp encoded_subject_bytes(subject),
+    do: ceil_div(byte_size(subject), @subject_bytes_per_encoded_word) * @folded_encoded_word_bytes
 
   defp ceil_div(dividend, divisor), do: div(dividend + divisor - 1, divisor)
 
@@ -212,6 +219,12 @@ defmodule PostHog.Emails.Attachments do
     cond do
       not is_binary(attachment[:filename]) ->
         invalid("An attachment needs its filename as a string.", field <> "__filename")
+
+      String.trim(attachment.filename) == "" ->
+        invalid(
+          "An attachment's filename is empty, so the recipient couldn't tell what the file is.",
+          field <> "__filename"
+        )
 
       not is_binary(attachment[:content]) ->
         invalid(

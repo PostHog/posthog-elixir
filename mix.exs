@@ -82,6 +82,7 @@ defmodule PostHog.MixProject do
       # Development tools
       {:ex_doc, "~> 0.37", only: :dev, runtime: false},
       {:logger_handler_kit, "~> 0.4", only: :test},
+      {:bandit, "~> 1.7", only: :test},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:mox, "~> 1.1", only: :test}
     ]
