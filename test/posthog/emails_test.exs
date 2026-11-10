@@ -17,9 +17,6 @@ end
 
 defmodule PostHog.EmailsTest.FakeSendEndpoint do
   @moduledoc false
-  # The send endpoint's category rules over an in-memory store. Like the server, it refuses a key
-  # outside the code send body and a malformed category, upserts a category by key, refuses a
-  # changed type, and keeps the stored description when the field is missing.
   import Plug.Conn
 
   @code_keys ~w(to distinct_id template_key subject html text from reply_to capture_engagement category)
@@ -27,15 +24,18 @@ defmodule PostHog.EmailsTest.FakeSendEndpoint do
   @message_id "01a18356-c56c-0001-e494-7666bc915188"
 
   def start(req_test_name) do
-    {:ok, store} = Agent.start_link(fn -> %{} end)
+    {:ok, store} = Agent.start_link(fn -> %{categories: %{}, sends: 0} end)
     Req.Test.stub(req_test_name, &serve(&1, store))
     store
   end
 
-  def categories(store), do: Agent.get(store, & &1)
+  def categories(store), do: Agent.get(store, & &1.categories)
+
+  def sends(store), do: Agent.get(store, & &1.sends)
 
   defp serve(conn, store) do
     {:ok, raw, conn} = read_body(conn)
+    Agent.update(store, &%{&1 | sends: &1.sends + 1})
     {status, reply} = answer(Jason.decode!(raw), store)
 
     conn
@@ -63,14 +63,14 @@ defmodule PostHog.EmailsTest.FakeSendEndpoint do
   defp well_formed?(_category), do: false
 
   defp upsert(store, %{"key" => key, "type" => type} = category) do
-    Agent.get_and_update(store, fn categories ->
+    Agent.get_and_update(store, fn %{categories: categories} = state ->
       case categories[key] do
         %{"type" => stored} when stored != type ->
-          {refuse("category_mismatch", "category"), categories}
+          {refuse("category_mismatch", "category"), state}
 
         stored ->
           fields = Map.merge(stored || %{"description" => nil}, Map.delete(category, "key"))
-          {accept(), Map.put(categories, key, fields)}
+          {accept(), %{state | categories: Map.put(categories, key, fields)}}
       end
     end)
   end
@@ -636,18 +636,13 @@ defmodule PostHog.EmailsTest do
                )
     end
 
-    test "does not retry a monthly quota, a conflict or a refused recipient or category", %{
+    test "does not retry a monthly quota, a conflict or a suppressed recipient", %{
       name: name
     } do
       for {status, code, error_name} <- [
             {429, "quota_limited", :monthly_quota_exceeded},
             {409, "template_outdated", :validation_error},
             {422, "recipient_suppressed", :validation_error},
-            {422, "recipient_opted_out", :validation_error},
-            {400, "category_mismatch", :validation_error},
-            {400, "too_many_categories", :validation_error},
-            {400, "unsubscribe_link_required", :validation_error},
-            {400, "copies_not_allowed", :validation_error},
             {422, "idempotency_key_reused", :invalid_idempotent_request},
             {400, "invalid_recipient", :validation_error},
             {401, "authentication_failed", :missing_api_key},
@@ -1042,6 +1037,29 @@ defmodule PostHog.EmailsTest do
         assert {:ok, _} = send_with_category(name, %{receipts | description: description})
         assert FakeSendEndpoint.categories(store)["receipts"]["description"] == stored
       end
+    end
+
+    test "a category the server refuses comes back as a validation_error, not retried", %{
+      name: name
+    } do
+      store = FakeSendEndpoint.start(__MODULE__.ReqTestClient)
+      receipts = %MessageCategory{key: "receipts", type: :transactional, name: "Receipts"}
+
+      assert {:ok, _} = send_with_category(name, receipts)
+
+      assert {:error,
+              %Error{
+                name: :validation_error,
+                code: "category_mismatch",
+                status_code: 400,
+                field: "category"
+              }} =
+               send_with_category(name, %{receipts | type: :marketing},
+                 html: "<p>{{ unsubscribe_url }}</p>"
+               )
+
+      assert FakeSendEndpoint.sends(store) == 2
+      assert FakeSendEndpoint.categories(store)["receipts"]["type"] == "transactional"
     end
 
     test "the transactional shorthand sends without defining a category", %{name: name} do
