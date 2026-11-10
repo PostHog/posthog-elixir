@@ -194,8 +194,7 @@ defmodule PostHog.EmailsTest do
                "html" => "<p>Reset</p>",
                "text" => "Reset",
                "from" => "Acme <security@example.com>",
-               "reply_to" => ["support@example.com"],
-               "capture_engagement" => true
+               "reply_to" => ["support@example.com"]
              }
     end
 
@@ -231,7 +230,7 @@ defmodule PostHog.EmailsTest do
            quote(do: %{"opens" => false, "engagement" => false})},
           {quote(do: %{}), quote(do: %{})}
         ] do
-      test "sends tracking #{Macro.to_string(tracking)} in place of capture_engagement",
+      test "sends tracking #{Macro.to_string(tracking)} alone",
            %{name: name} do
         expect_reply(accepted())
 

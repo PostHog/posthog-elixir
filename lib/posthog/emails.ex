@@ -190,7 +190,7 @@ defmodule PostHog.Emails do
     send says. Sent only when you set it, and needs a PostHog version that takes it.
   - `:capture_engagement` - deprecated: use `tracking: %{engagement: false}` instead. Whether
     PostHog captures the email's engagement events. It still works, but a send can't set both.
-    Sent (default `true`) only when `:tracking` is left out, or when you set it.
+    Sent only when you set it.
 
   An option set to `nil` counts as left out.
   """
@@ -378,7 +378,16 @@ defmodule PostHog.Emails do
          :ok <- check_code_fields(options) do
       {:ok,
        options
-       |> Map.take([:to, :distinct_id, :template_key, :subject, :html, :text, :from])
+       |> Map.take([
+         :to,
+         :distinct_id,
+         :template_key,
+         :subject,
+         :html,
+         :text,
+         :from,
+         :capture_engagement
+       ])
        |> put_tracking(options)
        |> put_reply_to(options)}
     end
@@ -448,20 +457,11 @@ defmodule PostHog.Emails do
   defp not_string?(options, field),
     do: Map.has_key?(options, field) and not is_binary(Map.fetch!(options, field))
 
-  defp put_tracking(content, %{tracking: tracking} = options) do
-    tracking = if is_map(tracking), do: Map.reject(tracking, &is_nil(elem(&1, 1))), else: tracking
+  defp put_tracking(content, %{tracking: tracking}) when is_map(tracking),
+    do: Map.put(content, :tracking, Map.reject(tracking, &is_nil(elem(&1, 1))))
 
-    case Map.fetch(options, :capture_engagement) do
-      {:ok, capture_engagement} ->
-        Map.merge(content, %{tracking: tracking, capture_engagement: capture_engagement})
-
-      :error ->
-        Map.put(content, :tracking, tracking)
-    end
-  end
-
-  defp put_tracking(content, options),
-    do: Map.put(content, :capture_engagement, Map.get(options, :capture_engagement, true))
+  defp put_tracking(content, %{tracking: tracking}), do: Map.put(content, :tracking, tracking)
+  defp put_tracking(content, _options), do: content
 
   defp tracking?(tracking) when is_boolean(tracking), do: true
 
