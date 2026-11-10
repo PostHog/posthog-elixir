@@ -62,11 +62,11 @@ defmodule PostHog.Emails do
 
   ## Message categories
 
-  Content from your code is transactional unless its `:category` says otherwise. To send
-  marketing email, such as a newsletter, define its category in code with a
-  `PostHog.Emails.MessageCategory`. PostHog creates the category on the first send with its
-  key, honors the recipient's opt-outs and adds unsubscribe headers, and the content must link
-  to `{{ unsubscribe_url }}`:
+  Content from your code is transactional unless its `:category` says otherwise, or its
+  `:template_key` names a template in a category. To send marketing email, such as a
+  newsletter, define its category in code with a `PostHog.Emails.MessageCategory`. PostHog
+  creates the category on the first send with its key, honors the recipient's opt-outs and adds
+  unsubscribe headers, and the content must link to `{{ unsubscribe_url }}`:
 
       PostHog.Emails.send(
         to: "user@example.com",
@@ -128,7 +128,9 @@ defmodule PostHog.Emails do
 
   A send with `:category` can also return:
 
-  - `category_mismatch` (400): the project has a category with that key and another `:type`.
+  - `category_mismatch` (400): the project has a category with that key and another `:type`,
+    or `:template_key` names a template in another category. `transactional_category/0` for a
+    template in a category is a mismatch too.
   - `too_many_categories` (400): the send would create a category past the project's limit.
   - `unsubscribe_link_required` (400): a marketing email's content has no
     `{{ unsubscribe_url }}`.
@@ -215,8 +217,9 @@ defmodule PostHog.Emails do
   - `:capture_engagement` - whether PostHog captures the email's opens and clicks as events of
     the recipient. Defaults to `true`. A project whose admin turned engagement capture off
     captures nothing, whatever the send asks.
-  - `:category` - the email's message category, a `t:category/0`. Without it, the email is
-    transactional.
+  - `:category` - the email's message category, a `t:category/0`. Without it, the email
+    follows the category of the template that `:template_key` names, or is transactional with
+    no category.
 
   An option set to `nil` counts as left out.
   """
@@ -241,7 +244,9 @@ defmodule PostHog.Emails do
   `t:PostHog.Emails.MessageCategory.t/0`.
 
   - `transactional_category/0`, `"transactional"`, sends a transactional email with no
-    category, the same as leaving `:category` out.
+    category. Leaving `:category` out does the same, except when `:template_key` names a
+    template in a category: the email then follows that category, and PostHog refuses
+    `transactional_category/0` with `category_mismatch`.
   - A `PostHog.Emails.MessageCategory` defines the category in code. PostHog creates it by key on
     the first send, and updates its name and description when they change. A `:transactional`
     category sends a transactional email filed under it. A `:marketing` category sends a
