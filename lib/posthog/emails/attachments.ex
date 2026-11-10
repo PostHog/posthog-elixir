@@ -24,20 +24,21 @@ defmodule PostHog.Emails.Attachments do
   @type upload() :: %{url: String.t(), headers: [{String.t(), String.t()}]}
 
   @doc """
-  Checks the files and the size of the email they make with `bodies` and `subject`, and hashes
-  each file. An email without files is left to PostHog to size, as nothing is uploaded first.
+  Checks the files and the size of the email they make with its `:html`, `:text` and `:subject`,
+  and hashes each file. An email without files is left to PostHog to size, as nothing is
+  uploaded first.
   """
-  @spec prepare(term(), [String.t()], String.t()) :: {:ok, [file()]} | {:error, Error.t()}
-  def prepare(attachments, bodies, subject) when is_list(attachments) do
+  @spec prepare(term(), map()) :: {:ok, [file()]} | {:error, Error.t()}
+  def prepare(attachments, email) when is_list(attachments) do
     # Hashing reads every byte, so it waits until the files are known to fit.
     with :ok <- check_count(attachments),
          {:ok, files} <- check_each(attachments),
-         :ok <- check_size(files, bodies, subject) do
+         :ok <- check_size(files, email) do
       {:ok, Enum.map(files, &hash/1)}
     end
   end
 
-  def prepare(_attachments, _bodies, _subject),
+  def prepare(_attachments, _email),
     do: invalid("attachments must be a list of files.", "attachments")
 
   @doc "The body of the upload request: each distinct file once."
@@ -86,7 +87,7 @@ defmodule PostHog.Emails.Attachments do
            "PostHog named an upload URL that isn't https, so #{file.filename} would travel unencrypted. No email was sent.",
            field: file.field,
            fix:
-             "Fix the file storage's URL in PostHog so it uses https. For local development over plain HTTP, set an http :app_host."
+             "Fix the file storage's URL in PostHog so it uses https. Plain-HTTP uploads are allowed only in local development, where :app_host is plain HTTP too."
          )}
     end
   end
@@ -165,10 +166,16 @@ defmodule PostHog.Emails.Attachments do
     end
   end
 
-  defp check_size([], _bodies, _subject), do: :ok
+  defp check_size([], _email), do: :ok
 
-  defp check_size(files, bodies, subject) do
+  defp check_size(files, email) do
+    html = List.wrap(email[:html])
+    derived_text? = email[:text] in [nil, ""] and html != []
+    # Without text, PostHog derives it from the HTML and counts it too. The derived text drops
+    # tags and shortens entities and links, so it is never longer than the HTML.
+    bodies = if derived_text?, do: html ++ html, else: html ++ List.wrap(email[:text])
     sizes = Enum.map(files, & &1.size) ++ Enum.map(bodies, &byte_size/1)
+    subject = email[:subject] || ""
 
     if base64_message_bytes(sizes) + encoded_subject_bytes(subject) > @max_message_bytes do
       {:error,
@@ -178,13 +185,21 @@ defmodule PostHog.Emails.Attachments do
          field: "attachments",
          why:
            "PostHog sends emails up to 40 MB. Base64 makes each file and body about a third larger, and the subject counts 75 bytes per 42 bytes started.",
-         fix:
-           "Keep the email under 40 MB after Base64 encoding, about 29 MB of files: attach fewer or smaller files, or link to large files from the email body."
+         fix: too_large_fix(derived_text?)
        )}
     else
       :ok
     end
   end
+
+  @too_large_fix "Keep the email under 40 MB after Base64 encoding, about 29 MB of files: attach fewer or smaller files, or link to large files from the email body."
+
+  defp too_large_fix(false), do: @too_large_fix
+
+  defp too_large_fix(true),
+    do:
+      @too_large_fix <>
+        " Without :text, PostHog derives the text from :html and counts it too, so pass a short :text to count only that."
 
   defp base64_message_bytes(sizes) do
     Enum.reduce(sizes, @headers_and_mime_boundaries_bytes, fn size, total ->

@@ -527,19 +527,7 @@ defmodule PostHog.Emails do
   end
 
   defp attachments(options) do
-    Attachments.prepare(
-      Map.get(options, :attachments, []),
-      bodies(options),
-      Map.get(options, :subject) || ""
-    )
-  end
-
-  # Without text, PostHog derives it from the HTML and counts it too. The derived text drops tags
-  # and shortens entities and links, so it is never longer than the HTML.
-  defp bodies(options) do
-    html = List.wrap(options[:html])
-    text = if options[:text] in [nil, ""], do: html, else: [options[:text]]
-    html ++ text
+    Attachments.prepare(Map.get(options, :attachments, []), options)
   end
 
   defp check_template_key(template_key) do
