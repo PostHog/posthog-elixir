@@ -89,7 +89,8 @@ defmodule PostHog.Emails do
 
   An email carries at most 10 files and 40 MB after Base64 encoding, about 29 MB of files. The
   SDK checks both before any request of a send with files, counting each file and body as Base64
-  and the subject as 75 bytes per 42 started, as PostHog does.
+  and the subject as 75 bytes per 42 started, as PostHog does. Without `:text`, PostHog derives
+  the text from `:html` and counts it too, so the SDK counts the HTML twice.
 
   A send with files takes three steps:
 
@@ -100,6 +101,11 @@ defmodule PostHog.Emails do
      file PostHog already has, such as the same terms PDF sent to every customer, uploads
      nothing again.
   3. Once every upload succeeded, it sends the email, which names each file by its hash.
+
+  Uploads go only over https, so a file and its signed URL never travel unencrypted. When
+  PostHog names a plain-HTTP upload URL, the SDK uploads nothing, sends nothing, and returns
+  `api_error` on the attachment. An `:app_host` on plain HTTP, as in local development, allows
+  plain-HTTP uploads too.
 
   Your app must be able to reach the storage host that PostHog's answer names directly: an
   upload doesn't go through a proxy, and it ignores your app's `Req.default_options`, which are
@@ -366,10 +372,14 @@ defmodule PostHog.Emails do
   defp upload(connection, prepared) do
     max_retries = prepared.max_retries || connection.max_retries
 
-    with {:ok, uploads} <- ask_where_to_upload(connection, prepared.files, max_retries) do
+    with {:ok, uploads} <- ask_where_to_upload(connection, prepared.files, max_retries),
+         :ok <- Attachments.check_https(uploads, plain_http?(connection)) do
       put_files(connection, uploads, max_retries)
     end
   end
+
+  # An app that talks to PostHog over plain HTTP, as in local development, may upload over it.
+  defp plain_http?(connection), do: URI.parse(connection.app_host).scheme == "http"
 
   defp put_files(_connection, [], _max_retries), do: :ok
 
@@ -519,9 +529,17 @@ defmodule PostHog.Emails do
   defp attachments(options) do
     Attachments.prepare(
       Map.get(options, :attachments, []),
-      Enum.flat_map([:html, :text], &List.wrap(options[&1])),
+      bodies(options),
       Map.get(options, :subject) || ""
     )
+  end
+
+  # Without text, PostHog derives it from the HTML and counts it too. The derived text drops tags
+  # and shortens entities and links, so it is never longer than the HTML.
+  defp bodies(options) do
+    html = List.wrap(options[:html])
+    text = if options[:text] in [nil, ""], do: html, else: [options[:text]]
+    html ++ text
   end
 
   defp check_template_key(template_key) do

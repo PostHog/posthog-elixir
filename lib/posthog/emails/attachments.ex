@@ -68,6 +68,30 @@ defmodule PostHog.Emails.Attachments do
   end
 
   @doc """
+  Refuses the uploads when one would go over plain HTTP, unless `plain_http?` allows it. The
+  error names the attachment and holds no URL.
+  """
+  @spec check_https([{file(), upload()}], boolean()) :: :ok | {:error, Error.t()}
+  def check_https(_uploads, true), do: :ok
+
+  def check_https(uploads, false) do
+    case Enum.find(uploads, fn {_file, upload} -> URI.parse(upload.url).scheme != "https" end) do
+      nil ->
+        :ok
+
+      {file, _upload} ->
+        {:error,
+         Error.new(
+           "api_error",
+           "PostHog named an upload URL that isn't https, so #{file.filename} would travel unencrypted. No email was sent.",
+           field: file.field,
+           fix:
+             "Fix the file storage's URL in PostHog so it uses https. For local development over plain HTTP, set an http :app_host."
+         )}
+    end
+  end
+
+  @doc """
   Names the option a refusal of the upload request is about: `attachments`, or one of them.
   PostHog names the upload request's `files`, and the caller passed `attachments`. A refusal of
   the files without a field, such as a PostHog without the upload route, is about

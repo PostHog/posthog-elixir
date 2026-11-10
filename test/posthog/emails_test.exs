@@ -287,9 +287,17 @@ defmodule PostHog.EmailsTest.FakePostHog do
   end
 
   # PostHog's estimate of the sent message: each file and body as folded Base64, 64 KiB for
-  # headers and MIME boundaries, and the subject as 75 bytes per 42 started.
+  # headers and MIME boundaries, and the subject as 75 bytes per 42 started. Without a text body,
+  # PostHog derives one from the HTML, here by dropping its tags, and counts it too.
   defp message_bytes(email, files) do
-    bodies = for key <- ["html", "text"], body = email[key], is_binary(body), do: byte_size(body)
+    html = email["html"] || ""
+
+    text =
+      if email["text"] in [nil, ""],
+        do: String.replace(html, ~r/<[^>]*>/, ""),
+        else: email["text"]
+
+    bodies = [byte_size(html), byte_size(text)]
     sizes = for %{"sha256" => sha256} <- email["attachments"] || [], do: byte_size(files[sha256])
     subject = byte_size(email["subject"] || "")
 
@@ -801,8 +809,13 @@ defmodule PostHog.EmailsTest do
       assert sha == sha256(@pdf)
     end
 
-    # The installed Req's default adapter, over a real socket, as in production.
+    # The installed Req's default adapter, over a real socket, as in production. The local storage
+    # is plain HTTP, which an app on a plain-HTTP PostHog may upload to.
     @tag upload_adapter: :none
+    @tag config: [
+           api_client_module: PostHog.EmailsTest.ReqTestClient,
+           app_host: "http://localhost:8010"
+         ]
     test "uploads over HTTP with Req's default adapter", %{name: name, fake: fake} do
       {:ok, server} =
         start_supervised({Bandit, plug: {FakePostHog.Server, fake}, ip: :loopback, port: 0})
@@ -1185,6 +1198,56 @@ defmodule PostHog.EmailsTest do
                )
 
       assert [{_id, _email}] = FakePostHog.messages(fake)
+    end
+
+    # PostHog derives the text from the HTML and counts it too, never longer than the HTML.
+    test "counts the HTML twice without a text body", %{name: name, fake: fake} do
+      html = :binary.copy("a", 1_000_000)
+      files = [%{filename: "a.bin", content: :binary.copy(<<1>>, 28_000_000)}]
+      html_only = Keyword.put(with_files(files), :html, html)
+
+      assert {:error, %Error{code: "message_too_large", field: "attachments"}} =
+               Emails.send(name, html_only)
+
+      assert FakePostHog.received(fake, :uploads) == []
+
+      assert {:ok, %Emails.SendResult{}} = Emails.send(name, html_only ++ [text: "Thanks"])
+    end
+
+    test "uploads nothing to a plain-HTTP storage URL", %{name: name, fake: fake} do
+      FakePostHog.set_storage_url(fake, "http://files.example.com")
+
+      assert {:error, %Error{code: "api_error", field: "attachments__0"} = error} =
+               Emails.send(
+                 name,
+                 with_files([
+                   %{filename: "a.pdf", content: @pdf},
+                   %{filename: "logo.png", content: @logo}
+                 ])
+               )
+
+      assert error.message =~ "a.pdf"
+      assert error.fix =~ "https"
+      refute inspect(error) =~ "files.example.com"
+      assert FakePostHog.received(fake, :storage) == []
+      assert FakePostHog.messages(fake) == []
+    end
+
+    @tag config: [
+           api_client_module: PostHog.EmailsTest.ReqTestClient,
+           app_host: "http://localhost:8010"
+         ]
+    test "uploads over plain HTTP when the app talks to PostHog over plain HTTP", %{
+      name: name,
+      fake: fake
+    } do
+      FakePostHog.set_storage_url(fake, "http://localhost:9000")
+
+      assert {:ok, %Emails.SendResult{id: id}} =
+               Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+
+      assert FakePostHog.files(fake) == %{sha256(@pdf) => @pdf}
+      assert [{^id, _email}] = FakePostHog.messages(fake)
     end
 
     test "leaves the size of an email without files to PostHog", %{test: test, fake: fake} do
@@ -2048,6 +2111,8 @@ defmodule PostHog.EmailsReqDefaultsTest do
         api_host: "https://us.i.posthog.com",
         api_key: "phc_project_key",
         secret_key: "phs_secret_key",
+        # The local storage is plain HTTP, which an app on a plain-HTTP PostHog may upload to.
+        app_host: "http://localhost:8010",
         api_client_module: PostHog.EmailsTest.ReqTestClient,
         supervisor_name: context.test,
         enable_local_evaluation: false
