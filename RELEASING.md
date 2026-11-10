@@ -43,7 +43,7 @@ All releases require approval from the Client Libraries team via the `Release` G
 
 ### Failed or cancelled release
 
-The independent [release failure notification workflow](.github/workflows/release-failure-notification.yml) checks every completed main-branch release attempt and alerts if a job failed, timed out, or was cancelled. This includes runner startup failures and cancellations with job records. It also alerts when the run failed without a failed job and the "Release and publish" job never ran. Once the "Release and publish" job succeeds, alerts describe follow-up problems rather than claiming the release failed, for example when the released Slack notification was skipped.
+The independent [release failure notification workflow](.github/workflows/release-failure-notification.yml) checks every completed main-branch release attempt and alerts if a job failed, timed out, or was cancelled. It only acts on runs that a push or a manual dispatch started in this repository. This includes runner startup failures and cancellations with job records. It also alerts when the run failed without a failed job and the "Release and publish" job never ran. Once the "Release and publish" job succeeds, alerts describe follow-up problems rather than claiming the release failed, for example when the released Slack notification was skipped.
 
 Cancelled runs with no jobs are ignored, including superseded queued runs and manual cancellations before any job is created. A rejected approval fails the "Release and publish" job, so it also posts an alert.
 
