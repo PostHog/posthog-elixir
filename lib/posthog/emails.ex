@@ -145,6 +145,7 @@ defmodule PostHog.Emails do
                    :text,
                    :from,
                    :reply_to,
+                   :sensitive,
                    :tracking,
                    :capture_engagement
                  ]
@@ -179,13 +180,18 @@ defmodule PostHog.Emails do
   - `:from` - a verified sender, such as `"Acme <security@example.com>"`. Without it, the
     project's default sender.
   - `:reply_to` - one address or a list of addresses.
+  - `:sensitive` - `true` when the email carries login links, reset tokens or codes. A sensitive
+    email keeps its links unchanged unless `:tracking` turns clicks on, leaves its subject off
+    engagement events, and keeps its content out of logs. Left out, the email takes the setting of
+    the template made in PostHog whose key matches `:template_key`, and is sensitive when no
+    template matches. Sent only when you set it, and needs a PostHog version that takes it.
   - `:tracking` - what PostHog tracks for the email. Left out, PostHog counts opens and captures
-    engagement events, and doesn't track clicks. `true` turns on opens, clicks and engagement
-    events. `false` turns them all off: the email has no open pixel and no rewritten links, and
-    PostHog captures no engagement events for it. A map such as `%{clicks: true}` sets `:opens`
-    (default `true`), `:clicks` (default `false`) and `:engagement` (default `true`) one by one.
-    Clicks are off by default because PostHog can't tell whether an email's links carry login or
-    reset tokens: turn them on only when the links are safe to rewrite. Click tracking needs open
+    engagement events, and tracks clicks only when the email isn't sensitive. `true` turns on
+    opens, clicks and engagement events, even for a sensitive email. `false` turns them all off:
+    the email has no open pixel and no rewritten links, and PostHog captures no engagement events
+    for it. A map such as `%{clicks: true}` sets `:opens` (default `true`), `:clicks` (default: on
+    unless the email is sensitive) and `:engagement` (default `true`) one by one. Turn clicks on
+    for a sensitive email only when its links are safe to rewrite. Click tracking needs open
     tracking. A project whose admin turned engagement capture off captures nothing, whatever the
     send says. Sent only when you set it, and needs a PostHog version that takes it.
   - `:capture_engagement` - deprecated: use `tracking: %{engagement: false}` instead. Whether
@@ -207,6 +213,7 @@ defmodule PostHog.Emails do
           | {:text, String.t() | nil}
           | {:from, String.t() | nil}
           | {:reply_to, String.t() | [String.t()] | nil}
+          | {:sensitive, boolean() | nil}
           | {:tracking, tracking() | nil}
           | {:capture_engagement, boolean() | nil}
 
@@ -386,7 +393,8 @@ defmodule PostHog.Emails do
          :html,
          :text,
          :from,
-         :capture_engagement
+         :capture_engagement,
+         :sensitive
        ])
        |> put_tracking(options)
        |> put_reply_to(options)}
@@ -441,6 +449,9 @@ defmodule PostHog.Emails do
 
       not is_boolean(Map.get(options, :capture_engagement, true)) ->
         invalid("invalid_form", "capture_engagement must be true or false.", "capture_engagement")
+
+      not is_boolean(Map.get(options, :sensitive, true)) ->
+        invalid("invalid_form", "sensitive must be true or false.", "sensitive")
 
       not tracking?(Map.get(options, :tracking, true)) ->
         invalid(
@@ -504,7 +515,7 @@ defmodule PostHog.Emails do
       {why, how} =
         case form do
           :template ->
-            {"A template made in PostHog sets its own sender, subject, content and tracking, and follows the project's engagement setting.",
+            {"A template made in PostHog sets its own sender, subject, content, tracking and sensitive setting, and follows the project's engagement setting.",
              "send content from your code with template_key"}
 
           :code ->

@@ -121,7 +121,7 @@ defmodule PostHog.EmailsTest do
       refute Map.has_key?(sent_body(), "distinct_id")
     end
 
-    for {field, value} <- [subject: "Hi", tracking: false] do
+    for {field, value} <- [subject: "Hi", tracking: false, sensitive: true] do
       test "refuses the code form field #{field}", %{name: name} do
         field_name = Atom.to_string(unquote(field))
 
@@ -253,6 +253,31 @@ defmodule PostHog.EmailsTest do
       end
     end
 
+    for sensitive <- [true, false] do
+      test "sends sensitive #{sensitive} next to the tracking the caller set", %{name: name} do
+        expect_reply(accepted())
+
+        assert {:ok, _} =
+                 Emails.send(name,
+                   to: "user@example.com",
+                   template_key: "receipt",
+                   subject: "Your receipt",
+                   text: "Thanks",
+                   sensitive: unquote(sensitive),
+                   tracking: %{clicks: false}
+                 )
+
+        assert sent_body() == %{
+                 "to" => "user@example.com",
+                 "template_key" => "receipt",
+                 "subject" => "Your receipt",
+                 "text" => "Thanks",
+                 "sensitive" => unquote(sensitive),
+                 "tracking" => %{"clicks" => false}
+               }
+      end
+    end
+
     test "sends capture_engagement next to tracking when the caller sets both", %{name: name} do
       expect_reply(accepted())
 
@@ -324,6 +349,7 @@ defmodule PostHog.EmailsTest do
 
     for {field, value} <- [
           capture_engagement: "yes",
+          sensitive: "yes",
           tracking: "yes",
           tracking: quote(do: %{clicks: "yes"})
         ] do
