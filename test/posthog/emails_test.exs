@@ -23,12 +23,15 @@ defmodule PostHog.EmailsTest.FakeSendEndpoint do
   @category_keys ~w(key type name description)
   @message_id "01a18356-c56c-0001-e494-7666bc915188"
 
-  # `templates` maps a template_key to the key of its template's category, or nil for a template
-  # with no category.
-  def start(req_test_name, categories \\ %{}, templates \\ %{}) do
+  def start(req_test_name, categories \\ %{}, template_category_keys \\ %{}) do
     {:ok, store} =
       Agent.start_link(fn ->
-        %{categories: categories, templates: templates, sends: 0, queued: []}
+        %{
+          categories: categories,
+          template_category_keys: template_category_keys,
+          sends: 0,
+          queued: []
+        }
       end)
 
     Req.Test.stub(req_test_name, &serve(&1, store))
@@ -54,7 +57,7 @@ defmodule PostHog.EmailsTest.FakeSendEndpoint do
 
   defp answer(body, store) do
     category = body["category"]
-    templates = Agent.get(store, & &1.templates)
+    template_category_keys = Agent.get(store, & &1.template_category_keys)
 
     cond do
       Map.keys(body) -- @code_keys != [] ->
@@ -63,8 +66,8 @@ defmodule PostHog.EmailsTest.FakeSendEndpoint do
       category not in [nil, "transactional"] and not well_formed?(category) ->
         refuse("invalid_input", "category")
 
-      Map.has_key?(templates, body["template_key"]) ->
-        send_for_template(store, body, templates)
+      Map.has_key?(template_category_keys, body["template_key"]) ->
+        send_for_template(store, body, template_category_keys)
 
       category in [nil, "transactional"] ->
         queue(store, nil)
@@ -74,8 +77,8 @@ defmodule PostHog.EmailsTest.FakeSendEndpoint do
     end
   end
 
-  defp send_for_template(store, %{"template_key" => template_key} = body, templates) do
-    key = templates[template_key]
+  defp send_for_template(store, %{"template_key" => template_key} = body, template_category_keys) do
+    key = template_category_keys[template_key]
     category = body["category"]
 
     matches? =
