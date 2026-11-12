@@ -1067,7 +1067,10 @@ defmodule PostHog.EmailsTest do
         description: "Monthly product news"
       }
 
-      assert {:ok, _} = send_with_category(name, newsletter, html: "<p>{{ unsubscribe_url }}</p>")
+      assert {:ok, _} =
+               send_with_category(name, newsletter,
+                 html: ~s(<a href="{{ unsubscribe_url }}">Unsubscribe</a>)
+               )
 
       assert FakeSendEndpoint.categories(store) == %{
                "newsletter" => %{
@@ -1076,6 +1079,15 @@ defmodule PostHog.EmailsTest do
                  "description" => "Monthly product news"
                }
              }
+    end
+
+    test "an empty description is created as empty", %{name: name} do
+      store = FakeSendEndpoint.start(__MODULE__.ReqTestClient)
+      receipts = %MessageCategory{key: "receipts", type: :transactional, name: "Receipts"}
+
+      assert {:ok, _} = send_with_category(name, %{receipts | description: ""})
+
+      assert FakeSendEndpoint.categories(store)["receipts"]["description"] == ""
     end
 
     test "a later send with the same key leaves the category as the first send created it", %{
@@ -1093,7 +1105,10 @@ defmodule PostHog.EmailsTest do
       renamed = %{newsletter | name: "Weekly digest", description: "Weekly product news"}
 
       for category <- [newsletter, renamed] do
-        assert {:ok, _} = send_with_category(name, category, html: "<p>{{ unsubscribe_url }}</p>")
+        assert {:ok, _} =
+                 send_with_category(name, category,
+                   html: ~s(<a href="{{ unsubscribe_url }}">Unsubscribe</a>)
+                 )
       end
 
       assert FakeSendEndpoint.queued(store) == ["newsletter", "newsletter"]
@@ -1123,7 +1138,7 @@ defmodule PostHog.EmailsTest do
                 field: "category"
               }} =
                send_with_category(name, %{receipts | type: :marketing},
-                 html: "<p>{{ unsubscribe_url }}</p>"
+                 html: ~s(<a href="{{ unsubscribe_url }}">Unsubscribe</a>)
                )
 
       assert FakeSendEndpoint.sends(store) == 2
@@ -1150,7 +1165,7 @@ defmodule PostHog.EmailsTest do
                      to: "user@example.com",
                      template_key: "november-digest",
                      subject: "What's new",
-                     html: "<p>{{ unsubscribe_url }}</p>"
+                     html: ~s(<a href="{{ unsubscribe_url }}">Unsubscribe</a>)
                    ] ++ options
                  )
       end
@@ -1174,7 +1189,7 @@ defmodule PostHog.EmailsTest do
                  to: "user@example.com",
                  template_key: "november-digest",
                  subject: "What's new",
-                 html: "<p>{{ unsubscribe_url }}</p>",
+                 html: ~s(<a href="{{ unsubscribe_url }}">Unsubscribe</a>),
                  category: Emails.transactional_category()
                )
 

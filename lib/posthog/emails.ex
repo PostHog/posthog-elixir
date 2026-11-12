@@ -132,7 +132,8 @@ defmodule PostHog.Emails do
     or `:template_key` names a template in another category. `transactional_category/0` for a
     template in a category is a mismatch too.
   - `too_many_categories` (400): the send would create a category past the project's limit.
-  - `unsubscribe_link_required` (400): a marketing email's content has no
+  - `unsubscribe_link_required` (400): a marketing email's `:html` has no link whose `href`
+    is `{{ unsubscribe_url }}`, or its `:text`, when it has no `:html`, has no
     `{{ unsubscribe_url }}`.
   - `copies_not_allowed` (400): a marketing email has cc or bcc recipients.
   - `recipient_opted_out` (422): the recipient opted out of the category or of all marketing.
@@ -249,12 +250,12 @@ defmodule PostHog.Emails do
     `transactional_category/0` with `category_mismatch`.
   - A `PostHog.Emails.MessageCategory` defines the category in code. PostHog creates it by key on
     the first send, and uses its name and description only then: a send never renames a
-    category or changes its description. A `:transactional`
-    category sends a transactional email filed under it. A `:marketing` category sends a
-    marketing email: PostHog refuses it with `recipient_opted_out` when the recipient opted out
-    of the category or of all marketing, and its `:html`, or its `:text` when it has no
-    `:html`, must contain `{{ unsubscribe_url }}`, which PostHog replaces with the recipient's
-    preferences link.
+    category or changes its description. A `:transactional` category sends a transactional
+    email filed under it. A `:marketing` category sends a marketing email: PostHog refuses it
+    with `recipient_opted_out` when the recipient opted out of the category or of all
+    marketing. Its `:html` must link to `{{ unsubscribe_url }}` as an `href`, or its `:text`,
+    when it has no `:html`, must contain `{{ unsubscribe_url }}`. PostHog replaces it with the
+    recipient's preferences link.
 
   A send with `:template_id` takes no `:category`: a template made in PostHog sends in the
   template's own category.
