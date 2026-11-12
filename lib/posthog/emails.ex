@@ -81,7 +81,8 @@ defmodule PostHog.Emails do
         distinct_id: "user_123"
       )
 
-  A template made in PostHog sends in the template's own category. See `t:category/0`.
+  A template made in PostHog is transactional and sends in its own category. PostHog refuses a
+  send for a template in a marketing category with `marketing_template`. See `t:category/0`.
 
   ## Where requests go
 
@@ -125,6 +126,8 @@ defmodule PostHog.Emails do
     nothing.
   - `client_closed`: the PostHog instance stopped while a call waited to retry, so the retry
     was not sent.
+  - `marketing_template` (400): the template that `:template_id` or `:template_key` names is
+    in a marketing category. Templates made in PostHog are transactional.
 
   A send with `:category` can also return:
 
@@ -132,10 +135,10 @@ defmodule PostHog.Emails do
     or `:template_key` names a template in another category. `transactional_category/0` for a
     template in a category is a mismatch too.
   - `too_many_categories` (400): the send would create a category past the project's limit.
-  - `unsubscribe_link_required` (400): a marketing email's `:html` has no link whose `href`
-    is `{{ unsubscribe_url }}`, or its `:text`, when it has no `:html`, has no
-    `{{ unsubscribe_url }}`.
-  - `copies_not_allowed` (400): a marketing email has cc or bcc recipients.
+  - `unsubscribe_link_required` (400): a marketing email from your code has no link whose
+    `href` is `{{ unsubscribe_url }}` in its `:html`, or no `{{ unsubscribe_url }}` in its
+    `:text` when it has no `:html`.
+  - `copies_not_allowed` (400): a marketing email from your code has cc or bcc recipients.
   - `recipient_opted_out` (422): the recipient opted out of the category or of all marketing.
 
   An option the SDK refuses returns an error with an `invalid_*` code, such as
@@ -257,8 +260,8 @@ defmodule PostHog.Emails do
     when it has no `:html`, must contain `{{ unsubscribe_url }}`. PostHog replaces it with the
     recipient's preferences link.
 
-  A send with `:template_id` takes no `:category`: a template made in PostHog sends in the
-  template's own category.
+  A send with `:template_id` takes no `:category`: a template made in PostHog is
+  transactional and sends in its own category.
   """
   @type category() :: String.t() | MessageCategory.t()
 

@@ -89,7 +89,11 @@ defmodule PostHog.EmailsTest.FakeSendEndpoint do
         _other -> false
       end
 
-    if matches?, do: queue(store, key), else: refuse("category_mismatch", "category")
+    cond do
+      key && categories(store)[key]["type"] == "marketing" -> refuse("marketing_template", nil)
+      matches? -> queue(store, key)
+      true -> refuse("category_mismatch", "category")
+    end
   end
 
   defp queue(store, key) do
@@ -196,11 +200,11 @@ defmodule PostHog.EmailsTest do
     )
   end
 
-  defp start_with_newsletter_template do
+  defp start_with_template(template_key, category_key, type) do
     FakeSendEndpoint.start(
       __MODULE__.ReqTestClient,
-      %{"newsletter" => %{"type" => "marketing", "name" => "Newsletter", "description" => nil}},
-      %{"november-digest" => "newsletter"}
+      %{category_key => %{"type" => type, "name" => category_key, "description" => nil}},
+      %{template_key => category_key}
     )
   end
 
@@ -1155,7 +1159,7 @@ defmodule PostHog.EmailsTest do
 
     test "a send for a template in a category follows its category when category is left out",
          %{name: name} do
-      store = start_with_newsletter_template()
+      store = start_with_template("order-receipt", "receipts", "transactional")
 
       for options <- [[], [category: nil]] do
         assert {:ok, _} =
@@ -1163,20 +1167,20 @@ defmodule PostHog.EmailsTest do
                    name,
                    [
                      to: "user@example.com",
-                     template_key: "november-digest",
-                     subject: "What's new",
-                     html: ~s(<a href="{{ unsubscribe_url }}">Unsubscribe</a>)
+                     template_key: "order-receipt",
+                     subject: "Your receipt",
+                     text: "Thanks"
                    ] ++ options
                  )
       end
 
-      assert FakeSendEndpoint.queued(store) == ["newsletter", "newsletter"]
+      assert FakeSendEndpoint.queued(store) == ["receipts", "receipts"]
     end
 
     test "the transactional shorthand for a template in a category is category_mismatch", %{
       name: name
     } do
-      store = start_with_newsletter_template()
+      store = start_with_template("order-receipt", "receipts", "transactional")
 
       assert {:error,
               %Error{
@@ -1187,10 +1191,25 @@ defmodule PostHog.EmailsTest do
               }} =
                Emails.send(name,
                  to: "user@example.com",
+                 template_key: "order-receipt",
+                 subject: "Your receipt",
+                 text: "Thanks",
+                 category: Emails.transactional_category()
+               )
+
+      assert FakeSendEndpoint.queued(store) == []
+    end
+
+    test "a send for a template in a marketing category is marketing_template", %{name: name} do
+      store = start_with_template("november-digest", "newsletter", "marketing")
+
+      assert {:error,
+              %Error{name: :validation_error, code: "marketing_template", status_code: 400}} =
+               Emails.send(name,
+                 to: "user@example.com",
                  template_key: "november-digest",
                  subject: "What's new",
-                 html: ~s(<a href="{{ unsubscribe_url }}">Unsubscribe</a>),
-                 category: Emails.transactional_category()
+                 html: ~s(<a href="{{ unsubscribe_url }}">Unsubscribe</a>)
                )
 
       assert FakeSendEndpoint.queued(store) == []
