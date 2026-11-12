@@ -121,14 +121,22 @@ defmodule PostHog.EmailsTest do
       refute Map.has_key?(sent_body(), "distinct_id")
     end
 
-    test "refuses a code form field", %{name: name} do
-      assert {:error,
-              %Error{code: "invalid_form", field: "subject", name: :validation_error} = error} =
-               Emails.send(name, to: "user@example.com", template_id: @template_id, subject: "Hi")
+    for {field, value} <- [subject: "Hi", tracking: false, sensitive: true] do
+      test "refuses the code form field #{field}", %{name: name} do
+        field_name = Atom.to_string(unquote(field))
 
-      assert error.fix =~ "template_key"
-      assert error.why =~ "template made in PostHog"
-      refute_requested()
+        assert {:error,
+                %Error{code: "invalid_form", field: ^field_name, name: :validation_error} = error} =
+                 Emails.send(
+                   name,
+                   [to: "user@example.com", template_id: @template_id] ++
+                     [{unquote(field), unquote(value)}]
+                 )
+
+        assert error.fix =~ "template_key"
+        assert error.why =~ "template made in PostHog"
+        refute_requested()
+      end
     end
 
     test "refuses a template ID that is not a UUID", %{name: name} do
@@ -162,7 +170,8 @@ defmodule PostHog.EmailsTest do
   end
 
   describe "send/2 with content from code" do
-    test "posts the rendered content with engagement capture on by default", %{name: name} do
+    test "posts the rendered content with engagement capture on and tracking left out by default",
+         %{name: name} do
       expect_reply(accepted())
 
       assert {:ok, %Emails.SendResult{id: @message_id}} =
@@ -185,8 +194,7 @@ defmodule PostHog.EmailsTest do
                "html" => "<p>Reset</p>",
                "text" => "Reset",
                "from" => "Acme <security@example.com>",
-               "reply_to" => ["support@example.com"],
-               "capture_engagement" => true
+               "reply_to" => ["support@example.com"]
              }
     end
 
@@ -212,6 +220,78 @@ defmodule PostHog.EmailsTest do
                "reply_to" => ["a@example.com", "b@example.com"],
                "capture_engagement" => false
              }
+    end
+
+    for {tracking, sent} <- [
+          {true, true},
+          {false, false},
+          {quote(do: %{clicks: true}), quote(do: %{"clicks" => true})},
+          {quote(do: %{opens: false, clicks: nil, engagement: false}),
+           quote(do: %{"opens" => false, "engagement" => false})},
+          {quote(do: %{}), quote(do: %{})}
+        ] do
+      test "sends tracking #{Macro.to_string(tracking)} alone",
+           %{name: name} do
+        expect_reply(accepted())
+
+        assert {:ok, _} =
+                 Emails.send(name,
+                   to: "user@example.com",
+                   template_key: "receipt",
+                   subject: "Your receipt",
+                   text: "Thanks",
+                   tracking: unquote(tracking)
+                 )
+
+        assert sent_body() == %{
+                 "to" => "user@example.com",
+                 "template_key" => "receipt",
+                 "subject" => "Your receipt",
+                 "text" => "Thanks",
+                 "tracking" => unquote(sent)
+               }
+      end
+    end
+
+    for sensitive <- [true, false] do
+      test "sends sensitive #{sensitive} next to the tracking the caller set", %{name: name} do
+        expect_reply(accepted())
+
+        assert {:ok, _} =
+                 Emails.send(name,
+                   to: "user@example.com",
+                   template_key: "receipt",
+                   subject: "Your receipt",
+                   text: "Thanks",
+                   sensitive: unquote(sensitive),
+                   tracking: %{clicks: false}
+                 )
+
+        assert sent_body() == %{
+                 "to" => "user@example.com",
+                 "template_key" => "receipt",
+                 "subject" => "Your receipt",
+                 "text" => "Thanks",
+                 "sensitive" => unquote(sensitive),
+                 "tracking" => %{"clicks" => false}
+               }
+      end
+    end
+
+    test "sends capture_engagement next to tracking when the caller sets both", %{name: name} do
+      expect_reply(accepted())
+
+      assert {:ok, _} =
+               Emails.send(name,
+                 to: "user@example.com",
+                 template_key: "receipt",
+                 subject: "Your receipt",
+                 text: "Thanks",
+                 tracking: true,
+                 capture_engagement: false
+               )
+
+      assert %{"tracking" => true, "capture_engagement" => false} = sent_body()
     end
 
     test "needs html, text or both", %{name: name} do
@@ -267,17 +347,25 @@ defmodule PostHog.EmailsTest do
       refute_requested()
     end
 
-    test "refuses a capture_engagement that is not a boolean", %{name: name} do
-      assert {:error, %Error{code: "invalid_form", field: "capture_engagement"}} =
-               Emails.send(name,
-                 to: "user@example.com",
-                 template_key: "receipt",
-                 subject: "Hi",
-                 html: "<p/>",
-                 capture_engagement: "yes"
-               )
+    for {field, value} <- [
+          capture_engagement: "yes",
+          sensitive: "yes",
+          tracking: "yes",
+          tracking: quote(do: %{clicks: "yes"})
+        ] do
+      test "refuses a #{field} of #{Macro.to_string(value)}", %{name: name} do
+        field = unquote(field)
+        field_name = Atom.to_string(field)
 
-      refute_requested()
+        assert {:error, %Error{code: "invalid_form", field: ^field_name}} =
+                 Emails.send(
+                   name,
+                   [to: "user@example.com", template_key: "receipt", subject: "Hi", html: "<p/>"] ++
+                     [{field, unquote(value)}]
+                 )
+
+        refute_requested()
+      end
     end
   end
 
