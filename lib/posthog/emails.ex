@@ -248,7 +248,8 @@ defmodule PostHog.Emails do
     template in a category: the email then follows that category, and PostHog refuses
     `transactional_category/0` with `category_mismatch`.
   - A `PostHog.Emails.MessageCategory` defines the category in code. PostHog creates it by key on
-    the first send, and updates its name and description when they change. A `:transactional`
+    the first send, and uses its name and description only then: a send never renames a
+    category or changes its description. A `:transactional`
     category sends a transactional email filed under it. A `:marketing` category sends a
     marketing email: PostHog refuses it with `recipient_opted_out` when the recipient opted out
     of the category or of all marketing, and its `:html`, or its `:text` when it has no

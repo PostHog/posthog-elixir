@@ -3,9 +3,10 @@ defmodule PostHog.Emails.MessageCategory do
   A message category that a send with `:template_key` defines in code.
 
   PostHog finds the category by `:key` and creates it when the project has none with that key,
-  so no category has to exist in PostHog first. A send that changes `:name` or `:description`
-  updates the category. A category whose key exists must keep its `:type`, or PostHog refuses
-  the send with `category_mismatch`.
+  or restores a deleted one, so no category has to exist in PostHog first. `:name` and
+  `:description` apply only when the send creates the category: a send never renames a category
+  or changes its description, so change them later in PostHog. A category whose key exists must
+  keep its `:type`, or PostHog refuses the send with `category_mismatch`.
 
   ## Fields
 
@@ -15,8 +16,8 @@ defmodule PostHog.Emails.MessageCategory do
     recipient's opt-outs; a transactional one skips them.
   - `:name` - the name recipients see on their preferences page, such as `"Newsletter"`.
     Required.
-  - `:description` - what the category sends, such as `"Monthly product news"`. Optional.
-    Left `nil`, the send keeps the category's current description; `""` clears it.
+  - `:description` - what the category sends, such as `"Monthly product news"`. Optional. It
+    applies only when the send creates the category.
 
   ## Examples
 

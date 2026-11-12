@@ -70,7 +70,7 @@ defmodule PostHog.EmailsTest.FakeSendEndpoint do
         queue(store, nil)
 
       true ->
-        upsert(store, category)
+        create_or_keep(store, category)
     end
   end
 
@@ -102,14 +102,14 @@ defmodule PostHog.EmailsTest.FakeSendEndpoint do
 
   defp well_formed?(_category), do: false
 
-  defp upsert(store, %{"key" => key, "type" => type} = category) do
+  defp create_or_keep(store, %{"key" => key, "type" => type} = category) do
     Agent.get_and_update(store, fn %{categories: categories} = state ->
       case categories[key] do
         %{"type" => stored} when stored != type ->
           {refuse("category_mismatch", "category"), state}
 
         stored ->
-          fields = Map.merge(stored || %{"description" => nil}, Map.delete(category, "key"))
+          fields = stored || Map.merge(%{"description" => nil}, Map.delete(category, "key"))
 
           {accept(),
            %{state | categories: Map.put(categories, key, fields), queued: [key | state.queued]}}
@@ -1075,18 +1075,33 @@ defmodule PostHog.EmailsTest do
              }
     end
 
-    test "an unset description keeps the stored one, and an empty one clears it", %{name: name} do
+    test "a later send with the same key leaves the category as the first send created it", %{
+      name: name
+    } do
       store = FakeSendEndpoint.start(__MODULE__.ReqTestClient)
-      receipts = %MessageCategory{key: "receipts", type: :transactional, name: "Receipts"}
 
-      for {description, stored} <- [
-            {"Order receipts", "Order receipts"},
-            {nil, "Order receipts"},
-            {"", ""}
-          ] do
-        assert {:ok, _} = send_with_category(name, %{receipts | description: description})
-        assert FakeSendEndpoint.categories(store)["receipts"]["description"] == stored
+      newsletter = %MessageCategory{
+        key: "newsletter",
+        type: :marketing,
+        name: "Newsletter",
+        description: "Monthly product news"
+      }
+
+      renamed = %{newsletter | name: "Weekly digest", description: "Weekly product news"}
+
+      for category <- [newsletter, renamed] do
+        assert {:ok, _} = send_with_category(name, category, html: "<p>{{ unsubscribe_url }}</p>")
       end
+
+      assert FakeSendEndpoint.queued(store) == ["newsletter", "newsletter"]
+
+      assert FakeSendEndpoint.categories(store) == %{
+               "newsletter" => %{
+                 "type" => "marketing",
+                 "name" => "Newsletter",
+                 "description" => "Monthly product news"
+               }
+             }
     end
 
     test "a category the server refuses comes back as a validation_error, not retried", %{
