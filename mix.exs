@@ -57,6 +57,7 @@ defmodule PostHog.MixProject do
         Emails: [
           PostHog.Emails,
           PostHog.Emails.Error,
+          PostHog.Emails.MessageCategory,
           PostHog.Emails.SendResult,
           PostHog.Emails.Status,
           PostHog.Emails.Warning

@@ -49,9 +49,9 @@ defmodule PostHog.Emails.Status do
     - `"bounced"` and `"complained"`: the recipient's mail provider reported them after delivery.
   - `:created_at` - when PostHog queued the email.
   - `:status_at` - when the email reached its current status.
-  - `:reason` - why a failed email was not sent, such as `"provider_error"` or
-    `"recipient_suppressed"`, or the bounce type of a bounced email: `"hard"`, `"soft"` or
-    `"unknown"`. `nil` otherwise.
+  - `:reason` - why a failed email was not sent, such as `"provider_error"`,
+    `"recipient_suppressed"` or `"recipient_opted_out"`, or the bounce type of a bounced email:
+    `"hard"`, `"soft"` or `"unknown"`. `nil` otherwise.
   """
 
   @typedoc "The status of a queued email."

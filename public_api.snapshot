@@ -112,6 +112,7 @@ PostHog.Emails
     get/2 doc: documented
     send/1 doc: none
     send/2 doc: documented
+    transactional_category/0 doc: documented
   macros:
     (none)
 
@@ -119,6 +120,13 @@ PostHog.Emails.Error
   module_doc: documented
   functions:
     new/2 doc: none
+  macros:
+    (none)
+
+PostHog.Emails.MessageCategory
+  module_doc: documented
+  functions:
+    (none)
   macros:
     (none)
 
