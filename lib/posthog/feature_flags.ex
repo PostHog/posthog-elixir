@@ -914,8 +914,16 @@ defmodule PostHog.FeatureFlags do
     end
   end
 
-  defp maybe_log_failed_flag_usage(true, name, distinct_id, key, response_body, groups) do
-    case get_in(response_body, ["flags", key]) do
+  defp maybe_log_failed_flag_usage(
+         true,
+         name,
+         distinct_id,
+         key,
+         %{"flags" => flags} = response_body,
+         groups
+       )
+       when is_map(flags) do
+    case Map.get(flags, key) do
       %{"failed" => true} = flag_data ->
         metadata = Map.get(flag_data, "metadata")
         flag_data = if is_map(metadata), do: flag_data, else: Map.delete(flag_data, "metadata")

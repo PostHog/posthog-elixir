@@ -766,6 +766,29 @@ defmodule PostHog.FeatureFlagsTest do
               }} = FeatureFlags.get_feature_flag_result("myflag", "foo")
     end
 
+    test "non-map flags envelopes preserve no-result outcomes without tracking" do
+      for flags <- ["bad", nil, false, 7, [], ["bad"]] do
+        body = %{"flags" => flags}
+
+        expect(API.Mock, :request, 3, fn _client, :post, "/flags", _opts ->
+          {:ok, %{status: 200, body: body}}
+        end)
+
+        assert {:ok, nil} =
+                 FeatureFlags.get_feature_flag_result("myflag", "foo", send_event: false)
+
+        assert {:ok, nil} = FeatureFlags.get_feature_flag_result("myflag", "foo")
+
+        assert {:error,
+                %PostHog.UnexpectedResponseError{
+                  response: ^body,
+                  message: "Feature flag myflag was not found in the response"
+                }} = FeatureFlags.check("myflag", "foo")
+
+        assert all_captured() == []
+      end
+    end
+
     test "treats malformed nested flag metadata as a missing result" do
       expect(API.Mock, :request, fn _client, _method, _url, _opts ->
         {:ok,
