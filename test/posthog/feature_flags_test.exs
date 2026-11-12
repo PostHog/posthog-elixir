@@ -14,6 +14,74 @@ defmodule PostHog.FeatureFlagsTest do
   setup :setup_supervisor
   setup :verify_on_exit!
 
+  describe "failed remote records" do
+    for error_bit <- [nil, false, true] do
+      @error_bit error_bit
+      test "failed values and payloads are absent with global errors #{inspect(error_bit)}" do
+        body = %{
+          "flags" => %{
+            "failed" => %{
+              "enabled" => false,
+              "variant" => "placeholder",
+              "failed" => true,
+              "metadata" => %{"id" => 42, "payload" => ~s({"bad":true})},
+              "reason" => %{"code" => "dependency_error"}
+            },
+            "disabled" => %{"enabled" => false, "failed" => false},
+            "healthy" => %{"enabled" => true}
+          },
+          "requestId" => "failed-request"
+        }
+
+        body =
+          if is_nil(@error_bit),
+            do: body,
+            else: Map.put(body, "errorsWhileComputingFlags", @error_bit)
+
+        expect(API.Mock, :request, 5, fn _client, :post, "/flags", _opts ->
+          {:ok, %{status: 200, body: body}}
+        end)
+
+        assert {:ok, nil} = FeatureFlags.get_feature_flag_result("failed", "foo")
+        assert {:ok, nil} = FeatureFlags.get_feature_flag_result("failed", "foo")
+        assert [event] = all_captured()
+        assert event.properties[:"$feature_flag_response"] == nil
+        assert event.properties[:"$feature_flag_id"] == 42
+        assert event.properties[:"$feature_flag_request_id"] == "failed-request"
+        assert event.properties[:"$feature_flag_reason"] == %{"code" => "dependency_error"}
+
+        assert event.properties[:"$feature_flag_error"] ==
+                 if(@error_bit == true,
+                   do: "errors_while_computing_flags,evaluation_failed",
+                   else: "evaluation_failed"
+                 )
+
+        refute Map.has_key?(event.properties, :"$feature_flag_payload")
+        refute Map.has_key?(PostHog.get_context(), "$feature/failed")
+
+        assert {:ok, nil} =
+                 FeatureFlags.get_feature_flag_result("failed", "suppressed", send_event: false)
+
+        assert [^event] = all_captured()
+
+        assert {:ok, %Result{enabled: false}} =
+                 FeatureFlags.get_feature_flag_result("disabled", "foo")
+
+        assert length(all_captured()) == 2
+        healthy = Enum.find(all_captured(), &(&1.properties[:"$feature_flag"] == "disabled"))
+        refute (healthy.properties[:"$feature_flag_error"] || "") =~ "evaluation_failed"
+
+        assert {:ok, snapshot} = FeatureFlags.evaluate_flags("foo")
+        assert Map.keys(snapshot.flags) |> Enum.sort() == ["disabled", "healthy"]
+
+        refute Map.has_key?(
+                 FeatureFlags.Evaluations.event_properties(snapshot),
+                 "$feature/failed"
+               )
+      end
+    end
+  end
+
   describe "flags/2" do
     test "returns body on success" do
       expect(API.Mock, :request, fn _client, method, url, opts ->
@@ -712,6 +780,57 @@ defmodule PostHog.FeatureFlagsTest do
       end)
 
       assert {:ok, nil} = FeatureFlags.get_feature_flag_result("myflag", "foo")
+    end
+
+    for error_bit <- [nil, false, true] do
+      @malformed_error_bit error_bit
+      test "failed malformed nested metadata returns no result and tracks failure with global errors #{inspect(error_bit)}" do
+        body = %{
+          "flags" => %{
+            "myflag" => %{
+              "enabled" => false,
+              "variant" => "placeholder",
+              "failed" => true,
+              "metadata" => "bad",
+              "reason" => %{"code" => "dependency_error"}
+            }
+          },
+          "requestId" => "malformed-failure"
+        }
+
+        body =
+          if is_nil(@malformed_error_bit),
+            do: body,
+            else: Map.put(body, "errorsWhileComputingFlags", @malformed_error_bit)
+
+        expect(API.Mock, :request, 4, fn _client, :post, "/flags", _opts ->
+          {:ok, %{status: 200, body: body}}
+        end)
+
+        assert {:ok, nil} =
+                 FeatureFlags.get_feature_flag_result("myflag", "foo", send_event: false)
+
+        assert all_captured() == []
+        assert {:ok, nil} = FeatureFlags.get_feature_flag_result("myflag", "foo")
+        assert {:ok, nil} = FeatureFlags.get_feature_flag_result("myflag", "foo")
+        assert {:error, %PostHog.UnexpectedResponseError{}} = FeatureFlags.check("myflag", "foo")
+
+        assert [event] = all_captured()
+        assert event.properties[:"$feature_flag_response"] == nil
+        assert event.properties[:"$feature_flag_reason"] == %{"code" => "dependency_error"}
+        assert event.properties[:"$feature_flag_request_id"] == "malformed-failure"
+
+        assert event.properties[:"$feature_flag_error"] ==
+                 if(@malformed_error_bit == true,
+                   do: "errors_while_computing_flags,evaluation_failed",
+                   else: "evaluation_failed"
+                 )
+
+        refute Map.has_key?(event.properties, :"$feature_flag_payload")
+        refute Map.has_key?(event.properties, :"$feature_flag_id")
+        refute Map.has_key?(event.properties, :"$feature_flag_version")
+        refute Map.has_key?(PostHog.get_context(), "$feature/myflag")
+      end
     end
 
     test "returns disabled result when flag not enabled" do
