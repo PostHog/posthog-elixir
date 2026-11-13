@@ -411,15 +411,16 @@ defmodule PostHog.FeatureFlags do
         )
 
         merged = Map.merge(remote_results, local.results)
+        failed_keys = for {key, %{"failed" => true}} <- scoped_remote_flags, do: key
 
         if malformed? and map_size(merged) == 0 do
           remote_failure_result(name, distinct_id, local, body, invalid_flags_response())
         else
-          # A returned record, including one with `failed: true`, resolves the flag.
+          # Preserve snapshot unresolved classification without serving failed values.
           metadata =
             Map.merge(response_body, %{
               groups: evaluation_groups(body),
-              unresolved_flags: Map.drop(local.reasons, Map.keys(merged))
+              unresolved_flags: Map.drop(local.reasons, Map.keys(merged) ++ failed_keys)
             })
 
           {:ok, __MODULE__.Evaluations.from_results(name, distinct_id, merged, metadata)}
@@ -450,6 +451,7 @@ defmodule PostHog.FeatureFlags do
       {key, flag_data}, {results, malformed?} ->
         case build_result_safely(key, flag_data, response_body) do
           {:ok, result} -> {Map.put(results, key, result), malformed?}
+          :failed -> {results, malformed?}
           :error -> {results, true}
         end
 
@@ -457,6 +459,9 @@ defmodule PostHog.FeatureFlags do
         {results, true}
     end)
   end
+
+  defp build_result_safely(key, %{"failed" => true}, _response_body) when is_binary(key),
+    do: :failed
 
   defp build_result_safely(key, flag_data, response_body)
        when is_binary(key) and is_map(flag_data) do
@@ -845,6 +850,15 @@ defmodule PostHog.FeatureFlags do
             {:ok, result, response_body}
 
           {:ok, nil, response_body} ->
+            maybe_log_failed_flag_usage(
+              send_event,
+              name,
+              distinct_id,
+              flag_name,
+              response_body,
+              evaluation_groups(body)
+            )
+
             {:ok, nil, response_body}
 
           {:error, reason} ->
@@ -895,9 +909,35 @@ defmodule PostHog.FeatureFlags do
   defp single_remote_result(flag_name, flag_data, response_body) do
     case build_result_safely(flag_name, flag_data, response_body) do
       {:ok, result} -> {:ok, result, response_body}
+      :failed -> {:ok, nil, response_body}
       :error -> {:ok, nil, response_body}
     end
   end
+
+  defp maybe_log_failed_flag_usage(
+         true,
+         name,
+         distinct_id,
+         key,
+         %{"flags" => flags} = response_body,
+         groups
+       )
+       when is_map(flags) do
+    case Map.get(flags, key) do
+      %{"failed" => true} = flag_data ->
+        metadata = Map.get(flag_data, "metadata")
+        flag_data = if is_map(metadata), do: flag_data, else: Map.delete(flag_data, "metadata")
+        result = build_result(key, flag_data, response_body)
+        diagnostic = %{result | enabled: false, variant: nil, payload: nil}
+        log_feature_flag_usage(name, distinct_id, diagnostic, ["evaluation_failed"], groups)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp maybe_log_failed_flag_usage(_send_event, _name, _distinct_id, _key, _body, _groups),
+    do: :ok
 
   defp maybe_log_feature_flag_usage(send_event, name, distinct_id, flag_result, groups) do
     if send_event do
@@ -1050,10 +1090,13 @@ defmodule PostHog.FeatureFlags do
         groups
       )
       when is_list(extra_errors) and is_map(groups) do
-    flag_missing? =
-      Enum.any?(extra_errors, &(&1 in ["flag_missing", "local_evaluation_inconclusive"]))
+    value_unavailable? =
+      Enum.any?(
+        extra_errors,
+        &(&1 in ["flag_missing", "local_evaluation_inconclusive", "evaluation_failed"])
+      )
 
-    value = if flag_missing?, do: nil, else: __MODULE__.Result.value(result)
+    value = if value_unavailable?, do: nil, else: __MODULE__.Result.value(result)
     errors = build_error_codes(result, extra_errors)
 
     properties =
@@ -1078,7 +1121,7 @@ defmodule PostHog.FeatureFlags do
       capture_called_event(name, distinct_id, result, properties)
     end
 
-    if flag_missing? do
+    if value_unavailable? do
       :ok
     else
       PostHog.set_context(name, %{"$feature/#{result.key}" => value})
