@@ -179,6 +179,12 @@ defmodule PostHog.FeatureFlags do
       {:error, _} = error ->
         error
     end
+  rescue
+    # Finch raises, rather than returns, when no pooled connection frees up in time.
+    exception in RuntimeError ->
+      if String.starts_with?(exception.message, "Finch was unable to provide a connection"),
+        do: {:error, exception},
+        else: reraise(exception, __STACKTRACE__)
   end
 
   defp decode_remote_config_body(status, body) when is_binary(body) do

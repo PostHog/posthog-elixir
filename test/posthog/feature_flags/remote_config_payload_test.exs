@@ -173,6 +173,23 @@ defmodule PostHog.FeatureFlags.RemoteConfigPayloadTest do
     assert {:error, ^error} = FeatureFlags.get_remote_config_payload(name, "test-flag")
   end
 
+  test "returns an error when the connection pool checkout times out", %{test: name} do
+    expect(PostHog.API.Mock, :request, fn _client, :get, _url, _opts ->
+      raise "Finch was unable to provide a connection within the timeout due to excess queuing"
+    end)
+
+    assert {:error, %RuntimeError{message: "Finch was unable to provide a connection" <> _}} =
+             FeatureFlags.get_remote_config_payload(name, "test-flag")
+  end
+
+  test "does not rescue an unrelated error from the client", %{test: name} do
+    expect(PostHog.API.Mock, :request, fn _client, :get, _url, _opts -> raise "boom" end)
+
+    assert_raise RuntimeError, "boom", fn ->
+      FeatureFlags.get_remote_config_payload(name, "test-flag")
+    end
+  end
+
   test "does not capture any event", %{test: name} do
     respond(200, "{}")
 
