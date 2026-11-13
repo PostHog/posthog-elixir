@@ -99,6 +99,125 @@ defmodule PostHog.FeatureFlags do
     end
   end
 
+  @doc """
+  Fetches the payload of a remote config feature flag.
+
+  Calls PostHog's authenticated remote config endpoint for the project. Needs
+  `secret_key`. A project secret API key (`phs_`) returns an encrypted payload
+  redacted. Use a personal API key (`phx_`) to get an encrypted payload decrypted.
+
+  Each call makes one request. The SDK does not cache the payload and does not
+  retry the request. It does not send a `$feature_flag_called` event.
+
+  PostHog stores the payload as a JSON string. The SDK decodes a string payload
+  once more. If the string is not valid JSON, it returns the string unchanged.
+
+  Returns `{:ok, nil}` when the flag has no payload, which PostHog answers with
+  an empty response body. Returns `{:ok, nil}`, without a request, when the
+  instance is disabled or has no `api_key`. Returns `{:error, %PostHog.Error{}}` when `secret_key` is not
+  set or when `flag_key` is empty, `.`, or `..`. Returns
+  `{:error, %PostHog.UnexpectedResponseError{}}` when PostHog answers with a
+  status other than 2xx or with a response body that is not JSON, and
+  `{:error, exception}` when the request fails. A custom `api_client_module`
+  decodes the response body itself, so the SDK cannot detect a body that is not
+  JSON there.
+
+  ## Examples
+
+      {:ok, config} = PostHog.FeatureFlags.get_remote_config_payload("landing-page-config")
+
+  Through a named PostHog instance:
+
+      PostHog.FeatureFlags.get_remote_config_payload(MyPostHog, "landing-page-config")
+  """
+  @spec get_remote_config_payload(PostHog.supervisor_name(), String.t()) ::
+          {:ok, term()} | {:error, Exception.t()}
+  def get_remote_config_payload(name \\ PostHog, flag_key) when is_binary(flag_key) do
+    case PostHog.config(name) do
+      %{enabled: true, api_client: %PostHog.API.Client{} = client, api_key: api_key} ->
+        with {:ok, secret_key} <- fetch_secret_key(name),
+             :ok <- validate_flag_key(flag_key) do
+          request_remote_config_payload(client, api_key, secret_key, flag_key)
+        end
+
+      _disabled ->
+        {:ok, nil}
+    end
+  end
+
+  defp fetch_secret_key(name) do
+    case PostHog.Registry.secret_key(name) do
+      %PostHog.Config.Secret{} = secret_key ->
+        {:ok, secret_key}
+
+      nil ->
+        {:error,
+         %PostHog.Error{message: "get_remote_config_payload requires the secret_key option"}}
+    end
+  end
+
+  defp validate_flag_key(flag_key) when flag_key in ["", ".", ".."] do
+    {:error,
+     %PostHog.Error{
+       message:
+         "get_remote_config_payload requires a flag key that is not empty, \".\", or \"..\""
+     }}
+  end
+
+  defp validate_flag_key(_flag_key), do: :ok
+
+  defp request_remote_config_payload(client, api_key, secret_key, flag_key) do
+    case PostHog.API.remote_config_payload(client, api_key, secret_key, flag_key) do
+      {:ok, %{status: status, body: body}, body_format} when status in 200..299 ->
+        decode_remote_config_body(body_format, status, body)
+
+      {:ok, %{status: status, body: body}, body_format} ->
+        body = if body_format == :raw, do: normalize_payload(body), else: body
+
+        {:error,
+         %PostHog.UnexpectedResponseError{
+           response: %{status: status, body: body},
+           message: "Unexpected response status from the remote config endpoint"
+         }}
+
+      {:error, _} = error ->
+        error
+    end
+  rescue
+    # Finch raises, rather than returns, when no pooled connection frees up in time.
+    exception in RuntimeError ->
+      if String.starts_with?(exception.message, "Finch was unable to provide a connection"),
+        do: {:error, exception},
+        else: reraise(exception, __STACKTRACE__)
+  end
+
+  # A `:raw` body is the response bytes, which hold the stored payload as a JSON string.
+  # A `:decoded` body is that stored payload already.
+  defp decode_remote_config_body(body_format, status, body) when is_binary(body) do
+    cond do
+      String.trim(body) == "" ->
+        {:ok, nil}
+
+      body_format == :decoded ->
+        {:ok, normalize_payload(body)}
+
+      true ->
+        case Jason.decode(body) do
+          {:ok, decoded} ->
+            {:ok, normalize_payload(decoded)}
+
+          {:error, _} ->
+            {:error,
+             %PostHog.UnexpectedResponseError{
+               response: %{status: status, body: body},
+               message: "Expected a JSON response body"
+             }}
+        end
+    end
+  end
+
+  defp decode_remote_config_body(_body_format, _status, body), do: {:ok, body}
+
   @doc false
   def evaluate_flags(nil), do: evaluate_flags(PostHog, nil)
 
