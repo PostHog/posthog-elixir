@@ -15,6 +15,430 @@ defmodule PostHog.EmailsTest.ReqTestClient do
   defdelegate request(client, method, url, opts), to: Client
 end
 
+defmodule PostHog.EmailsTest.HeaderedClient do
+  @moduledoc false
+  # The default client with Req.Test in place of the network, set up as an app might: its own
+  # authorization and an extra header on every request it makes.
+  @behaviour PostHog.API.Client
+
+  alias PostHog.API.Client
+
+  @impl true
+  def client(api_key, api_host) do
+    default = Client.client(api_key, api_host)
+
+    client =
+      Req.merge(default.client,
+        plug: {Req.Test, PostHog.EmailsTest.ReqTestClient},
+        headers: [{"authorization", "Bearer client-token"}, {"x-client", "app"}]
+      )
+
+    %{default | client: client}
+  end
+
+  @impl true
+  defdelegate request(client, method, url, opts), to: Client
+end
+
+defmodule PostHog.EmailsTest.OtherHost do
+  @moduledoc false
+  # A host the storage redirects to. It tells the test about every request it gets.
+
+  def serve(conn, test) do
+    send(test, {:other_host, conn.method, conn.request_path})
+    Plug.Conn.send_resp(conn, 200, "")
+  end
+end
+
+defmodule PostHog.EmailsTest.FakePostHog do
+  @moduledoc false
+  # PostHog's email routes and its file storage as they behave, behind the SDK's real requests.
+  # The upload route signs an upload for each file PostHog doesn't have. The storage keeps a file
+  # only when its upload matches what was signed, as S3 checks a presigned PUT: the signed URL,
+  # the signed headers, no second credential or unsigned x-amz- header, and the bytes. The send
+  # route accepts an email only when PostHog has every file it names and the email fits PostHog's
+  # 40 MB estimate. A test reads back the stored files, the accepted emails and what the send route
+  # received, and can make a route's next request fail, wait or hold.
+  #
+  # The routes are :uploads and :send on PostHog, and :storage. Uploads are signed for
+  # https://files.example.com unless set_storage_url/2 names another host.
+
+  @secret_key "phs_secret_key"
+  @uploads_path "/api/projects/@current/messaging/attachments/uploads/"
+  @send_path "/api/projects/@current/messaging/send/email/"
+  @storage_url "https://files.example.com"
+  @max_body 64_000_000
+  @max_message_bytes 40_000_000
+  @signature "X-Amz-Signature=signed-secret"
+  @signed_headers ["content-length", "x-amz-checksum-sha256"]
+
+  @doc "Starts a fake for the calling test and routes the test's PostHog and storage requests to it."
+  def start! do
+    state = %{
+      test: self(),
+      storage_url: @storage_url,
+      files: %{},
+      signed: %{},
+      messages: [],
+      received: %{uploads: [], storage: [], send: []},
+      next: %{uploads: [], storage: [], send: []}
+    }
+
+    fake =
+      ExUnit.Callbacks.start_supervised!(%{
+        id: __MODULE__,
+        start: {Agent, :start_link, [fn -> state end]}
+      })
+
+    Req.Test.stub(PostHog.EmailsTest.ReqTestClient, &serve(&1, fake))
+    Req.Test.stub(PostHog.EmailsTest.Storage, &serve(&1, fake))
+    fake
+  end
+
+  @doc "Stores files, as an earlier email that uploaded them would have."
+  def put_files(fake, files) do
+    Agent.update(fake, fn state ->
+      %{state | files: Map.merge(state.files, Map.new(files, &{sha256(&1), &1}))}
+    end)
+  end
+
+  @doc "Deletes a stored file, as when it expires."
+  def delete_file(fake, bytes),
+    do: Agent.update(fake, &%{&1 | files: Map.delete(&1.files, sha256(bytes))})
+
+  @doc "Signs later uploads for the storage at `url`."
+  def set_storage_url(fake, url), do: Agent.update(fake, &%{&1 | storage_url: url})
+
+  @doc """
+  Answers the route's next request with `reply` instead: `{status, json}` on PostHog's routes,
+  and `{status, s3_code, s3_message}` or a transport error's reason, such as `:econnrefused`, on
+  the storage. `{status, s3_code, s3_message, :endless}` follows the storage's error with
+  padding that doesn't end until the client stops reading, a little every 10 ms.
+  `{:redirect, status, location}` redirects the storage's next request to `location`.
+  """
+  def fail_next(fake, route, reply), do: script(fake, route, {:reply, reply})
+
+  @doc "Makes the route take `ms` longer to answer its next request."
+  def delay_next(fake, route, ms), do: script(fake, route, {:delay, ms})
+
+  @doc """
+  Holds the route's next request before it answers: the test gets `{:held, route, pid}`, and the
+  route answers once the test sends `:release` to `pid`.
+  """
+  def hold_next(fake, route), do: script(fake, route, :hold)
+
+  @doc "The stored files, by their hex SHA-256."
+  def files(fake), do: Agent.get(fake, & &1.files)
+
+  @doc "The accepted emails as `{message_id, email}`, oldest first."
+  def messages(fake), do: Agent.get(fake, &Enum.reverse(&1.messages))
+
+  @doc """
+  What the route received, oldest first: the JSON body on PostHog's routes, and the method,
+  path, query, headers and body on the storage.
+  """
+  def received(fake, route), do: Agent.get(fake, &Enum.reverse(&1.received[route]))
+
+  @doc "The answer PostHog gives for a file it doesn't have, signed for the default storage."
+  def upload_slot(bytes), do: upload_slot(@storage_url, sha256(bytes), byte_size(bytes))
+
+  defp upload_slot(storage_url, sha256, size) do
+    %{
+      "sha256" => sha256,
+      "status" => "upload",
+      "url" => "#{storage_url}/team/1/#{sha256}?#{@signature}",
+      "method" => "PUT",
+      "headers" => %{
+        "Content-Length" => to_string(size),
+        "x-amz-checksum-sha256" => checksum(sha256)
+      },
+      "url_expires_at" => "2026-11-09T10:15:00Z"
+    }
+  end
+
+  @doc "Serves PostHog and the storage, as a function plug for a real socket."
+  def serve(conn, fake) do
+    case conn.request_path do
+      @uploads_path -> posthog(conn, :uploads, fake)
+      @send_path -> posthog(conn, :send, fake)
+      "/api/" <> _other -> json(conn, 404, refusal("not_found", "Not found.", nil))
+      _storage -> storage(conn, fake)
+    end
+  end
+
+  defp script(fake, route, step),
+    do: Agent.update(fake, &update_in(&1.next[route], fn steps -> steps ++ [step] end))
+
+  # Records what the route received and takes its next scripted step, if any.
+  defp receive_request(fake, route, request) do
+    Agent.get_and_update(fake, fn state ->
+      {step, steps} =
+        case state.next[route] do
+          [step | steps] -> {step, steps}
+          [] -> {:answer, []}
+        end
+
+      state = update_in(state.received[route], &[request | &1])
+      {{step, state.test}, put_in(state.next[route], steps)}
+    end)
+  end
+
+  defp run_step({:delay, ms}, _route, _test), do: Process.sleep(ms)
+
+  defp run_step(:hold, route, test) do
+    send(test, {:held, route, self()})
+
+    receive do
+      :release -> :ok
+    end
+  end
+
+  defp run_step(:answer, _route, _test), do: :ok
+
+  # PostHog
+
+  defp posthog(conn, route, fake) do
+    {:ok, body, conn} = Plug.Conn.read_body(conn, length: @max_body)
+    request = Jason.decode!(body)
+
+    case receive_request(fake, route, request) do
+      {{:reply, {status, reply}}, _test} ->
+        json(conn, status, reply)
+
+      {step, test} ->
+        run_step(step, route, test)
+        answer(conn, route, request, fake)
+    end
+  end
+
+  defp answer(conn, route, request, fake) do
+    cond do
+      Plug.Conn.get_req_header(conn, "authorization") != ["Bearer #{@secret_key}"] ->
+        json(conn, 401, refusal("authentication_failed", "Invalid secret API key.", nil))
+
+      route == :uploads ->
+        sign_uploads(conn, request, fake)
+
+      true ->
+        accept(conn, request, fake)
+    end
+  end
+
+  defp sign_uploads(conn, %{"files" => files}, fake) when is_list(files) do
+    answers =
+      Agent.get_and_update(
+        fake,
+        &Enum.map_reduce(files, &1, fn file, state -> sign(file, state) end)
+      )
+
+    json(conn, 200, %{"files" => answers})
+  end
+
+  defp sign_uploads(conn, _request, _fake),
+    do: json(conn, 400, refusal("required", "This field is required.", "files"))
+
+  defp sign(%{"sha256" => sha256, "size" => size}, state) do
+    if Map.has_key?(state.files, sha256) do
+      {%{"sha256" => sha256, "status" => "present", "expires_at" => "2026-12-16T09:00:00Z"},
+       state}
+    else
+      slot = upload_slot(state.storage_url, sha256, size)
+      %URI{path: path, query: query} = URI.parse(slot["url"])
+      {slot, put_in(state.signed[path], %{sha256: sha256, size: size, query: query})}
+    end
+  end
+
+  defp accept(conn, email, fake) do
+    files = files(fake)
+
+    missing =
+      email
+      |> Map.get("attachments", [])
+      |> Enum.find_index(&(not Map.has_key?(files, &1["sha256"])))
+
+    if missing do
+      json(
+        conn,
+        400,
+        refusal(
+          "attachment_not_uploaded",
+          "A file this email names isn't uploaded, so PostHog didn't send the email.",
+          "attachments__#{missing}__sha256"
+        )
+      )
+    else
+      if message_bytes(email, files) > @max_message_bytes do
+        json(conn, 400, %{
+          "type" => "invalid_request",
+          "code" => "message_too_large",
+          "detail" => "This email is too large to send, so PostHog didn't send it.",
+          "attr" => nil
+        })
+      else
+        json(conn, 202, %{"message_id" => record_message(fake, email)})
+      end
+    end
+  end
+
+  # PostHog's estimate of the sent message: each file and body as folded Base64, 64 KiB for
+  # headers and MIME boundaries, and the subject as 75 bytes per 42 started. Without a text body,
+  # PostHog derives one from the HTML, here by dropping its tags, and counts it too.
+  defp message_bytes(email, files) do
+    html = email["html"] || ""
+
+    text =
+      if email["text"] in [nil, ""],
+        do: String.replace(html, ~r/<[^>]*>/, ""),
+        else: email["text"]
+
+    bodies = [byte_size(html), byte_size(text)]
+    sizes = for %{"sha256" => sha256} <- email["attachments"] || [], do: byte_size(files[sha256])
+    subject = byte_size(email["subject"] || "")
+
+    Enum.reduce(bodies ++ sizes, 64 * 1024 + div(subject + 41, 42) * 75, fn size, total ->
+      total + div(div(size + 2, 3) * 4 * 78 + 75, 76)
+    end)
+  end
+
+  defp record_message(fake, email) do
+    Agent.get_and_update(fake, fn state ->
+      number = state.messages |> length() |> Kernel.+(1) |> Integer.to_string()
+      id = "01a18356-c56c-0001-e494-" <> String.pad_leading(number, 12, "0")
+      {id, %{state | messages: [{id, email} | state.messages]}}
+    end)
+  end
+
+  defp refusal(code, detail, attr),
+    do: %{"type" => "validation_error", "code" => code, "detail" => detail, "attr" => attr}
+
+  defp json(conn, status, body) do
+    conn
+    |> Plug.Conn.put_resp_content_type("application/json")
+    |> Plug.Conn.send_resp(status, Jason.encode!(body))
+  end
+
+  # Storage
+
+  defp storage(conn, fake) do
+    {:ok, body, conn} = Plug.Conn.read_body(conn, length: @max_body)
+    headers = for {name, value} <- conn.req_headers, do: {String.downcase(name), value}
+
+    request = %{
+      method: conn.method,
+      path: conn.request_path,
+      query: conn.query_string,
+      headers: headers,
+      body: body
+    }
+
+    case receive_request(fake, :storage, request) do
+      {{:reply, {:redirect, status, location}}, _test} ->
+        conn
+        |> Plug.Conn.put_resp_header("location", location)
+        |> Plug.Conn.send_resp(status, "")
+
+      {{:reply, {status, code, message, :endless}}, _test} ->
+        endless_s3_error(conn, status, code, message)
+
+      {{:reply, {status, code, message}}, _test} ->
+        s3_error(conn, status, code, message)
+
+      {{:reply, reason}, _test} ->
+        Req.Test.transport_error(conn, reason)
+
+      {step, test} ->
+        run_step(step, :storage, test)
+        store(conn, request, fake)
+    end
+  end
+
+  defp store(conn, request, fake) do
+    signed = Agent.get(fake, & &1.signed[request.path])
+
+    cond do
+      request.method != "PUT" or signed == nil ->
+        s3_error(conn, 403, "AccessDenied", "Access Denied.")
+
+      List.keymember?(request.headers, "authorization", 0) ->
+        s3_error(conn, 400, "InvalidArgument", "Only one auth mechanism allowed.")
+
+      unsigned_amz_header?(request) ->
+        s3_error(
+          conn,
+          403,
+          "AccessDenied",
+          "There were headers present in the request which were not signed."
+        )
+
+      not signature_matches?(request, signed) ->
+        s3_error(conn, 403, "SignatureDoesNotMatch", "The request signature does not match.")
+
+      Base.encode64(:crypto.hash(:sha256, request.body)) != checksum(signed.sha256) ->
+        s3_error(conn, 400, "BadDigest", "The SHA256 you specified did not match.")
+
+      true ->
+        Agent.update(fake, &put_in(&1.files[signed.sha256], request.body))
+
+        Plug.Conn.send_resp(conn, 200, "")
+    end
+  end
+
+  # S3 ignores ordinary headers it wasn't asked to sign, but refuses an unsigned x-amz- one.
+  defp unsigned_amz_header?(request) do
+    Enum.any?(request.headers, fn {name, _value} ->
+      String.starts_with?(name, "x-amz-") and name not in @signed_headers
+    end)
+  end
+
+  defp signature_matches?(request, signed) do
+    request.query == signed.query and
+      header(request, "x-amz-checksum-sha256") == checksum(signed.sha256) and
+      header(request, "content-length") == to_string(signed.size)
+  end
+
+  defp header(request, name) do
+    case List.keyfind(request.headers, name, 0) do
+      {^name, value} -> value
+      nil -> nil
+    end
+  end
+
+  defp s3_error(conn, status, code, message) do
+    conn
+    |> Plug.Conn.put_resp_content_type("application/xml")
+    |> Plug.Conn.send_resp(status, s3_error_xml(code, message))
+  end
+
+  defp endless_s3_error(conn, status, code, message) do
+    conn =
+      conn
+      |> Plug.Conn.put_resp_content_type("application/xml")
+      |> Plug.Conn.send_chunked(status)
+
+    {:ok, conn} = Plug.Conn.chunk(conn, s3_error_xml(code, message))
+    pad(conn, :binary.copy(" ", 65_536), 3_000)
+  end
+
+  # Stops when the client closes the connection, or after 30 seconds.
+  defp pad(conn, _padding, 0), do: conn
+
+  defp pad(conn, padding, chunks_left) do
+    Process.sleep(10)
+
+    case Plug.Conn.chunk(conn, padding) do
+      {:ok, conn} -> pad(conn, padding, chunks_left - 1)
+      {:error, _closed} -> conn
+    end
+  end
+
+  defp s3_error_xml(code, message),
+    do:
+      ~s(<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>#{code}</Code><Message>#{message}</Message><Resource>/team/1/file</Resource></Error>)
+
+  defp sha256(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
+  defp checksum(sha256), do: sha256 |> Base.decode16!(case: :lower) |> Base.encode64()
+end
+
 defmodule PostHog.EmailsTest do
   use ExUnit.Case, async: true
 
@@ -24,6 +448,7 @@ defmodule PostHog.EmailsTest do
   alias PostHog.API
   alias PostHog.Emails
   alias PostHog.Emails.Error
+  alias PostHog.EmailsTest.FakePostHog
 
   setup :verify_on_exit!
 
@@ -50,6 +475,10 @@ defmodule PostHog.EmailsTest do
         send(test_pid, {:slept, ms})
         if context[:stop_instance_on_sleep], do: stop_supervised!(context.test)
       end)
+      |> Map.put(
+        :email_upload_adapter,
+        context[:upload_adapter] || {Req.Plug, plug: {Req.Test, PostHog.EmailsTest.Storage}}
+      )
 
     start_link_supervised!({PostHog.Supervisor, config})
     %{name: context.test}
@@ -369,6 +798,804 @@ defmodule PostHog.EmailsTest do
     end
   end
 
+  # What a refused send leaves behind at PostHog: no email and no file.
+  defp nothing_sent?(fake),
+    do: FakePostHog.messages(fake) == [] and FakePostHog.files(fake) == %{}
+
+  describe "send/2 with cc and bcc" do
+    @describetag config: [api_client_module: PostHog.EmailsTest.ReqTestClient]
+    @code_send [to: "user@example.com", template_key: "receipt", subject: "Hi", html: "<p/>"]
+
+    setup do
+      %{fake: FakePostHog.start!()}
+    end
+
+    test "PostHog gets the copies, a string as a one-item list", %{name: name, fake: fake} do
+      assert {:ok, %Emails.SendResult{id: id}} =
+               Emails.send(
+                 name,
+                 @code_send ++
+                   [cc: "finance@example.com", bcc: ["audit@example.com", "archive@example.com"]]
+               )
+
+      assert [{^id, email}] = FakePostHog.messages(fake)
+      assert email["cc"] == ["finance@example.com"]
+      assert email["bcc"] == ["audit@example.com", "archive@example.com"]
+    end
+
+    test "leaves out empty lists", %{name: name, fake: fake} do
+      assert {:ok, _} =
+               Emails.send(
+                 name,
+                 @code_send ++ [reply_to: [], cc: [], bcc: nil, attachments: []]
+               )
+
+      assert [{_id, email}] = FakePostHog.messages(fake)
+      refute Enum.any?(["reply_to", "cc", "bcc", "attachments"], &Map.has_key?(email, &1))
+    end
+
+    test "a template send refuses them and attachments, and sends nothing", %{
+      name: name,
+      fake: fake
+    } do
+      for {field, value} <- [
+            cc: "finance@example.com",
+            bcc: "audit@example.com",
+            attachments: [%{filename: "a.txt", content: "a"}]
+          ] do
+        assert {:error, %Error{code: "invalid_form", field: field_name} = error} =
+                 Emails.send(name, [
+                   {field, value},
+                   to: "user@example.com",
+                   template_id: @template_id
+                 ])
+
+        assert field_name == to_string(field)
+
+        assert error.why =~
+                 "sets its own sender, copies, subject, content, attachments, tracking and sensitive setting"
+
+        assert error.fix =~ "template_key"
+      end
+
+      assert nothing_sent?(fake)
+    end
+
+    test "refuses cc and bcc that are not addresses", %{name: name, fake: fake} do
+      for {field, value} <- [cc: [:nope], bcc: " ", cc: %{a: 1}] do
+        assert {:error, %Error{code: "invalid_form", field: field_name}} =
+                 Emails.send(name, @code_send ++ [{field, value}])
+
+        assert field_name == to_string(field)
+      end
+
+      assert nothing_sent?(fake)
+    end
+  end
+
+  describe "send/2 with attachments" do
+    @describetag config: [api_client_module: PostHog.EmailsTest.ReqTestClient]
+    @code_send [to: "user@example.com", template_key: "receipt", subject: "Hi", html: "<p/>"]
+    @pdf <<37, 80, 68, 70, 45, 0, 255, 10>>
+    @logo "png bytes"
+
+    setup do
+      %{fake: FakePostHog.start!()}
+    end
+
+    defp sha256(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
+
+    defp with_files(attachments), do: @code_send ++ [attachments: attachments]
+
+    test "uploads the files PostHog asks for, then sends their references", %{
+      name: name,
+      fake: fake
+    } do
+      FakePostHog.put_files(fake, [@logo])
+
+      assert {:ok, %Emails.SendResult{id: id}} =
+               Emails.send(
+                 name,
+                 with_files([
+                   %{filename: "invoice.pdf", content: @pdf, content_type: "application/pdf"},
+                   %{filename: "logo.png", content: @logo, content_id: "logo"}
+                 ])
+               )
+
+      assert FakePostHog.files(fake) == %{sha256(@pdf) => @pdf, sha256(@logo) => @logo}
+      assert [{^id, email}] = FakePostHog.messages(fake)
+
+      assert email["attachments"] == [
+               %{
+                 "sha256" => sha256(@pdf),
+                 "filename" => "invoice.pdf",
+                 "content_type" => "application/pdf"
+               },
+               %{"sha256" => sha256(@logo), "filename" => "logo.png", "content_id" => "logo"}
+             ]
+    end
+
+    # The storage refuses a second credential, such as the client's authorization.
+    @tag config: [api_client_module: PostHog.EmailsTest.HeaderedClient]
+    test "uploads with only the headers PostHog signed, not the client's", %{
+      name: name,
+      fake: fake
+    } do
+      assert {:ok, %Emails.SendResult{id: id}} =
+               Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+
+      assert FakePostHog.files(fake) == %{sha256(@pdf) => @pdf}
+      assert [{^id, %{"attachments" => [%{"sha256" => sha}]}}] = FakePostHog.messages(fake)
+      assert sha == sha256(@pdf)
+    end
+
+    # The installed Req's default adapter, over a real socket, as in production. The local storage
+    # is plain HTTP, which an app on a plain-HTTP PostHog may upload to.
+    @tag upload_adapter: :none
+    @tag config: [
+           api_client_module: PostHog.EmailsTest.ReqTestClient,
+           app_host: "http://localhost:8010"
+         ]
+    test "uploads over HTTP with Req's default adapter", %{name: name, fake: fake} do
+      {:ok, server} =
+        start_supervised({Bandit, plug: {&FakePostHog.serve/2, fake}, ip: :loopback, port: 0})
+
+      {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
+      FakePostHog.set_storage_url(fake, "http://127.0.0.1:#{port}")
+
+      assert {:ok, %Emails.SendResult{id: id}} =
+               Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+
+      assert FakePostHog.files(fake) == %{sha256(@pdf) => @pdf}
+      assert [{^id, _email}] = FakePostHog.messages(fake)
+    end
+
+    # PostHog answers present with no upload URL, so the file can only be sent by reference.
+    test "sends a file PostHog already has by reference", %{name: name, fake: fake} do
+      FakePostHog.put_files(fake, [@pdf])
+
+      assert {:ok, _} = Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+
+      assert FakePostHog.files(fake) == %{sha256(@pdf) => @pdf}
+      assert [{_id, %{"attachments" => [%{"sha256" => sha}]}}] = FakePostHog.messages(fake)
+      assert sha == sha256(@pdf)
+    end
+
+    test "sends a file attached twice as two references to one stored file", %{
+      name: name,
+      fake: fake
+    } do
+      assert {:ok, _} =
+               Emails.send(
+                 name,
+                 with_files([
+                   %{filename: "a.pdf", content: @pdf},
+                   %{filename: "copy.pdf", content: @pdf}
+                 ])
+               )
+
+      assert FakePostHog.files(fake) == %{sha256(@pdf) => @pdf}
+      assert [{_id, email}] = FakePostHog.messages(fake)
+
+      assert [
+               %{"sha256" => sha, "filename" => "a.pdf"},
+               %{"sha256" => sha, "filename" => "copy.pdf"}
+             ] =
+               email["attachments"]
+
+      assert sha == sha256(@pdf)
+    end
+
+    test "sends nothing after a failed upload, and returns the storage's answer", %{
+      name: name,
+      fake: fake
+    } do
+      FakePostHog.put_files(fake, [@logo])
+
+      FakePostHog.fail_next(
+        fake,
+        :storage,
+        {400, "BadDigest", "The SHA256 you specified did not match the calculated checksum."}
+      )
+
+      assert {:error, %Error{} = error} =
+               Emails.send(
+                 name,
+                 with_files([
+                   %{filename: "logo.png", content: @logo},
+                   %{filename: "invoice.pdf", content: @pdf}
+                 ])
+               )
+
+      assert %Error{
+               code: "attachment_upload_failed",
+               name: :application_error,
+               status_code: 400,
+               field: "attachments__1"
+             } = error
+
+      assert error.message =~ "invoice.pdf"
+      assert error.message =~ "files.example.com"
+      assert error.message =~ "BadDigest"
+      assert error.message =~ "did not match the calculated checksum."
+      refute error.message =~ ".."
+      assert error.why =~ "no email was sent"
+      refute inspect(error) =~ "signed-secret"
+      refute inspect(error) =~ @pdf
+
+      assert FakePostHog.files(fake) == %{sha256(@logo) => @logo}
+      assert FakePostHog.messages(fake) == []
+    end
+
+    @tag config: [
+           api_client_module: PostHog.EmailsTest.ReqTestClient,
+           email_request_max_retries: 4
+         ]
+    test "retries an upload the storage couldn't take, then sends", %{name: name, fake: fake} do
+      FakePostHog.fail_next(fake, :storage, {503, "SlowDown", "Please reduce your request rate."})
+      FakePostHog.fail_next(fake, :storage, {429, "TooManyRequests", "Please slow down."})
+
+      FakePostHog.fail_next(
+        fake,
+        :storage,
+        {500, "InternalError", "We encountered an internal error."}
+      )
+
+      FakePostHog.fail_next(fake, :storage, :closed)
+
+      assert {:ok, %Emails.SendResult{id: id}} =
+               Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+
+      assert FakePostHog.files(fake) == %{sha256(@pdf) => @pdf}
+      assert [{^id, _email}] = FakePostHog.messages(fake)
+    end
+
+    @tag config: [
+           api_client_module: PostHog.EmailsTest.ReqTestClient,
+           email_request_timeout_ms: 50
+         ]
+    test "gives an upload ten seconds per MB on top of the request timeout", %{
+      name: name,
+      fake: fake
+    } do
+      file = :binary.copy(<<1>>, 100_000)
+      # 100 KB at ten seconds per MB is 1 s on top of the 50 ms request timeout.
+      FakePostHog.delay_next(fake, :storage, 950)
+
+      assert {:ok, _} =
+               Emails.send(
+                 name,
+                 with_files([%{filename: "a.bin", content: file}]) ++ [max_retries: 0]
+               )
+
+      assert FakePostHog.files(fake) == %{sha256(file) => file}
+    end
+
+    @tag upload_adapter: :none
+    @tag config: [
+           api_client_module: PostHog.EmailsTest.ReqTestClient,
+           app_host: "http://localhost:8010"
+         ]
+    test "doesn't follow the storage's redirect with the file", %{name: name, fake: fake} do
+      {:ok, storage} =
+        start_supervised({Bandit, plug: {&FakePostHog.serve/2, fake}, ip: :loopback, port: 0})
+
+      {:ok, other_host} =
+        start_supervised(
+          Supervisor.child_spec(
+            {Bandit,
+             plug: {&PostHog.EmailsTest.OtherHost.serve/2, self()}, ip: :loopback, port: 0},
+            id: :other_host
+          )
+        )
+
+      {:ok, {_ip, storage_port}} = ThousandIsland.listener_info(storage)
+      {:ok, {_ip, other_port}} = ThousandIsland.listener_info(other_host)
+      FakePostHog.set_storage_url(fake, "http://127.0.0.1:#{storage_port}")
+      elsewhere = "http://127.0.0.1:#{other_port}/elsewhere"
+
+      for status <- [307, 308] do
+        FakePostHog.fail_next(fake, :storage, {:redirect, status, elsewhere})
+
+        assert {:error, %Error{code: "attachment_upload_failed", status_code: ^status} = error} =
+                 Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+
+        assert error.field == "attachments__0"
+        assert error.message =~ "a.pdf"
+        refute inspect(error) =~ "elsewhere"
+        refute inspect(error) =~ "signed-secret"
+        refute_received {:other_host, _method, _path}
+        assert nothing_sent?(fake)
+      end
+    end
+
+    # Reading the whole answer would outlast the upload's deadline of about a second.
+    @tag upload_adapter: :none
+    @tag config: [
+           api_client_module: PostHog.EmailsTest.ReqTestClient,
+           app_host: "http://localhost:8010",
+           email_request_timeout_ms: 1_000
+         ]
+    test "reads only the start of a storage answer that doesn't end", %{name: name, fake: fake} do
+      {:ok, server} =
+        start_supervised({Bandit, plug: {&FakePostHog.serve/2, fake}, ip: :loopback, port: 0})
+
+      {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
+      FakePostHog.set_storage_url(fake, "http://127.0.0.1:#{port}")
+
+      FakePostHog.fail_next(
+        fake,
+        :storage,
+        {403, "AccessDenied", "Request has expired.", :endless}
+      )
+
+      assert {:error, %Error{code: "attachment_upload_failed", status_code: 403} = error} =
+               Emails.send(
+                 name,
+                 with_files([%{filename: "a.pdf", content: @pdf}]) ++ [max_retries: 0]
+               )
+
+      assert error.message =~ "AccessDenied: Request has expired"
+      assert nothing_sent?(fake)
+    end
+
+    # The refusal is the storage's next answer only, so a retry would succeed.
+    test "doesn't retry an upload the storage refused", %{name: name, fake: fake} do
+      FakePostHog.fail_next(fake, :storage, {403, "AccessDenied", "Request has expired."})
+
+      assert {:error,
+              %Error{
+                code: "attachment_upload_failed",
+                name: :application_error,
+                status_code: 403
+              }} = Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+
+      assert nothing_sent?(fake)
+    end
+
+    test "a storage 401 doesn't blame the PostHog key", %{name: name, fake: fake} do
+      FakePostHog.fail_next(fake, :storage, {401, "Unauthorized", "Proxy needs a login."})
+
+      assert {:error, %Error{code: "attachment_upload_failed", name: :application_error}} =
+               Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+    end
+
+    test "an upload that keeps failing at the network sends nothing", %{name: name, fake: fake} do
+      FakePostHog.fail_next(fake, :storage, :econnrefused)
+
+      assert {:error, %Error{code: "attachment_upload_failed", status_code: nil} = error} =
+               Emails.send(
+                 name,
+                 with_files([%{filename: "a.pdf", content: @pdf}]) ++ [max_retries: 0]
+               )
+
+      assert error.message =~ "files.example.com"
+      assert error.fix =~ "reach files.example.com directly"
+      assert error.field == "attachments__0"
+      refute inspect(error) =~ "signed-secret"
+      assert nothing_sent?(fake)
+    end
+
+    test "a send whose instance stops between its steps sends nothing more", %{
+      name: name,
+      fake: fake
+    } do
+      FakePostHog.hold_next(fake, :uploads)
+
+      sending =
+        Task.async(fn -> Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}])) end)
+
+      assert_receive {:held, :uploads, request}
+      stop_supervised!(name)
+      send(request, :release)
+
+      assert {:error, %Error{code: "client_closed"} = error} = Task.await(sending)
+      assert error.message =~ "no email was sent"
+      assert nothing_sent?(fake)
+    end
+
+    test "a template send takes empty lists as left out", %{name: name, fake: fake} do
+      assert {:ok, _} =
+               Emails.send(name,
+                 to: "user@example.com",
+                 template_id: @template_id,
+                 reply_to: [],
+                 cc: [],
+                 bcc: [],
+                 attachments: []
+               )
+
+      assert [{_id, email}] = FakePostHog.messages(fake)
+      refute Enum.any?(["reply_to", "cc", "bcc", "attachments"], &Map.has_key?(email, &1))
+    end
+
+    test "retries an unavailable send with files, and the email goes out once", %{
+      name: name,
+      fake: fake
+    } do
+      FakePostHog.fail_next(fake, :send, {503, %{"code" => "service_unavailable"}})
+
+      assert {:ok, %Emails.SendResult{id: id}} =
+               Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+
+      assert [{^id, _email}] = FakePostHog.messages(fake)
+      assert FakePostHog.files(fake) == %{sha256(@pdf) => @pdf}
+    end
+
+    test "returns PostHog's refusal of the uploads, naming the attachment", %{
+      name: name,
+      fake: fake
+    } do
+      FakePostHog.fail_next(
+        fake,
+        :uploads,
+        {400,
+         %{
+           "type" => "invalid_request",
+           "code" => "message_too_large",
+           "detail" =>
+             "These files are too large for one email, so PostHog didn't prepare the uploads.",
+           "attr" => "files__1__size",
+           "why" => "An email can be at most 40 MB after Base64 encoding, about 29 MB of files.",
+           "fix" => "Send fewer or smaller files."
+         }}
+      )
+
+      assert {:error,
+              %Error{
+                code: "message_too_large",
+                status_code: 400,
+                field: "attachments__2__content",
+                why: "An email can be at most 40 MB" <> _
+              }} =
+               Emails.send(
+                 name,
+                 with_files([
+                   %{filename: "a.png", content: @logo},
+                   %{filename: "b.png", content: @logo},
+                   %{filename: "c.pdf", content: @pdf}
+                 ])
+               )
+
+      FakePostHog.fail_next(
+        fake,
+        :uploads,
+        {400, %{"code" => "field_not_accepted", "attr" => "files", "detail" => "Not yet."}}
+      )
+
+      assert {:error, %Error{code: "field_not_accepted", field: "attachments"}} =
+               Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+
+      FakePostHog.fail_next(
+        fake,
+        :uploads,
+        {401, %{"code" => "authentication_failed", "detail" => "Bad key."}}
+      )
+
+      assert {:error, %Error{code: "authentication_failed", field: nil}} =
+               Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+
+      assert nothing_sent?(fake)
+    end
+
+    test "a PostHog without the upload route sends nothing", %{name: name, fake: fake} do
+      FakePostHog.fail_next(
+        fake,
+        :uploads,
+        {404, %{"type" => "invalid_request", "code" => "not_found", "detail" => "Not found."}}
+      )
+
+      assert {:error, %Error{code: "not_found", status_code: 404, field: "attachments"}} =
+               Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+
+      assert nothing_sent?(fake)
+    end
+
+    # Each refusal is the upload route's next answer only, so a retry succeeds.
+    test "doesn't retry the daily upload quota, and retries unavailable storage", %{
+      name: name,
+      fake: fake
+    } do
+      FakePostHog.fail_next(
+        fake,
+        :uploads,
+        {429, %{"code" => "upload_quota_exceeded", "detail" => "Enough today."}}
+      )
+
+      assert {:error, %Error{code: "upload_quota_exceeded", status_code: 429, field: nil}} =
+               Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+
+      assert nothing_sent?(fake)
+
+      FakePostHog.fail_next(fake, :uploads, {503, %{"code" => "delivery_unavailable"}})
+
+      assert {:ok, %Emails.SendResult{id: id}} =
+               Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+
+      assert [{^id, _email}] = FakePostHog.messages(fake)
+      assert FakePostHog.files(fake) == %{sha256(@pdf) => @pdf}
+    end
+
+    test "an answer the SDK can't use sends nothing", %{name: name, fake: fake} do
+      slot = FakePostHog.upload_slot(@pdf)
+
+      for answer <- [
+            [],
+            [%{"sha256" => sha256(@logo), "status" => "present"}],
+            [%{"sha256" => sha256(@pdf), "status" => "copied"}],
+            [Map.delete(slot, "url")],
+            [Map.put(slot, "url", "ftp://files.example.com/a")],
+            [Map.put(slot, "method", "POST")],
+            [Map.put(slot, "headers", %{"Content-Length" => 8})]
+          ] do
+        FakePostHog.fail_next(fake, :uploads, {200, %{"files" => answer}})
+
+        assert {:error, %Error{code: "api_error", status_code: 200}} =
+                 Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+      end
+
+      assert nothing_sent?(fake)
+    end
+
+    test "refuses more than 10 files, and sends nothing", %{name: name, fake: fake} do
+      files = for i <- 1..11, do: %{filename: "#{i}.txt", content: "file #{i}"}
+
+      assert {:error,
+              %Error{
+                code: "too_many_attachments",
+                name: :validation_error,
+                field: "attachments"
+              } = error} = Emails.send(name, with_files(files))
+
+      assert error.fix =~ "10"
+      assert nothing_sent?(fake)
+    end
+
+    test "refuses an email over 40 MB after Base64 encoding, and sends nothing", %{
+      name: name,
+      fake: fake
+    } do
+      largest_that_fits = 29_182_821
+      file = :binary.copy(<<0>>, largest_that_fits)
+
+      for options <- [
+            [html: "", attachments: [%{filename: "a", content: file <> <<0>>}]],
+            [html: "<p>", attachments: [%{filename: "a", content: file}]],
+            [html: "", text: "x", attachments: [%{filename: "a", content: file}]]
+          ] do
+        assert {:error,
+                %Error{code: "message_too_large", name: :validation_error, field: "attachments"} =
+                  error} = Emails.send(name, @code_send ++ options)
+
+        assert error.why =~ "40 MB"
+        assert error.fix =~ "29 MB"
+      end
+
+      assert nothing_sent?(fake)
+
+      FakePostHog.put_files(fake, [file])
+
+      assert {:ok, _} =
+               Emails.send(
+                 name,
+                 @code_send ++ [html: "", attachments: [%{filename: "a", content: file}]]
+               )
+
+      assert [{_id, _email}] = FakePostHog.messages(fake)
+    end
+
+    # PostHog derives the text from the HTML and counts it too, never longer than the HTML.
+    test "counts the HTML twice without a text body", %{name: name, fake: fake} do
+      html = :binary.copy("a", 1_000_000)
+      files = [%{filename: "a.bin", content: :binary.copy(<<1>>, 28_000_000)}]
+      html_only = Keyword.put(with_files(files), :html, html)
+
+      assert {:error, %Error{code: "message_too_large", field: "attachments"} = error} =
+               Emails.send(name, html_only)
+
+      assert error.fix =~ ":text"
+      assert nothing_sent?(fake)
+
+      with_text = html_only ++ [text: "Thanks"]
+      larger_files = [%{filename: "a.bin", content: :binary.copy(<<1>>, 29_500_000)}]
+
+      assert {:error, %Error{code: "message_too_large"} = error} =
+               Emails.send(name, Keyword.put(with_text, :attachments, larger_files))
+
+      refute error.fix =~ ":text"
+
+      assert {:ok, %Emails.SendResult{}} = Emails.send(name, with_text)
+    end
+
+    test "uploads nothing to a plain-HTTP storage URL", %{name: name, fake: fake} do
+      FakePostHog.set_storage_url(fake, "http://files.example.com")
+
+      assert {:error, %Error{code: "api_error", field: "attachments__0"} = error} =
+               Emails.send(
+                 name,
+                 with_files([
+                   %{filename: "a.pdf", content: @pdf},
+                   %{filename: "logo.png", content: @logo}
+                 ])
+               )
+
+      assert error.message =~ "a.pdf"
+      assert error.fix =~ "https"
+      refute inspect(error) =~ "files.example.com"
+      assert nothing_sent?(fake)
+    end
+
+    @tag config: [
+           api_client_module: PostHog.EmailsTest.ReqTestClient,
+           app_host: "http://localhost:8010"
+         ]
+    test "uploads over plain HTTP when the app talks to PostHog over plain HTTP", %{
+      name: name,
+      fake: fake
+    } do
+      FakePostHog.set_storage_url(fake, "http://localhost:9000")
+
+      assert {:ok, %Emails.SendResult{id: id}} =
+               Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}]))
+
+      assert FakePostHog.files(fake) == %{sha256(@pdf) => @pdf}
+      assert [{^id, _email}] = FakePostHog.messages(fake)
+    end
+
+    test "leaves the size of an email without files to PostHog", %{test: test, fake: fake} do
+      {:ok, server} =
+        start_supervised({Bandit, plug: {&FakePostHog.serve/2, fake}, ip: :loopback, port: 0})
+
+      {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
+      host = "http://127.0.0.1:#{port}"
+      name = Module.concat(test, RealClient)
+
+      config =
+        PostHog.Config.validate!(
+          api_host: host,
+          app_host: host,
+          api_key: "phc_project_key",
+          secret_key: "phs_secret_key",
+          supervisor_name: name,
+          enable_local_evaluation: false
+        )
+
+      start_link_supervised!(Supervisor.child_spec({PostHog.Supervisor, config}, id: name))
+      html = :binary.copy("a", 40_000_000)
+
+      assert {:error, %Error{code: "message_too_large", status_code: 400}} =
+               Emails.send(name, Keyword.put(@code_send, :html, html))
+
+      assert [%{"html" => ^html, "subject" => "Hi"}] = FakePostHog.received(fake, :send)
+      assert FakePostHog.messages(fake) == []
+    end
+
+    # With no subject and an empty body, these sizes leave 3, 73, 77, 147 and 151 bytes of the
+    # 40 MB estimate free, and 29_182_876 none: PostHog counts a subject as 75 bytes per 42
+    # started.
+    for {label, subject, fits, refused} <- [
+          {"of 42 ASCII bytes counts 75", String.duplicate("a", 42), 29_182_821, 29_182_824},
+          {"of 43 bytes counts 150", String.duplicate("a", 43), 29_182_767, 29_182_770},
+          {"of 21 two-byte characters counts 75", String.duplicate("é", 21), 29_182_821,
+           29_182_824},
+          {"that is empty counts nothing", "", 29_182_875, 29_182_876}
+        ] do
+      test "a subject #{label} toward the 40 MB estimate", %{name: name, fake: fake} do
+        send_file = fn size ->
+          Emails.send(
+            name,
+            Keyword.merge(@code_send,
+              subject: unquote(subject),
+              html: "",
+              attachments: [%{filename: "a", content: :binary.copy(<<0>>, size)}]
+            )
+          )
+        end
+
+        assert {:error, %Error{code: "message_too_large"}} = send_file.(unquote(refused))
+        assert nothing_sent?(fake)
+
+        FakePostHog.put_files(fake, [:binary.copy(<<0>>, unquote(fits))])
+
+        assert {:ok, _} = send_file.(unquote(fits))
+        assert [{_id, _email}] = FakePostHog.messages(fake)
+      end
+    end
+
+    test "refuses an attachment it can't send, naming the field", %{name: name, fake: fake} do
+      for {attachments, field} <- [
+            {%{filename: "a.txt", content: "a"}, "attachments"},
+            {"invoice.pdf", "attachments"},
+            {[[filename: "a.txt", content: "a"]], "attachments__0"},
+            {[%{filename: "a.txt", content: "a"}, "b.txt"], "attachments__1"},
+            {[%{filename: "a.txt", path: "/tmp/a.txt"}], "attachments__0__path"},
+            {[%{filename: "a.txt", content: "a", cid: "logo"}], "attachments__0__cid"},
+            {[%{"filename" => "a.txt", "content" => "a"}], "attachments__0__content"},
+            {[%{filename: "a.txt"}], "attachments__0__content"},
+            {[%{filename: "a.txt", content: ""}], "attachments__0__content"},
+            {[%{filename: "a.txt", content: [97]}], "attachments__0__content"},
+            {[%{filename: "a.txt", content: <<1::3>>}], "attachments__0__content"},
+            {[%{content: "a"}], "attachments__0__filename"},
+            {[%{filename: "", content: "a"}], "attachments__0__filename"},
+            {[%{filename: " ", content: "a"}], "attachments__0__filename"},
+            {[%{filename: :a, content: "a"}], "attachments__0__filename"},
+            {[%{filename: "a.txt", content: "a", content_type: :pdf}],
+             "attachments__0__content_type"},
+            {[%{filename: "a.txt", content: "a", content_id: 1}], "attachments__0__content_id"}
+          ] do
+        assert {:error,
+                %Error{code: "invalid_attachment", name: :validation_error, field: ^field}} =
+                 Emails.send(name, with_files(attachments))
+      end
+
+      assert nothing_sent?(fake)
+    end
+
+    test "asks for atom keys when an attachment has string keys", %{name: name, fake: fake} do
+      assert {:error,
+              %Error{code: "invalid_attachment", field: "attachments__0__content"} = error} =
+               Emails.send(name, with_files([%{"filename" => "a.txt", "content" => "a"}]))
+
+      assert error.message =~ ~s(:content, not "content")
+
+      assert {:error, %Error{field: "attachments__0__content"}} =
+               Emails.send(
+                 name,
+                 with_files([%{"filename" => "a.txt", "content" => "a", "cid" => "logo"}])
+               )
+
+      assert nothing_sent?(fake)
+    end
+
+    test "refuses an attachment key that has no string form", %{name: name, fake: fake} do
+      attachment = %{{:extra, :field} => true, filename: "a.txt", content: "a"}
+
+      assert {:error, %Error{code: "invalid_attachment", field: "attachments__0"} = error} =
+               Emails.send(name, with_files([attachment]))
+
+      assert error.message =~ "{:extra, :field}"
+      assert nothing_sent?(fake)
+    end
+
+    test "a path points to reading the file", %{name: name} do
+      assert {:error, %Error{message: message}} =
+               Emails.send(name, with_files([%{filename: "a.pdf", path: "/srv/a.pdf"}]))
+
+      assert message =~ "File.read"
+    end
+
+    test "never repeats the file's content in an error", %{name: name} do
+      assert {:error, %Error{} = error} =
+               Emails.send(name, with_files([%{filename: 1, content: "SECRET-FILE-BYTES"}]))
+
+      refute inspect(error) =~ "SECRET-FILE-BYTES"
+    end
+
+    test "returns a send's refusal of a file that expired after its upload request", %{
+      name: name,
+      fake: fake
+    } do
+      FakePostHog.put_files(fake, [@pdf])
+      FakePostHog.hold_next(fake, :send)
+
+      sending =
+        Task.async(fn -> Emails.send(name, with_files([%{filename: "a.pdf", content: @pdf}])) end)
+
+      assert_receive {:held, :send, request}
+      FakePostHog.delete_file(fake, @pdf)
+      send(request, :release)
+
+      assert {:error,
+              %Error{
+                code: "attachment_not_uploaded",
+                field: "attachments__0__sha256",
+                status_code: 400
+              }} = Task.await(sending)
+
+      assert FakePostHog.messages(fake) == []
+    end
+  end
+
   describe "send/2 argument checks" do
     test "needs exactly one form", %{name: name} do
       assert {:error, %Error{code: "invalid_form"}} = Emails.send(name, to: "user@example.com")
@@ -384,11 +1611,16 @@ defmodule PostHog.EmailsTest do
     end
 
     test "refuses an option neither form takes", %{name: name} do
-      assert {:error, %Error{code: "invalid_form", field: "cc", fix: "Remove cc and send again."}} =
+      assert {:error,
+              %Error{
+                code: "invalid_form",
+                field: "headers",
+                fix: "Remove headers and send again."
+              }} =
                Emails.send(name,
                  to: "user@example.com",
                  template_id: @template_id,
-                 cc: "x@example.com"
+                 headers: %{"X-Campaign" => "welcome"}
                )
 
       refute_requested()
@@ -1039,5 +2271,71 @@ defmodule PostHog.EmailsTest do
 
       assert System.monotonic_time(:millisecond) - started < 1_000
     end
+  end
+end
+
+defmodule PostHog.EmailsReqDefaultsTest do
+  # Req.default_options is app-wide, so this runs alone, after the async tests.
+  use ExUnit.Case, async: false
+
+  alias PostHog.Emails
+  alias PostHog.EmailsTest.FakePostHog
+
+  setup {Req.Test, :verify_on_exit!}
+
+  setup context do
+    previous = Application.fetch_env(:req, :default_options)
+
+    # Defaults an app might set for its own requests. The storage refuses either on an upload, as
+    # S3 does on a presigned PUT: a query that isn't the signed one, and gzipped bytes that no
+    # longer match the signed checksum.
+    Application.put_env(:req, :default_options, params: [app: "1"], compress_body: true)
+
+    on_exit(fn ->
+      case previous do
+        {:ok, options} -> Application.put_env(:req, :default_options, options)
+        :error -> Application.delete_env(:req, :default_options)
+      end
+    end)
+
+    config =
+      [
+        api_host: "https://us.i.posthog.com",
+        api_key: "phc_project_key",
+        secret_key: "phs_secret_key",
+        # The local storage is plain HTTP, which an app on a plain-HTTP PostHog may upload to.
+        app_host: "http://localhost:8010",
+        api_client_module: PostHog.EmailsTest.ReqTestClient,
+        supervisor_name: context.test,
+        enable_local_evaluation: false
+      ]
+      |> PostHog.Config.validate!()
+      # The installed Req's default adapter over a real socket: Req.Test's plug would unzip a body.
+      |> Map.put(:email_upload_adapter, :none)
+
+    start_link_supervised!({PostHog.Supervisor, config})
+    %{name: context.test, fake: FakePostHog.start!()}
+  end
+
+  test "an upload ignores the app's Req defaults", %{name: name, fake: fake} do
+    {:ok, server} =
+      start_supervised({Bandit, plug: {&FakePostHog.serve/2, fake}, ip: :loopback, port: 0})
+
+    {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
+    FakePostHog.set_storage_url(fake, "http://127.0.0.1:#{port}")
+    file = "file bytes"
+
+    assert {:ok, %Emails.SendResult{id: id}} =
+             Emails.send(name,
+               to: "user@example.com",
+               template_key: "receipt",
+               subject: "Hi",
+               html: "<p/>",
+               attachments: [%{filename: "a.txt", content: file}]
+             )
+
+    sha256 = :crypto.hash(:sha256, file) |> Base.encode16(case: :lower)
+    assert FakePostHog.files(fake) == %{sha256 => file}
+    assert [{^id, %{"attachments" => [%{"sha256" => ^sha256}]}}] = FakePostHog.messages(fake)
   end
 end
