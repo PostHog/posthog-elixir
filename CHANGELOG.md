@@ -1,5 +1,11 @@
 # posthog
 
+## 2.22.1 — 2026-11-13
+
+### Patch changes
+
+- [e0b9bb6](https://github.com/posthog/posthog-elixir/commit/e0b9bb6e38f5c3c91c1b1815396b2f7f8fd0bb79) Treat failed remote feature flag records as no result, omit their values and payloads, and report evaluation_failed on direct reads. — Thanks @marandaneto!
+
 ## 2.22.0 — 2026-11-13
 
 ### Minor changes
