@@ -209,6 +209,8 @@ defmodule PostHog.Emails do
                    :cc,
                    :bcc,
                    :attachments,
+                   :sensitive,
+                   :tracking,
                    :capture_engagement
                  ]
   @address_fields [:reply_to, :cc, :bcc]
@@ -252,9 +254,23 @@ defmodule PostHog.Emails do
     `:html` as `<img src="cid:logo">` with `content_id: "logo"`. Pass raw bytes, not Base64.
     PostHog can't fetch a file from a path or URL. A file the SDK can't send returns the error
     code `invalid_attachment`. See "Attachments" in `PostHog.Emails` for how files travel.
-  - `:capture_engagement` - whether PostHog captures the email's opens and clicks as events of
-    the recipient. Defaults to `true`. A project whose admin turned engagement capture off
-    captures nothing, whatever the send asks.
+  - `:sensitive` - `true` when the email carries login links, reset tokens or codes. A sensitive
+    email keeps its links unchanged unless `:tracking` turns clicks on, leaves its subject off
+    engagement events, and keeps its content out of logs. Left out, the email takes the setting of
+    the template made in PostHog whose key matches `:template_key`, and is sensitive when no
+    template matches. Sent only when you set it, and needs a PostHog version that takes it.
+  - `:tracking` - what PostHog tracks for the email. Left out, PostHog counts opens and captures
+    engagement events, and tracks clicks only when the email isn't sensitive. `true` turns on
+    opens, clicks and engagement events, even for a sensitive email. `false` turns them all off:
+    the email has no open pixel and no rewritten links, and PostHog captures no engagement events
+    for it. A map such as `%{clicks: true}` sets `:opens` (default `true`), `:clicks` (default: on
+    unless the email is sensitive) and `:engagement` (default `true`) one by one. Turn clicks on
+    for a sensitive email only when its links are safe to rewrite. Click tracking needs open
+    tracking. A project whose admin turned engagement capture off captures nothing, whatever the
+    send says. Sent only when you set it, and needs a PostHog version that takes it.
+  - `:capture_engagement` - deprecated: use `tracking: %{engagement: false}` instead. Whether
+    PostHog captures the email's engagement events. It still works, but a send can't set both.
+    Sent only when you set it.
 
   An option set to `nil` counts as left out, and so does an empty `:reply_to`, `:cc`, `:bcc` or
   `:attachments` list. A PostHog version that doesn't take a field yet, such as `:attachments`,
@@ -277,6 +293,8 @@ defmodule PostHog.Emails do
           | {:cc, String.t() | [String.t()] | nil}
           | {:bcc, String.t() | [String.t()] | nil}
           | {:attachments, [attachment()] | nil}
+          | {:sensitive, boolean() | nil}
+          | {:tracking, tracking() | nil}
           | {:capture_engagement, boolean() | nil}
 
   @typedoc """
@@ -289,6 +307,18 @@ defmodule PostHog.Emails do
           optional(:content_type) => String.t() | nil,
           optional(:content_id) => String.t() | nil
         }
+
+  @typedoc """
+  What PostHog tracks for an email sent with `:template_key`. See `:tracking` in
+  `t:send_option/0`.
+  """
+  @type tracking() ::
+          boolean()
+          | %{
+              optional(:opens) => boolean() | nil,
+              optional(:clicks) => boolean() | nil,
+              optional(:engagement) => boolean() | nil
+            }
 
   @doc """
   Queues one email, from a template made in PostHog or from content your code rendered.
@@ -523,8 +553,18 @@ defmodule PostHog.Emails do
          :ok <- check_code_fields(options) do
       {:ok,
        options
-       |> Map.take([:to, :distinct_id, :template_key, :subject, :html, :text, :from])
-       |> Map.put(:capture_engagement, Map.get(options, :capture_engagement, true))
+       |> Map.take([
+         :to,
+         :distinct_id,
+         :template_key,
+         :subject,
+         :html,
+         :text,
+         :from,
+         :capture_engagement,
+         :sensitive
+       ])
+       |> put_tracking(options)
        |> put_addresses(options)}
     end
   end
@@ -583,6 +623,16 @@ defmodule PostHog.Emails do
       not is_boolean(Map.get(options, :capture_engagement, true)) ->
         invalid("invalid_form", "capture_engagement must be true or false.", "capture_engagement")
 
+      not is_boolean(Map.get(options, :sensitive, true)) ->
+        invalid("invalid_form", "sensitive must be true or false.", "sensitive")
+
+      not tracking?(Map.get(options, :tracking, true)) ->
+        invalid(
+          "invalid_form",
+          "tracking must be true, false or a map such as %{clicks: true}.",
+          "tracking"
+        )
+
       true ->
         :ok
     end
@@ -596,6 +646,19 @@ defmodule PostHog.Emails do
       put_if_any(content, field, List.wrap(Map.get(options, field)))
     end)
   end
+
+  defp put_tracking(content, %{tracking: tracking}) when is_map(tracking),
+    do: Map.put(content, :tracking, Map.reject(tracking, &is_nil(elem(&1, 1))))
+
+  defp put_tracking(content, %{tracking: tracking}), do: Map.put(content, :tracking, tracking)
+  defp put_tracking(content, _options), do: content
+
+  defp tracking?(tracking) when is_boolean(tracking), do: true
+
+  defp tracking?(tracking) when is_map(tracking),
+    do: Enum.all?(tracking, fn {_kind, on} -> is_nil(on) or is_boolean(on) end)
+
+  defp tracking?(_tracking), do: false
 
   defp put_if_any(content, _field, []), do: content
   defp put_if_any(content, field, list), do: Map.put(content, field, list)
@@ -628,7 +691,7 @@ defmodule PostHog.Emails do
       {why, how} =
         case form do
           :template ->
-            {"A template made in PostHog sets its own sender, copies, subject, content and attachments, and follows the project's engagement setting.",
+            {"A template made in PostHog sets its own sender, copies, subject, content, attachments, tracking and sensitive setting, and follows the project's engagement setting.",
              "send content from your code with template_key"}
 
           :code ->
