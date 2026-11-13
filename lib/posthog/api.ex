@@ -45,12 +45,21 @@ defmodule PostHog.API do
       "/api/projects/@current/feature_flags/" <>
         URI.encode(flag_key, &URI.char_unreserved?/1) <> "/remote_config"
 
-    # Req would otherwise decode JSON bodies, hiding whether the body was valid JSON.
-    client.module.request(client.client, :get, path,
+    opts = [
       params: %{token: project_api_key},
       headers: [{"authorization", "Bearer #{Secret.reveal(secret_key)}"}],
-      retry: false,
-      decode_body: false
-    )
+      retry: false
+    ]
+
+    # Req would otherwise decode JSON bodies, hiding whether the body was valid JSON.
+    # A custom client returns a decoded body, so only the default client is asked for raw bytes.
+    {opts, body_format} =
+      if client.module == __MODULE__.Client,
+        do: {Keyword.put(opts, :decode_body, false), :raw},
+        else: {opts, :decoded}
+
+    with {:ok, response} <- client.module.request(client.client, :get, path, opts) do
+      {:ok, response, body_format}
+    end
   end
 end

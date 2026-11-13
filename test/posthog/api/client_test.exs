@@ -149,7 +149,7 @@ defmodule PostHog.API.ClientTest do
           end
         )
 
-      assert {:ok, %Req.Response{status: 503}} =
+      assert {:ok, %Req.Response{status: 503}, :raw} =
                PostHog.API.remote_config_payload(
                  %Client{client: req, module: Client},
                  "phc_test",
@@ -176,7 +176,7 @@ defmodule PostHog.API.ClientTest do
           end
         )
 
-      assert {:ok, %Req.Response{status: 200, body: ~s("x")}} =
+      assert {:ok, %Req.Response{status: 200, body: ~s("x")}, :raw} =
                PostHog.API.remote_config_payload(
                  %Client{client: req, module: Client},
                  "phc_test",

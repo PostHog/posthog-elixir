@@ -118,7 +118,9 @@ defmodule PostHog.FeatureFlags do
   set or when `flag_key` is empty, `.`, or `..`. Returns
   `{:error, %PostHog.UnexpectedResponseError{}}` when PostHog answers with a
   status other than 2xx or with a response body that is not JSON, and
-  `{:error, exception}` when the request fails.
+  `{:error, exception}` when the request fails. A custom `api_client_module`
+  decodes the response body itself, so the SDK cannot detect a body that is not
+  JSON there.
 
   ## Examples
 
@@ -166,13 +168,15 @@ defmodule PostHog.FeatureFlags do
 
   defp request_remote_config_payload(client, api_key, secret_key, flag_key) do
     case PostHog.API.remote_config_payload(client, api_key, secret_key, flag_key) do
-      {:ok, %{status: status, body: body}} when status in 200..299 ->
-        decode_remote_config_body(status, body)
+      {:ok, %{status: status, body: body}, body_format} when status in 200..299 ->
+        decode_remote_config_body(body_format, status, body)
 
-      {:ok, %{status: status, body: body}} ->
+      {:ok, %{status: status, body: body}, body_format} ->
+        body = if body_format == :raw, do: normalize_payload(body), else: body
+
         {:error,
          %PostHog.UnexpectedResponseError{
-           response: %{status: status, body: normalize_payload(body)},
+           response: %{status: status, body: body},
            message: "Unexpected response status from the remote config endpoint"
          }}
 
@@ -187,25 +191,32 @@ defmodule PostHog.FeatureFlags do
         else: reraise(exception, __STACKTRACE__)
   end
 
-  defp decode_remote_config_body(status, body) when is_binary(body) do
-    if String.trim(body) == "" do
-      {:ok, nil}
-    else
-      case Jason.decode(body) do
-        {:ok, decoded} ->
-          {:ok, normalize_payload(decoded)}
+  # A `:raw` body is the response bytes, which hold the stored payload as a JSON string.
+  # A `:decoded` body is that stored payload already.
+  defp decode_remote_config_body(body_format, status, body) when is_binary(body) do
+    cond do
+      String.trim(body) == "" ->
+        {:ok, nil}
 
-        {:error, _} ->
-          {:error,
-           %PostHog.UnexpectedResponseError{
-             response: %{status: status, body: body},
-             message: "Expected a JSON response body"
-           }}
-      end
+      body_format == :decoded ->
+        {:ok, normalize_payload(body)}
+
+      true ->
+        case Jason.decode(body) do
+          {:ok, decoded} ->
+            {:ok, normalize_payload(decoded)}
+
+          {:error, _} ->
+            {:error,
+             %PostHog.UnexpectedResponseError{
+               response: %{status: status, body: body},
+               message: "Expected a JSON response body"
+             }}
+        end
     end
   end
 
-  defp decode_remote_config_body(_status, body), do: {:ok, body}
+  defp decode_remote_config_body(_body_format, _status, body), do: {:ok, body}
 
   @doc false
   def evaluate_flags(nil), do: evaluate_flags(PostHog, nil)
