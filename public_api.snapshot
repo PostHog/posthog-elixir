@@ -167,6 +167,8 @@ PostHog.FeatureFlags
     get_feature_flag_result/4 doc: documented
     get_feature_flag_result!/1 doc: none
     get_feature_flag_result!/4 doc: documented
+    get_remote_config_payload/1 doc: none
+    get_remote_config_payload/2 doc: documented
     set_in_context/1 doc: documented
     set_in_context/2 doc: documented
   macros:

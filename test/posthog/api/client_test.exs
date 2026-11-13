@@ -129,4 +129,60 @@ defmodule PostHog.API.ClientTest do
     assert_received {:request, ["gzip"], gzipped_body}
     assert :zlib.gunzip(gzipped_body) == "hello"
   end
+
+  describe "remote_config_payload/4" do
+    setup do
+      %Client{client: req} = Client.client("phc_test", "https://us.i.posthog.com")
+      secret = PostHog.Config.Secret.new("phs_x")
+      {:ok, req: req, secret: secret}
+    end
+
+    test "keeps the encoded path and does not retry", %{req: req, secret: secret} do
+      parent = self()
+
+      req =
+        Req.merge(req,
+          retry_delay: fn _ -> 0 end,
+          adapter: fn req ->
+            send(parent, {:url, req.url})
+            {req, Req.Response.new(status: 503, body: %{})}
+          end
+        )
+
+      assert {:ok, %Req.Response{status: 503}} =
+               PostHog.API.remote_config_payload(
+                 %Client{client: req, module: Client},
+                 "phc_test",
+                 secret,
+                 "a/b"
+               )
+
+      assert_received {:url, url}
+      refute_received {:url, _}
+      assert url.path == "/api/projects/@current/feature_flags/a%2Fb/remote_config"
+      assert url.query == "token=phc_test"
+    end
+
+    test "returns the raw body of a JSON response", %{req: req, secret: secret} do
+      req =
+        Req.merge(req,
+          adapter: fn req ->
+            {req,
+             Req.Response.new(
+               status: 200,
+               headers: [{"content-type", "application/json"}],
+               body: ~s("x")
+             )}
+          end
+        )
+
+      assert {:ok, %Req.Response{status: 200, body: ~s("x")}} =
+               PostHog.API.remote_config_payload(
+                 %Client{client: req, module: Client},
+                 "phc_test",
+                 secret,
+                 "flag"
+               )
+    end
+  end
 end

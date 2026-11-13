@@ -1,5 +1,8 @@
 defmodule PostHog.API do
   @moduledoc false
+
+  alias PostHog.Config.Secret
+
   def batch(%__MODULE__.Client{} = client, batch) do
     client.module.request(client.client, :post, "/batch", json: %{batch: batch})
   end
@@ -29,6 +32,25 @@ defmodule PostHog.API do
     client.module.request(client.client, :get, "/flags/definitions",
       params: %{token: project_api_key, send_cohorts: true},
       headers: headers
+    )
+  end
+
+  def remote_config_payload(
+        %__MODULE__.Client{} = client,
+        project_api_key,
+        %Secret{} = secret_key,
+        flag_key
+      ) do
+    path =
+      "/api/projects/@current/feature_flags/" <>
+        URI.encode(flag_key, &URI.char_unreserved?/1) <> "/remote_config"
+
+    # Req would otherwise decode JSON bodies, hiding whether the body was valid JSON.
+    client.module.request(client.client, :get, path,
+      params: %{token: project_api_key},
+      headers: [{"authorization", "Bearer #{Secret.reveal(secret_key)}"}],
+      retry: false,
+      decode_body: false
     )
   end
 end
