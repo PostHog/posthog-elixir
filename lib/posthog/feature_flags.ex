@@ -112,8 +112,9 @@ defmodule PostHog.FeatureFlags do
   PostHog stores the payload as a JSON string. The SDK decodes a string payload
   once more. If the string is not valid JSON, it returns the string unchanged.
 
-  Returns `{:ok, nil}`, without a request, when the instance is disabled or has
-  no `api_key`. Returns `{:error, %PostHog.Error{}}` when `secret_key` is not
+  Returns `{:ok, nil}` when the flag has no payload, which PostHog answers with
+  an empty response body. Returns `{:ok, nil}`, without a request, when the
+  instance is disabled or has no `api_key`. Returns `{:error, %PostHog.Error{}}` when `secret_key` is not
   set or when `flag_key` is empty, `.`, or `..`. Returns
   `{:error, %PostHog.UnexpectedResponseError{}}` when PostHog answers with a
   status other than 2xx or with a response body that is not JSON, and
@@ -181,16 +182,20 @@ defmodule PostHog.FeatureFlags do
   end
 
   defp decode_remote_config_body(status, body) when is_binary(body) do
-    case Jason.decode(body) do
-      {:ok, decoded} ->
-        {:ok, normalize_payload(decoded)}
+    if String.trim(body) == "" do
+      {:ok, nil}
+    else
+      case Jason.decode(body) do
+        {:ok, decoded} ->
+          {:ok, normalize_payload(decoded)}
 
-      {:error, _} ->
-        {:error,
-         %PostHog.UnexpectedResponseError{
-           response: %{status: status, body: body},
-           message: "Expected a JSON response body"
-         }}
+        {:error, _} ->
+          {:error,
+           %PostHog.UnexpectedResponseError{
+             response: %{status: status, body: body},
+             message: "Expected a JSON response body"
+           }}
+      end
     end
   end
 

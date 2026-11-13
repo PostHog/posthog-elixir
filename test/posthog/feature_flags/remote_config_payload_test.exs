@@ -62,13 +62,26 @@ defmodule PostHog.FeatureFlags.RemoteConfigPayloadTest do
     assert {:ok, %{}} == FeatureFlags.get_remote_config_payload(name, "test-flag")
   end
 
-  for {label, body} <- [{"not JSON", "<html>"}, {"empty", ""}] do
-    test "returns an error for a 200 response with a body that is #{label}", %{test: name} do
+  test "returns an error for a 200 response with a body that is not JSON", %{test: name} do
+    respond(200, "<html>")
+
+    assert {:error, %PostHog.UnexpectedResponseError{response: %{status: 200}}} =
+             FeatureFlags.get_remote_config_payload(name, "test-flag")
+  end
+
+  for {label, body} <- [{"empty", ""}, {"whitespace only", " \n\t"}] do
+    test "returns {:ok, nil} for a 200 response with a body that is #{label}", %{test: name} do
       respond(200, unquote(body))
 
-      assert {:error, %PostHog.UnexpectedResponseError{response: %{status: 200}}} =
-               FeatureFlags.get_remote_config_payload(name, "test-flag")
+      assert {:ok, nil} == FeatureFlags.get_remote_config_payload(name, "test-flag")
     end
+  end
+
+  test "returns an error for a 404 response with an empty body", %{test: name} do
+    respond(404, "")
+
+    assert {:error, %PostHog.UnexpectedResponseError{response: %{status: 404, body: ""}}} =
+             FeatureFlags.get_remote_config_payload(name, "test-flag")
   end
 
   test "sends GET with path, token, and bearer header", %{test: name} do
