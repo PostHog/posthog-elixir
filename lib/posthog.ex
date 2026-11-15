@@ -80,19 +80,48 @@ defmodule PostHog do
   def capture_prepared(config, event, distinct_id, properties) do
     properties = LoggerJSON.Formatter.RedactorEncoder.encode(properties, [])
 
+    timestamp = DateTime.utc_now() |> DateTime.to_iso8601()
+
     event = %{
       event: event,
       distinct_id: distinct_id,
       uuid: UUIDv7.generate(),
-      timestamp: DateTime.utc_now() |> DateTime.to_iso8601(),
+      timestamp: timestamp,
       properties: properties
     }
 
     case run_before_send(config.before_send, event) do
-      nil -> :ok
-      event -> PostHog.Sender.send(event, config.supervisor_name)
+      nil ->
+        :ok
+
+      event ->
+        PostHog.Sender.send(normalize_event_timestamp(event, timestamp), config.supervisor_name)
     end
   end
+
+  defp normalize_event_timestamp(%{timestamp: timestamp} = event, timestamp), do: event
+
+  defp normalize_event_timestamp(%{timestamp: timestamp} = event, _original_timestamp)
+       when is_binary(timestamp) do
+    case DateTime.from_iso8601(timestamp) do
+      {:ok, datetime, _offset} ->
+        # DateTime retains only microseconds. Convert whole seconds through it,
+        # then restore every fractional digit from the validated input string.
+        fraction =
+          case Regex.run(~r/[.,](\d+)/, timestamp, capture: :all_but_first) do
+            [digits] -> "." <> digits
+            nil -> ""
+          end
+
+        utc_seconds = DateTime.to_iso8601(%{datetime | microsecond: {0, 0}})
+        Map.put(event, :timestamp, String.replace_suffix(utc_seconds, "Z", fraction <> "Z"))
+
+      {:error, _reason} ->
+        event
+    end
+  end
+
+  defp normalize_event_timestamp(event, _original_timestamp), do: event
 
   defp run_before_send(nil, event), do: event
 

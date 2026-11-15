@@ -42,7 +42,9 @@ capability requirement and runs unconditionally.
 The adapter uses the SDK source in this repository, `PostHog.bare_capture/4`,
 and the default Req transport with gzip. Capture uses the existing single-sender
 configuration with a default batch threshold of 1 and timer of 100ms. This is
-not the production multi-sender batching configuration.
+not the production multi-sender batching configuration. Timestamp overrides pass
+unchanged through the public `before_send` hook; the SDK normalizes event
+timestamps to UTC after that hook, without modifying timestamp-like properties.
 
 Flag actions scope evaluation with `flag_keys: [key]` and forward only supplied
 `person_properties`, `groups`, `group_properties`, and `disable_geoip` options.
@@ -50,21 +52,19 @@ No local definitions are configured, so each evaluation uses the remote SDK
 path for either value of `force_remote`. The SDK owns request construction,
 response parsing, retries, and `$feature_flag_called` events.
 
-Harness 1.0.0 selects 30 server V0 capture tests and 17 feature-flag tests.
+Harness 1.31.1 selects 30 server V0 capture tests and 17 feature-flag tests.
+The SDK sends empty `groups` / `group_properties` objects and
+`geoip_disable: false` when those flag request options are omitted.
 The following assertions remain selected and are expected to fail:
 
-- `capture.format_validation.non_utc_event_timestamp_is_converted_to_utc`:
-  standard capture has no timestamp override. The public `before_send` hook
-  runs after timestamp serialization and does not normalize an injected value.
-- `feature_flags.request_payload.groups_default_to_empty_object` and
-  `feature_flags.request_payload.disable_geoip_omitted_defaults_to_false`:
-  the SDK omits unspecified options rather than serializing these defaults.
 - `feature_flags.request_lifecycle.mock_response_value_is_returned_to_caller`,
   `feature_flags.retry_behavior.retries_flags_on_502`,
   `feature_flags.retry_behavior.retries_flags_on_504`, and
   `feature_flags.side_effect_events.get_feature_flag_captures_feature_flag_called_event`:
-  these fixtures return legacy-only `featureFlags`; the public evaluator
-  requires rich v2 `flags`. Request and retry traffic still comes from the SDK.
+  these fixtures return legacy-only `featureFlags` despite the SDK requesting
+  `/flags?v=2`; the public evaluator requires rich v2 `flags`. These are fixture
+  mismatches, not evidence of missing SDK retries or called-event handling.
+  Request and retry traffic still comes from the SDK.
   Adapter regression tests cover rich v2 values, retries, and SDK event metadata.
 
 The existing `/flush` endpoint waits for the timer plus 500ms; the SDK has no

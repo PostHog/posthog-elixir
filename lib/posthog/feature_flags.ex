@@ -33,7 +33,8 @@ defmodule PostHog.FeatureFlags do
     config = PostHog.config(name)
 
     if Map.get(config, :enabled, true) do
-      request_flags(config.api_client, translate_disable_geoip(body))
+      body = body |> translate_disable_geoip() |> flags_request_defaults()
+      request_flags(config.api_client, body)
     else
       empty_flags_response()
     end
@@ -135,7 +136,8 @@ defmodule PostHog.FeatureFlags do
   - `:device_id` - alternate bucketing identifier for device-bucketed flags
 
   The public `:disable_geoip` option is sent under the `/flags` wire key
-  `geoip_disable`.
+  `geoip_disable`, defaulting to `false`. Omitted `:groups` and
+  `:group_properties` are sent as empty objects.
 
   Plus these snapshot-specific options:
 
@@ -601,6 +603,17 @@ defmodule PostHog.FeatureFlags do
   end
 
   defp translate_flag_keys(body), do: body
+
+  defp flags_request_defaults(body) when is_map(body) do
+    Enum.reduce([groups: %{}, group_properties: %{}, geoip_disable: false], body, fn
+      {key, default}, body ->
+        if Map.has_key?(body, Atom.to_string(key)),
+          do: body,
+          else: Map.put_new(body, key, default)
+    end)
+  end
+
+  defp flags_request_defaults(body), do: body
 
   defp translate_disable_geoip(%{disable_geoip: disable_geoip} = body) do
     body

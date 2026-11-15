@@ -428,6 +428,7 @@ defmodule PostHog.OpenFeature.ProviderTest do
         assert opts[:json] == %{
                  distinct_id: "user-1",
                  flag_keys_to_evaluate: ["flag"],
+                 geoip_disable: false,
                  person_properties: %{"plan" => "pro", "age" => 30, "beta" => true},
                  groups: %{"company" => "acme"},
                  group_properties: %{"company" => %{"size" => 250}}
@@ -448,9 +449,16 @@ defmodule PostHog.OpenFeature.ProviderTest do
       assert {:ok, _} = Provider.resolve_boolean_value(provider(), "flag", false, context)
     end
 
-    test "omits empty person properties, groups, and group properties" do
+    test "omits empty person properties and sends SDK group defaults" do
       expect(API.Mock, :request, fn _client, :post, "/flags", opts ->
-        assert opts[:json] == %{distinct_id: "user-1", flag_keys_to_evaluate: ["flag"]}
+        assert opts[:json] == %{
+                 distinct_id: "user-1",
+                 flag_keys_to_evaluate: ["flag"],
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false
+               }
+
         {:ok, %{status: 200, body: %{"flags" => %{"flag" => flag(%{})}}}}
       end)
 

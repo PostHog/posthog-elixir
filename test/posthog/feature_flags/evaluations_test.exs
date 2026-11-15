@@ -152,7 +152,13 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
 
     test "evaluates all flags through the normal request path when flag_keys is nil" do
       expect(API.Mock, :request, 1, fn _client, :post, "/flags", opts ->
-        assert opts[:json] == %{distinct_id: "foo"}
+        assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
+                 distinct_id: "foo"
+               }
+
         {:ok, stub_flags_response()}
       end)
 
@@ -165,6 +171,9 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
     test "translates :flag_keys into flag_keys_to_evaluate in the request body" do
       expect(API.Mock, :request, fn _client, :post, "/flags", opts ->
         assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
                  distinct_id: "foo",
                  flag_keys_to_evaluate: ["boolean-flag", "variant-flag"]
                }
@@ -179,9 +188,51 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
                })
     end
 
+    test "sends empty group objects and enables GeoIP when options are omitted" do
+      expect(API.Mock, :request, fn _client, :post, "/flags", opts ->
+        assert opts[:json] == %{
+                 distinct_id: "foo",
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false
+               }
+
+        {:ok, stub_flags_response()}
+      end)
+
+      assert {:ok, _} = FeatureFlags.evaluate_flags("foo")
+    end
+
+    test "preserves explicit group context and GeoIP settings" do
+      expect(API.Mock, :request, fn _client, :post, "/flags", opts ->
+        assert opts[:json] == %{
+                 distinct_id: "foo",
+                 groups: %{company: "acme"},
+                 group_properties: %{company: %{plan: "paid"}},
+                 geoip_disable: true
+               }
+
+        {:ok, stub_flags_response()}
+      end)
+
+      assert {:ok, _} =
+               FeatureFlags.evaluate_flags(%{
+                 distinct_id: "foo",
+                 groups: %{company: "acme"},
+                 group_properties: %{company: %{plan: "paid"}},
+                 disable_geoip: true
+               })
+    end
+
     test "translates disable_geoip to the flags wire key" do
       expect(API.Mock, :request, fn _client, :post, "/flags", opts ->
-        assert opts[:json] == %{distinct_id: "foo", geoip_disable: true}
+        assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 distinct_id: "foo",
+                 geoip_disable: true
+               }
+
         {:ok, stub_flags_response()}
       end)
 
@@ -191,7 +242,14 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
 
     test "forwards person_properties unchanged in the request body" do
       expect(API.Mock, :request, fn _client, :post, "/flags", opts ->
-        assert opts[:json] == %{distinct_id: "foo", person_properties: %{plan: "enterprise"}}
+        assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
+                 distinct_id: "foo",
+                 person_properties: %{plan: "enterprise"}
+               }
+
         {:ok, stub_flags_response()}
       end)
 
@@ -206,7 +264,13 @@ defmodule PostHog.FeatureFlags.EvaluationsTest do
       PostHog.set_context(%{distinct_id: "from-context"})
 
       expect(API.Mock, :request, fn _client, :post, "/flags", opts ->
-        assert opts[:json] == %{distinct_id: "from-context"}
+        assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
+                 distinct_id: "from-context"
+               }
+
         {:ok, stub_flags_response()}
       end)
 

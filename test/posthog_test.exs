@@ -189,6 +189,62 @@ defmodule PostHogTest do
       Jason.encode!(properties)
     end
 
+    @tag config: [before_send: &__MODULE__.override_event_timestamp/1, supervisor_name: PostHog]
+    test "normalizes before_send timestamp offsets to UTC without changing properties" do
+      for {timestamp, expected} <- [
+            {"2025-01-02T08:34:05+05:30", "2025-01-02T03:04:05Z"},
+            {"2025-01-02T00:04:05.123456-03:00", "2025-01-02T03:04:05.123456Z"},
+            {"2025-01-02T03:04:05.123Z", "2025-01-02T03:04:05.123Z"}
+          ] do
+        PostHog.bare_capture("timestamp override", "distinct_id", %{timestamp_like: timestamp})
+        event = Enum.find(all_captured(), &(&1.properties.timestamp_like == timestamp))
+        assert event.timestamp == expected
+        assert event.properties.timestamp_like == timestamp
+      end
+    end
+
+    for {name, timestamp, expected} <- [
+          {"UTC", "2025-01-02T03:04:05.123456789Z", "2025-01-02T03:04:05.123456789Z"},
+          {"positive offset", "2025-01-02T00:34:05.123456789+05:30",
+           "2025-01-01T19:04:05.123456789Z"},
+          {"negative offset", "2025-01-02T23:34:05.987654321-03:00",
+           "2025-01-03T02:34:05.987654321Z"}
+        ] do
+      @tag config: [before_send: &__MODULE__.override_event_timestamp/1, supervisor_name: PostHog]
+      test "preserves all nine fractional timestamp digits from before_send with #{name}" do
+        timestamp = unquote(timestamp)
+        properties = %{timestamp_like: timestamp}
+
+        assert :ok = PostHog.bare_capture("precise timestamp", "distinct_id", properties)
+        assert [event] = all_captured()
+        assert event.timestamp == unquote(expected)
+        assert event.properties.timestamp_like == properties.timestamp_like
+
+        wire_event = event |> Jason.encode!() |> Jason.decode!()
+        assert wire_event["timestamp"] == unquote(expected)
+        assert wire_event["properties"]["timestamp_like"] == timestamp
+      end
+    end
+
+    @tag config: [before_send: &__MODULE__.override_event_timestamp/1, supervisor_name: PostHog]
+    test "preserves malformed and native before_send timestamp values" do
+      for timestamp <- [
+            "invalid",
+            "2025-02-30T03:04:05.123456789+05:30",
+            nil,
+            ~U[2025-01-02 03:04:05.123456Z]
+          ] do
+        assert :ok =
+                 PostHog.bare_capture("unchanged timestamp", "distinct_id", %{
+                   timestamp_like: timestamp
+                 })
+
+        assert Enum.any?(all_captured(), fn event ->
+                 event.timestamp == timestamp and event.properties.timestamp_like == timestamp
+               end)
+      end
+    end
+
     test "generates a UTC timestamp without changing DateTime properties" do
       local_datetime = %DateTime{
         year: 2024,
@@ -333,6 +389,9 @@ defmodule PostHogTest do
       assert PostHog.get_event_context(MyPostHog, "$exception") == %{foo: "bar"}
     end
   end
+
+  def override_event_timestamp(event),
+    do: Map.put(event, :timestamp, event.properties.timestamp_like)
 
   def modify_before_send(event) do
     saw_fully_enriched_event =
