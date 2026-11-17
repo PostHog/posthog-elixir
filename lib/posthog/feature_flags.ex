@@ -100,13 +100,15 @@ defmodule PostHog.FeatureFlags do
   end
 
   @doc """
-  Fetches the payload of a remote config feature flag.
+  Reads the payload of a remote config feature flag by its key, with no distinct ID.
 
-  Calls PostHog's authenticated remote config endpoint for the project. Needs
-  `secret_key`. A project secret API key (`phs_`) returns an encrypted payload
-  redacted. Use a personal API key (`phx_`) to get an encrypted payload decrypted.
+  Use it for a remote config flag, and always when the payload is encrypted:
+  flag evaluation does not return such a flag, so
+  `PostHog.FeatureFlags.Evaluations.get_flag_payload/2` cannot read it. Needs
+  `secret_key`. A personal API key (`phx_`) returns an encrypted payload
+  decrypted. A project secret API key (`phs_`) returns it redacted.
 
-  Each call makes one request. The SDK does not cache the payload and does not
+  Calls PostHog's authenticated remote config endpoint for the project. Each call makes one request. The SDK does not cache the payload and does not
   retry the request. It does not send a `$feature_flag_called` event.
 
   PostHog stores the payload as a JSON string. The SDK decodes a string payload
