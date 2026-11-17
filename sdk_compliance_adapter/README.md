@@ -52,20 +52,13 @@ No local definitions are configured, so each evaluation uses the remote SDK
 path for either value of `force_remote`. The SDK owns request construction,
 response parsing, retries, and `$feature_flag_called` events.
 
-Harness 1.31.1 selects 30 server V0 capture tests and 17 feature-flag tests.
+Harness 1.32.0 selects 30 server V0 capture tests and 17 feature-flag tests.
 The SDK sends empty `groups` / `group_properties` objects and
 `geoip_disable: false` when those flag request options are omitted.
-The following assertions remain selected and are expected to fail:
-
-- `feature_flags.request_lifecycle.mock_response_value_is_returned_to_caller`,
-  `feature_flags.retry_behavior.retries_flags_on_502`,
-  `feature_flags.retry_behavior.retries_flags_on_504`, and
-  `feature_flags.side_effect_events.get_feature_flag_captures_feature_flag_called_event`:
-  these fixtures return legacy-only `featureFlags` despite the SDK requesting
-  `/flags?v=2`; the public evaluator requires rich v2 `flags`. These are fixture
-  mismatches, not evidence of missing SDK retries or called-event handling.
-  Request and retry traffic still comes from the SDK.
-  Adapter regression tests cover rich v2 values, retries, and SDK event metadata.
+Harness 1.32.0 supplies rich v2 `flags` alongside legacy `featureFlags` in
+flag value, retry, and called-event fixtures. These assertions remain selected;
+the SDK still requires rich v2 responses for `/flags?v=2`. Adapter regression
+tests cover rich v2 values, retries, and SDK event metadata.
 
 The existing `/flush` endpoint waits for the timer plus 500ms; the SDK has no
 public flush API, so this is not a guarantee of delivery or retry completion.
