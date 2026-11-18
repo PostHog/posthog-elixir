@@ -21,13 +21,21 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
   @doc """
   Runs `callback` with the keys whose probe this caller owns. Keys whose probe
   settled elsewhere, or that could not be claimed in time, are not owned.
+
+  The callback returns `{result, unresolved}`, where `unresolved` lists owned keys
+  whose existence the probe did not establish. Those keys are handed to one waiting
+  caller for a single retry per group of waiters.
   """
-  @spec run(PostHog.supervisor_name(), [String.t()], ([String.t()] -> result)) :: result
+  @spec run(
+          PostHog.supervisor_name(),
+          [String.t()],
+          ([String.t()] -> {result, [String.t()]})
+        ) :: result
         when result: var
   def run(name, keys, callback) do
     led = await_overlapping_probes(name, Enum.uniq(keys))
 
-    result =
+    {result, unresolved} =
       try do
         callback.(led)
       catch
@@ -36,7 +44,9 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
           :erlang.raise(kind, reason, __STACKTRACE__)
       end
 
-    release(name, led, :settled)
+    unresolved = Enum.filter(unresolved, &(&1 in led))
+    release(name, led -- unresolved, :settled)
+    release(name, unresolved, :unresolved)
     result
   end
 
@@ -107,7 +117,7 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
         {^reply_to, :settled, key} ->
           await_notices(reply_to, MapSet.delete(waiting, key), [key | settled], deadline)
 
-        {^reply_to, :abandoned, key} ->
+        {^reply_to, notice, key} when notice in [:granted, :abandoned] ->
           await_notices(reply_to, MapSet.delete(waiting, key), settled, deadline)
       after
         remaining(deadline) -> :timeout
@@ -129,17 +139,20 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
   @impl GenServer
   def handle_call({:claim, keys, reply_to}, {pid, _tag}, state) do
     state = unwait(state, pid)
-    {free, in_flight} = Enum.split_with(keys, &(not Map.has_key?(state.owners, &1)))
+    {mine, others} = Enum.split_with(keys, &(Map.get(state.owners, &1) == pid))
+    {free, in_flight} = Enum.split_with(others, &(not Map.has_key?(state.owners, &1)))
 
-    # A caller that must wait owns nothing, so two callers can't wait on each other.
-    if in_flight == [] do
+    # A caller that waits owns nothing, so two callers can't wait on each other. A
+    # caller handed a retry owns a key, so it doesn't wait on others' probes.
+    if in_flight == [] or mine != [] do
       state = %{state | owners: Enum.reduce(free, state.owners, &Map.put(&2, &1, pid))}
       state = update_proc(state, pid, &%{&1 | owned: MapSet.union(&1.owned, MapSet.new(free))})
-      {:reply, {free, []}, maybe_forget(state, pid)}
+      {:reply, {mine ++ free, []}, maybe_forget(state, pid)}
     else
       waiters =
         Enum.reduce(in_flight, state.waiters, fn key, waiters ->
-          Map.update(waiters, key, %{reply_to => pid}, &Map.put(&1, reply_to, pid))
+          waiter = %{pid: pid, retried?: false}
+          Map.update(waiters, key, %{reply_to => waiter}, &Map.put(&1, reply_to, waiter))
         end)
 
       state = %{state | waiters: waiters}
@@ -152,6 +165,8 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
   def handle_cast({:release, pid, keys, notice}, state),
     do: {:noreply, release_owned(state, pid, keys, notice)}
 
+  # Sent when a caller stops waiting. Any key handed to it for a retry is passed on,
+  # because it will not make that request.
   def handle_cast({:unwait, pid, reply_to}, state) do
     state =
       case state.procs do
@@ -159,7 +174,8 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
         _other -> state
       end
 
-    {:noreply, state}
+    owned = state.procs |> Map.get(pid, %{owned: MapSet.new()}) |> Map.fetch!(:owned)
+    {:noreply, release_owned(state, pid, MapSet.to_list(owned), :abandoned)}
   end
 
   @impl GenServer
@@ -189,14 +205,74 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
   end
 
   defp release_key(state, key, notice) do
-    {key_waiters, waiters} = Map.pop(state.waiters, key, %{})
-    state = %{state | owners: Map.delete(state.owners, key), waiters: waiters}
+    state = %{state | owners: Map.delete(state.owners, key)}
+    key_waiters = Map.get(state.waiters, key, %{})
 
-    Enum.reduce(key_waiters, state, fn {reply_to, waiter}, state ->
+    case notice do
+      :settled ->
+        notify_waiters(state, key, :settled)
+
+      :abandoned ->
+        hand_off(state, key, :abandoned)
+
+      # Waiters that already had their group's retry proceed in parallel. Waiters
+      # that arrived later get one retry of their own.
+      :unresolved ->
+        {retried, fresh} = Enum.split_with(key_waiters, fn {_ref, w} -> w.retried? end)
+        state = %{state | waiters: put_key_waiters(state.waiters, key, Map.new(retried))}
+        state = notify_waiters(state, key, :settled)
+
+        fresh = Map.new(fresh, fn {ref, w} -> {ref, %{w | retried?: true}} end)
+        state = %{state | waiters: put_key_waiters(state.waiters, key, fresh)}
+        hand_off(state, key, :settled)
+    end
+  end
+
+  # Hands the key to one waiting caller that waits on nothing else. The other
+  # waiters stay registered and wait for that caller's request instead of
+  # competing to make their own. Without such a caller, every waiter gets
+  # `fallback` and the key is no longer coordinated in this round.
+  defp hand_off(state, key, fallback) do
+    candidate =
+      state.waiters
+      |> Map.get(key, %{})
+      |> Enum.find(fn {_ref, %{pid: pid}} -> waited_key_count(state, pid) == 1 end)
+
+    case candidate do
+      nil ->
+        notify_waiters(state, key, fallback)
+
+      {reply_to, %{pid: waiter}} ->
+        send(reply_to, {reply_to, :granted, key})
+
+        %{state | waiters: remove_waiter(state.waiters, key, reply_to)}
+        |> Map.update!(:owners, &Map.put(&1, key, waiter))
+        |> drop_waited_key(waiter, key)
+        |> update_proc(waiter, &%{&1 | owned: MapSet.put(&1.owned, key)})
+    end
+  end
+
+  defp notify_waiters(state, key, notice) do
+    Enum.reduce(Map.get(state.waiters, key, %{}), state, fn {reply_to, %{pid: waiter}}, state ->
       send(reply_to, {reply_to, notice, key})
-      state |> drop_waited_key(waiter, key) |> maybe_forget(waiter)
+
+      %{state | waiters: remove_waiter(state.waiters, key, reply_to)}
+      |> drop_waited_key(waiter, key)
+      |> maybe_forget(waiter)
     end)
   end
+
+  defp waited_key_count(state, pid) do
+    case state.procs do
+      %{^pid => %{wait: {_reply_to, keys}}} -> MapSet.size(keys)
+      _other -> 0
+    end
+  end
+
+  defp put_key_waiters(waiters, key, key_waiters) when map_size(key_waiters) == 0,
+    do: Map.delete(waiters, key)
+
+  defp put_key_waiters(waiters, key, key_waiters), do: Map.put(waiters, key, key_waiters)
 
   defp unwait(state, pid) do
     case state.procs do

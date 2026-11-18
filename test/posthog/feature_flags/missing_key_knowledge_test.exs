@@ -736,11 +736,11 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
            )
   end
 
-  test "waiters of an errored probe make their own requests in parallel" do
+  test "an errored probe gets one shared retry, then its waiters proceed in parallel" do
     owner = self()
     {:ok, calls} = Agent.start_link(fn -> 0 end)
 
-    expect(PostHog.API.Mock, :request, 5, fn :stub_client, method, path, _opts ->
+    expect(PostHog.API.Mock, :request, 6, fn :stub_client, method, path, _opts ->
       case {method, path} do
         {:get, "/flags/definitions"} ->
           {:ok, %{status: 200, body: envelope(), headers: %{}}}
@@ -760,23 +760,168 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     assert_receive {:errored_probe, 0, first_worker}
 
     waiters =
-      for id <- ["two", "three", "four"], do: Task.async(fn -> scoped(name, ["missing"], id) end)
+      for id <- ["two", "three", "four", "five"],
+          do: Task.async(fn -> scoped(name, ["missing"], id) end)
 
-    eventually(fn ->
-      map_size(Map.get(:sys.get_state(coordinator).waiters, "missing", %{})) == 3
-    end)
+    eventually(fn -> waiter_count(coordinator, "missing") == 4 end)
 
     send(first_worker, :release_errored)
     assert {:ok, _snapshot} = Task.await(first)
+    assert_receive {:errored_probe, 1, retry_worker}
+    refute_receive {:errored_probe, 2, _worker}, 50
+
+    send(retry_worker, :release_errored)
 
     workers =
-      for call <- 1..3 do
+      for call <- 2..4 do
         assert_receive {:errored_probe, ^call, worker}
         worker
       end
 
     Enum.each(workers, &send(&1, :release_errored))
     Enum.each(waiters, &assert({:ok, _snapshot} = Task.await(&1)))
+  end
+
+  test "a caller that starts waiting during a shared retry shares that retry's result" do
+    alias FeatureFlags.MissingProbeCoordinator, as: Coordinator
+
+    name = __MODULE__.LateWaiter
+    start_coordinator_only(name)
+    coordinator = PostHog.Registry.via(name, Coordinator)
+    owner = self()
+
+    first = coordinated_probe(name, :first, owner)
+    assert_receive {:probe, :first, ["missing"], first_worker}
+    early = coordinated_probe(name, :early, owner)
+    eventually(fn -> waiter_count(coordinator, "missing") == 1 end)
+
+    send(first_worker, {:finish, ["missing"]})
+    assert :ok = Task.await(first)
+    assert_receive {:probe, :early, ["missing"], retry_worker}
+
+    late = coordinated_probe(name, :late, owner)
+    eventually(fn -> waiter_count(coordinator, "missing") == 1 end)
+
+    send(retry_worker, {:finish, []})
+    assert :ok = Task.await(early)
+    assert_receive {:probe, :late, [], late_worker}
+    send(late_worker, {:finish, []})
+    assert :ok = Task.await(late)
+  end
+
+  test "a caller that arrives after a failed shared retry starts fresh coordination" do
+    alias FeatureFlags.MissingProbeCoordinator, as: Coordinator
+
+    name = __MODULE__.FreshAfterRetry
+    start_coordinator_only(name)
+    coordinator = PostHog.Registry.via(name, Coordinator)
+    owner = self()
+
+    first = coordinated_probe(name, :first, owner)
+    assert_receive {:probe, :first, ["missing"], first_worker}
+    early = coordinated_probe(name, :early, owner)
+    eventually(fn -> waiter_count(coordinator, "missing") == 1 end)
+
+    send(first_worker, {:finish, ["missing"]})
+    assert :ok = Task.await(first)
+    assert_receive {:probe, :early, ["missing"], retry_worker}
+    send(retry_worker, {:finish, ["missing"]})
+    assert :ok = Task.await(early)
+
+    new_owner = coordinated_probe(name, :new_owner, owner)
+    assert_receive {:probe, :new_owner, ["missing"], new_worker}
+    new_waiter = coordinated_probe(name, :new_waiter, owner)
+    eventually(fn -> waiter_count(coordinator, "missing") == 1 end)
+
+    send(new_worker, {:finish, []})
+    assert :ok = Task.await(new_owner)
+    assert_receive {:probe, :new_waiter, [], waiter_worker}
+    send(waiter_worker, {:finish, []})
+    assert :ok = Task.await(new_waiter)
+  end
+
+  test "a shared retry that fails before the other waiters resume starts no second retry" do
+    alias FeatureFlags.MissingProbeCoordinator, as: Coordinator
+
+    name = __MODULE__.FastRetry
+    start_coordinator_only(name)
+    coordinator = PostHog.Registry.via(name, Coordinator)
+    owner = self()
+
+    first = coordinated_probe(name, :first, owner)
+    assert_receive {:probe, :first, ["missing"], first_worker}
+    waiters = for id <- [:a, :b, :c], do: coordinated_probe(name, id, owner)
+    eventually(fn -> waiter_count(coordinator, "missing") == 3 end)
+
+    send(first_worker, {:finish, ["missing"]})
+    assert :ok = Task.await(first)
+    assert_receive {:probe, retry_id, ["missing"], retry_worker}
+
+    held = Enum.reject(waiters, &(&1.pid == retry_worker))
+    Enum.each(held, &:erlang.suspend_process(&1.pid))
+    send(retry_worker, {:finish, ["missing"]})
+    eventually(fn -> waiter_count(coordinator, "missing") == 0 end)
+    Enum.each(held, &:erlang.resume_process(&1.pid))
+
+    for id <- [:a, :b, :c] -- [retry_id] do
+      assert_receive {:probe, ^id, [], worker}
+      send(worker, {:finish, []})
+    end
+
+    Enum.each(waiters, &assert(:ok = Task.await(&1)))
+  end
+
+  test "a caller handed the retry that stops waiting passes it on" do
+    alias FeatureFlags.MissingProbeCoordinator, as: Coordinator
+
+    name = __MODULE__.HandoffKilled
+    start_coordinator_only(name)
+    coordinator = PostHog.Registry.via(name, Coordinator)
+    owner = self()
+
+    first = coordinated_probe(name, :first, owner)
+    assert_receive {:probe, :first, ["missing"], first_worker}
+
+    for id <- [:a, :b] do
+      Task.start(fn ->
+        FeatureFlags.MissingProbeCoordinator.run(name, ["missing"], fn owned ->
+          send(owner, {:probe, id, owned, self()})
+          receive do: ({:finish, unresolved} -> {:ok, unresolved})
+        end)
+      end)
+    end
+
+    eventually(fn -> waiter_count(coordinator, "missing") == 2 end)
+
+    send(first_worker, {:finish, ["missing"]})
+    assert :ok = Task.await(first)
+    assert_receive {:probe, retry_id, ["missing"], retry_worker}
+    Process.exit(retry_worker, :kill)
+
+    [other] = [:a, :b] -- [retry_id]
+    assert_receive {:probe, ^other, ["missing"], other_worker}
+    send(other_worker, {:finish, []})
+    eventually(fn -> :sys.get_state(coordinator).owners == %{} end)
+  end
+
+  defp waiter_count(coordinator, key),
+    do: map_size(Map.get(:sys.get_state(coordinator).waiters, key, %{}))
+
+  defp start_coordinator_only(name) do
+    expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+      {:ok, %{status: 200, body: envelope(), headers: %{}}}
+    end)
+
+    start_instance(name)
+  end
+
+  defp coordinated_probe(name, id, owner) do
+    Task.async(fn ->
+      FeatureFlags.MissingProbeCoordinator.run(name, ["missing"], fn owned ->
+        send(owner, {:probe, id, owned, self()})
+        receive do: ({:finish, unresolved} -> {:ok, unresolved})
+      end)
+    end)
   end
 
   test "waiters on a settled probe still share one probe for their other missing key" do
