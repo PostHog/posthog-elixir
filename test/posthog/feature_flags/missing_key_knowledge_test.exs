@@ -1074,6 +1074,122 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     send(w2_worker, {:finish, []})
   end
 
+  test "an abandoned retry stays open while its group waits on another key" do
+    alias FeatureFlags.MissingProbeCoordinator, as: Coordinator
+
+    name = __MODULE__.AbandonedOverlap
+    start_coordinator_only(name)
+    coordinator = PostHog.Registry.via(name, Coordinator)
+    owner = self()
+
+    start_probe = fn id, keys ->
+      Task.start(fn ->
+        Coordinator.run(name, keys, fn owned ->
+          send(owner, {:probe, id, owned, self()})
+          receive do: ({:finish, unresolved} -> {:ok, unresolved})
+        end)
+      end)
+    end
+
+    for {id, key} <- [a_owner: "a", c_owner: "c", d_owner: "d"] do
+      {:ok, _pid} = start_probe.(id, [key])
+      assert_receive {:probe, ^id, [^key], _worker}
+    end
+
+    [a_worker, c_worker, d_worker] =
+      for key <- ["a", "c", "d"], do: Map.fetch!(:sys.get_state(coordinator).owners, key)
+
+    {:ok, w1} = start_probe.(:w1, ["a", "c"])
+    {:ok, _w2} = start_probe.(:w2, ["a", "c", "d"])
+    eventually(fn -> waiter_count(coordinator, "a") == 2 end)
+
+    send(a_worker, {:finish, ["a"]})
+    eventually(fn -> waiter_count(coordinator, "a") == 0 end)
+    send(c_worker, {:finish, []})
+    assert_receive {:probe, :w1, ["a"], _w1_worker}
+
+    # A fresh caller also waits on "a" while w1 runs the group's retry.
+    {:ok, _w3} = start_probe.(:w3, ["a", "d"])
+    eventually(fn -> waiter_count(coordinator, "a") == 1 end)
+
+    Process.exit(w1, :kill)
+    eventually(fn -> waiter_count(coordinator, "a") == 0 end)
+    send(d_worker, {:finish, []})
+
+    # One caller runs the reopened retry and the other waits for it.
+    assert_receive {:probe, id, ["a"], worker}
+    assert id in [:w2, :w3]
+    refute_receive {:probe, _id, _owned, _worker}, 100
+    send(worker, {:finish, []})
+    assert_receive {:probe, other, [], other_worker}
+    assert other in ([:w2, :w3] -- [id])
+    send(other_worker, {:finish, []})
+  end
+
+  test "a finished group retry is skipped instead of joining an unrelated probe" do
+    {_coordinator, w2, later_worker} = finished_group_retry(__MODULE__.FinishedSkip)
+
+    send(w2.c_worker, {:finish, []})
+    assert_receive {:probe, :w2, [], w2_worker}, 500
+    send(w2_worker, {:finish, []})
+    send(later_worker, {:finish, []})
+  end
+
+  test "an unrelated owner leaving does not reopen a finished group retry" do
+    {coordinator, w2, _later_worker} = finished_group_retry(__MODULE__.FinishedReopen)
+
+    Process.exit(w2.later, :kill)
+    eventually(fn -> not Map.has_key?(:sys.get_state(coordinator).owners, "a") end)
+    send(w2.c_worker, {:finish, []})
+    assert_receive {:probe, :w2, [], w2_worker}, 500
+    send(w2_worker, {:finish, []})
+  end
+
+  # Waiters w1 and w2 share a retry token for "a". w1 runs and finishes the retry
+  # while w2 is suspended, then an unrelated caller claims "a" before w2 resumes.
+  defp finished_group_retry(name) do
+    alias FeatureFlags.MissingProbeCoordinator, as: Coordinator
+
+    start_coordinator_only(name)
+    coordinator = PostHog.Registry.via(name, Coordinator)
+    owner = self()
+
+    start_probe = fn id, keys ->
+      Task.start(fn ->
+        Coordinator.run(name, keys, fn owned ->
+          send(owner, {:probe, id, owned, self()})
+          receive do: ({:finish, unresolved} -> {:ok, unresolved})
+        end)
+      end)
+    end
+
+    workers =
+      for {id, key} <- [a_owner: "a", b_owner: "b", c_owner: "c"], into: %{} do
+        {:ok, _pid} = start_probe.(id, [key])
+        assert_receive {:probe, ^id, [^key], worker}
+        {key, worker}
+      end
+
+    {:ok, _w1} = start_probe.(:w1, ["a", "b"])
+    {:ok, w2} = start_probe.(:w2, ["a", "c"])
+    eventually(fn -> waiter_count(coordinator, "a") == 2 end)
+
+    send(workers["a"], {:finish, ["a"]})
+    eventually(fn -> waiter_count(coordinator, "a") == 0 end)
+
+    :erlang.suspend_process(w2)
+    send(workers["b"], {:finish, []})
+    assert_receive {:probe, :w1, ["a"], w1_worker}
+    send(w1_worker, {:finish, []})
+    eventually(fn -> not Map.has_key?(:sys.get_state(coordinator).owners, "a") end)
+
+    {:ok, later} = start_probe.(:later, ["a"])
+    assert_receive {:probe, :later, ["a"], later_worker}
+    :erlang.resume_process(w2)
+
+    {coordinator, %{later: later, c_worker: workers["c"]}, later_worker}
+  end
+
   test "remote evaluation outside a coordinated probe leaves no process state" do
     expect(PostHog.API.Mock, :request, 2, fn :stub_client, method, path, _opts ->
       case {method, path} do
