@@ -90,6 +90,9 @@ defmodule PostHog.FeatureFlagsTest do
         assert opts[:params] == %{v: 2}
 
         assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
                  distinct_id: "foo"
                }
 
@@ -102,6 +105,8 @@ defmodule PostHog.FeatureFlagsTest do
     test "sophisticated body" do
       expect(API.Mock, :request, fn client, method, url, opts ->
         assert opts[:json] == %{
+                 group_properties: %{},
+                 geoip_disable: false,
                  distinct_id: "foo",
                  groups: %{group_type: "group_id"}
                }
@@ -114,6 +119,51 @@ defmodule PostHog.FeatureFlagsTest do
                  distinct_id: "foo",
                  groups: %{group_type: "group_id"}
                })
+    end
+
+    test "preserves string-keyed wire options without adding duplicate atom keys" do
+      body = %{
+        "distinct_id" => "foo",
+        "groups" => %{"company" => "acme"},
+        "group_properties" => %{"company" => %{"plan" => "paid"}},
+        "geoip_disable" => true
+      }
+
+      expect(API.Mock, :request, fn _client, :post, "/flags", opts ->
+        assert opts[:json] == body
+        {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end)
+
+      assert {:ok, _} = FeatureFlags.flags(body)
+    end
+
+    test "preserves legacy group aliases without adding competing defaults" do
+      groups = %{"company" => "acme"}
+      group_properties = %{"company" => %{"plan" => "paid"}}
+
+      for {group_key, properties_key} <- [
+            {"$groups", "$group_properties"},
+            {:"$groups", :"$group_properties"}
+          ],
+          {body, expected_groups} <- [
+            {%{group_key => groups}, %{"$groups" => groups, "group_properties" => %{}}},
+            {%{properties_key => group_properties},
+             %{"groups" => %{}, "$group_properties" => group_properties}},
+            {%{group_key => groups, properties_key => group_properties},
+             %{"$groups" => groups, "$group_properties" => group_properties}}
+          ] do
+        expect(API.Mock, :request, fn _client, :post, "/flags", opts ->
+          assert Jason.decode!(Jason.encode!(opts[:json])) ==
+                   Map.merge(expected_groups, %{"distinct_id" => "foo", "geoip_disable" => true})
+
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+        end)
+
+        assert {:ok, _} =
+                 FeatureFlags.flags(
+                   Map.merge(body, %{"distinct_id" => "foo", "geoip_disable" => true})
+                 )
+      end
     end
 
     test "client errors passed as is" do
@@ -152,7 +202,12 @@ defmodule PostHog.FeatureFlagsTest do
     @tag config: [supervisor_name: MyPostHog]
     test "custom PostHog instance" do
       expect(API.Mock, :request, fn client, method, url, opts ->
-        assert opts[:json] == %{distinct_id: "foo"}
+        assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
+                 distinct_id: "foo"
+               }
 
         API.Stub.request(client, method, url, opts)
       end)
@@ -176,6 +231,9 @@ defmodule PostHog.FeatureFlagsTest do
         assert opts[:params] == %{v: 2}
 
         assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
                  distinct_id: "foo"
                }
 
@@ -187,7 +245,13 @@ defmodule PostHog.FeatureFlagsTest do
 
     test "full request map" do
       expect(API.Mock, :request, fn client, method, url, opts ->
-        assert opts[:json] == %{distinct_id: "foo", personal_properties: %{foo: "bar"}}
+        assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
+                 distinct_id: "foo",
+                 personal_properties: %{foo: "bar"}
+               }
 
         API.Stub.request(client, method, url, opts)
       end)
@@ -203,7 +267,12 @@ defmodule PostHog.FeatureFlagsTest do
       PostHog.set_context(%{distinct_id: "foo"})
 
       expect(API.Mock, :request, fn client, method, url, opts ->
-        assert opts[:json] == %{distinct_id: "foo"}
+        assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
+                 distinct_id: "foo"
+               }
 
         API.Stub.request(client, method, url, opts)
       end)
@@ -215,7 +284,12 @@ defmodule PostHog.FeatureFlagsTest do
       PostHog.set_context(%{distinct_id: "foo"})
 
       expect(API.Mock, :request, fn client, method, url, opts ->
-        assert opts[:json] == %{distinct_id: "bar"}
+        assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
+                 distinct_id: "bar"
+               }
 
         API.Stub.request(client, method, url, opts)
       end)
@@ -235,7 +309,12 @@ defmodule PostHog.FeatureFlagsTest do
     @tag config: [supervisor_name: MyPostHog]
     test "custom PostHog instance" do
       expect(API.Mock, :request, fn client, method, url, opts ->
-        assert opts[:json] == %{distinct_id: "foo"}
+        assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
+                 distinct_id: "foo"
+               }
 
         API.Stub.request(client, method, url, opts)
       end)
@@ -253,6 +332,9 @@ defmodule PostHog.FeatureFlagsTest do
         assert opts[:params] == %{v: 2}
 
         assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
                  distinct_id: "foo"
                }
 
@@ -284,7 +366,13 @@ defmodule PostHog.FeatureFlagsTest do
 
     test "full request map" do
       expect(API.Mock, :request, fn client, method, url, opts ->
-        assert opts[:json] == %{distinct_id: "foo", personal_properties: %{foo: "bar"}}
+        assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
+                 distinct_id: "foo",
+                 personal_properties: %{foo: "bar"}
+               }
 
         API.Stub.request(client, method, url, opts)
       end)
@@ -300,7 +388,12 @@ defmodule PostHog.FeatureFlagsTest do
       PostHog.set_context(%{distinct_id: "foo"})
 
       expect(API.Mock, :request, fn client, method, url, opts ->
-        assert opts[:json] == %{distinct_id: "foo"}
+        assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
+                 distinct_id: "foo"
+               }
 
         API.Stub.request(client, method, url, opts)
       end)
@@ -312,7 +405,12 @@ defmodule PostHog.FeatureFlagsTest do
       PostHog.set_context(%{distinct_id: "foo"})
 
       expect(API.Mock, :request, fn client, method, url, opts ->
-        assert opts[:json] == %{distinct_id: "bar"}
+        assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
+                 distinct_id: "bar"
+               }
 
         API.Stub.request(client, method, url, opts)
       end)
@@ -524,7 +622,12 @@ defmodule PostHog.FeatureFlagsTest do
     @tag config: [supervisor_name: MyPostHog]
     test "custom PostHog instance" do
       expect(API.Mock, :request, fn client, method, url, opts ->
-        assert opts[:json] == %{distinct_id: "foo"}
+        assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
+                 distinct_id: "foo"
+               }
 
         API.Stub.request(client, method, url, opts)
       end)
@@ -714,6 +817,9 @@ defmodule PostHog.FeatureFlagsTest do
         assert opts[:params] == %{v: 2}
 
         assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
                  distinct_id: "foo"
                }
 
@@ -883,7 +989,13 @@ defmodule PostHog.FeatureFlagsTest do
 
     test "full request map" do
       expect(API.Mock, :request, fn _client, _method, _url, opts ->
-        assert opts[:json] == %{distinct_id: "foo", personal_properties: %{foo: "bar"}}
+        assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
+                 distinct_id: "foo",
+                 personal_properties: %{foo: "bar"}
+               }
 
         {:ok,
          %{
@@ -910,7 +1022,12 @@ defmodule PostHog.FeatureFlagsTest do
       PostHog.set_context(%{distinct_id: "foo"})
 
       expect(API.Mock, :request, fn _client, _method, _url, opts ->
-        assert opts[:json] == %{distinct_id: "foo"}
+        assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
+                 distinct_id: "foo"
+               }
 
         {:ok,
          %{
@@ -934,7 +1051,12 @@ defmodule PostHog.FeatureFlagsTest do
       PostHog.set_context(%{distinct_id: "foo"})
 
       expect(API.Mock, :request, fn _client, _method, _url, opts ->
-        assert opts[:json] == %{distinct_id: "bar"}
+        assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
+                 distinct_id: "bar"
+               }
 
         {:ok,
          %{
@@ -1121,7 +1243,12 @@ defmodule PostHog.FeatureFlagsTest do
     @tag config: [supervisor_name: MyPostHog]
     test "custom PostHog instance" do
       expect(API.Mock, :request, fn _client, _method, _url, opts ->
-        assert opts[:json] == %{distinct_id: "foo"}
+        assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
+                 distinct_id: "foo"
+               }
 
         {:ok,
          %{
@@ -1144,7 +1271,12 @@ defmodule PostHog.FeatureFlagsTest do
     @tag config: [supervisor_name: MyPostHog]
     test "custom PostHog instance with opts" do
       expect(API.Mock, :request, fn _client, _method, _url, opts ->
-        assert opts[:json] == %{distinct_id: "foo"}
+        assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
+                 distinct_id: "foo"
+               }
 
         {:ok,
          %{
@@ -1210,7 +1342,12 @@ defmodule PostHog.FeatureFlagsTest do
     @tag config: [supervisor_name: MyPostHog]
     test "custom PostHog instance" do
       expect(API.Mock, :request, fn _client, _method, _url, opts ->
-        assert opts[:json] == %{distinct_id: "foo"}
+        assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
+                 distinct_id: "foo"
+               }
 
         {:ok,
          %{
@@ -1262,6 +1399,9 @@ defmodule PostHog.FeatureFlagsTest do
         assert opts[:params] == %{v: 2}
 
         assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
                  distinct_id: "foo"
                }
 
@@ -1293,7 +1433,13 @@ defmodule PostHog.FeatureFlagsTest do
 
     test "full request map" do
       expect(API.Mock, :request, fn client, method, url, opts ->
-        assert opts[:json] == %{distinct_id: "foo", personal_properties: %{foo: "bar"}}
+        assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
+                 distinct_id: "foo",
+                 personal_properties: %{foo: "bar"}
+               }
 
         API.Stub.request(client, method, url, opts)
       end)
@@ -1309,7 +1455,12 @@ defmodule PostHog.FeatureFlagsTest do
       PostHog.set_context(%{distinct_id: "foo"})
 
       expect(API.Mock, :request, fn client, method, url, opts ->
-        assert opts[:json] == %{distinct_id: "foo"}
+        assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
+                 distinct_id: "foo"
+               }
 
         API.Stub.request(client, method, url, opts)
       end)
@@ -1321,7 +1472,12 @@ defmodule PostHog.FeatureFlagsTest do
       PostHog.set_context(%{distinct_id: "foo"})
 
       expect(API.Mock, :request, fn client, method, url, opts ->
-        assert opts[:json] == %{distinct_id: "bar"}
+        assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
+                 distinct_id: "bar"
+               }
 
         API.Stub.request(client, method, url, opts)
       end)
@@ -1375,7 +1531,12 @@ defmodule PostHog.FeatureFlagsTest do
     @tag config: [supervisor_name: MyPostHog]
     test "custom PostHog instance" do
       expect(API.Mock, :request, fn client, method, url, opts ->
-        assert opts[:json] == %{distinct_id: "foo"}
+        assert opts[:json] == %{
+                 groups: %{},
+                 group_properties: %{},
+                 geoip_disable: false,
+                 distinct_id: "foo"
+               }
 
         API.Stub.request(client, method, url, opts)
       end)

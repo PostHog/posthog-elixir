@@ -95,7 +95,28 @@ defmodule SdkComplianceAdapter.RouterTest do
     assert event["properties"]["$feature_flag_has_experiment"] == true
   end
 
-  test "preserves omitted options and uses remote evaluation for either force_remote value" do
+  test "forwards raw timestamp overrides through before_send without leaking to later captures" do
+    timestamp = "2025-01-02T08:34:05.123456789+05:30"
+
+    assert post("/capture", %{
+             event: "override",
+             distinct_id: "user",
+             timestamp: timestamp,
+             properties: %{timestamp_like: timestamp}
+           }) == %{"success" => true}
+
+    assert post("/capture", %{event: "default", distinct_id: "user"}) == %{"success" => true}
+    post("/flush", %{})
+
+    events = Enum.flat_map(requests("/batch"), & &1.body["batch"])
+    [override, default] = events
+    assert override["timestamp"] == "2025-01-02T03:04:05.123456789Z"
+    assert override["properties"]["timestamp_like"] == timestamp
+    assert {:ok, _, 0} = DateTime.from_iso8601(default["timestamp"])
+    refute default["timestamp"] == override["timestamp"]
+  end
+
+  test "sends SDK defaults and uses remote evaluation for either force_remote value" do
     respond([rich_response(), rich_response()])
 
     for force_remote <- [false, true] do
@@ -112,7 +133,10 @@ defmodule SdkComplianceAdapter.RouterTest do
       assert request.body == %{
                "api_key" => "phc_test_key",
                "distinct_id" => "user",
-               "flag_keys_to_evaluate" => ["checkout"]
+               "flag_keys_to_evaluate" => ["checkout"],
+               "groups" => %{},
+               "group_properties" => %{},
+               "geoip_disable" => false
              }
     end
   end
