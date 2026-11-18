@@ -14,7 +14,6 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
 
   @wait_timeout_ms 2_000
   @call_timeout_ms 1_000
-  @round_ttl_ms @wait_timeout_ms + @call_timeout_ms
 
   def child_spec(opts) do
     %{
@@ -148,7 +147,7 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
 
   @impl GenServer
   def handle_call({:claim, keys, claim, rounds}, {pid, _tag}, state) do
-    state = state |> unwait(pid) |> prune()
+    state = unwait(state, pid)
     {skipped, keys} = Enum.split_with(keys, &skip?(state, &1, rounds, pid))
     {free, in_flight} = Enum.split_with(keys, &(not Map.has_key?(state.owners, &1)))
 
@@ -232,17 +231,27 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
     end
   end
 
+  # A round with no owner and no members can't be resumed, so it is dropped and
+  # the next caller starts a fresh round.
   defp update_members(state, keys, fun) do
     rounds =
       Enum.reduce(keys, state.rounds, fn key, rounds ->
         case Map.fetch(rounds, key) do
-          {:ok, round} -> Map.put(rounds, key, %{round | members: fun.(round.members)})
+          {:ok, round} -> put_round(rounds, key, %{round | members: fun.(round.members)})
           :error -> rounds
         end
       end)
 
     %{state | rounds: rounds}
   end
+
+  defp put_round(rounds, key, %{owner: nil, members: members} = round) do
+    if MapSet.size(members) == 0,
+      do: Map.delete(rounds, key),
+      else: Map.put(rounds, key, round)
+  end
+
+  defp put_round(rounds, key, round), do: Map.put(rounds, key, round)
 
   defp joined(state, keys, rounds) do
     Enum.reduce(keys, rounds, fn key, rounds ->
@@ -266,15 +275,7 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
   end
 
   defp new_round,
-    do: %{
-      id: make_ref(),
-      owner: nil,
-      retried?: false,
-      members: MapSet.new(),
-      expires_at: expires_at()
-    }
-
-  defp expires_at, do: System.monotonic_time(:millisecond) + @round_ttl_ms
+    do: %{id: make_ref(), owner: nil, retried?: false, members: MapSet.new()}
 
   defp add_waiter(state, key, pid, claim) do
     waiters = Map.update(state.waiters, key, %{claim => pid}, &Map.put(&1, claim, pid))
@@ -302,7 +303,7 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
   end
 
   defp reopen(state, key, round) do
-    round = %{round | owner: nil, expires_at: expires_at()}
+    round = %{round | owner: nil}
     state = %{state | rounds: Map.put(state.rounds, key, round)}
     notify_waiters(state, key, :reopened)
   end
@@ -320,17 +321,6 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
       send(claim, {claim, notice, key})
       state |> drop_waited_key(pid, key) |> maybe_forget(pid)
     end)
-  end
-
-  defp prune(state) do
-    now = System.monotonic_time(:millisecond)
-
-    rounds =
-      Map.reject(state.rounds, fn {key, round} ->
-        is_nil(round.owner) and round.expires_at < now and not Map.has_key?(state.waiters, key)
-      end)
-
-    %{state | rounds: rounds}
   end
 
   defp unwait_claim(state, pid, claim) do

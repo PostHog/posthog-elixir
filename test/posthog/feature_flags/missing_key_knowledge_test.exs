@@ -1485,6 +1485,28 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     Enum.each(waiters, &assert(:ok = Task.await(&1)))
   end
 
+  test "a reopened round whose last member leaves is dropped" do
+    alias FeatureFlags.MissingProbeCoordinator, as: Coordinator
+
+    name = __MODULE__.ReopenedLeft
+    start_coordinator_only(name)
+    coordinator = PostHog.Registry.via(name, Coordinator)
+    owner = self()
+
+    first = coordinated_probe(name, :first, owner)
+    assert_receive {:probe, :first, ["missing"], first_worker}
+    {:ok, member} = start_unlinked_probe(name, owner, :member, ["missing"])
+    eventually(fn -> waiter_count(coordinator, "missing") == 1 end)
+
+    # The round reopens for its member, which dies before reclaiming it.
+    :erlang.suspend_process(member)
+    send(first_worker, {:finish, ["missing"]})
+    assert :ok = Task.await(first)
+    eventually(fn -> waiter_count(coordinator, "missing") == 0 end)
+    Process.exit(member, :kill)
+    eventually(fn -> :sys.get_state(coordinator).rounds == %{} end)
+  end
+
   test "remote evaluation outside a coordinated probe leaves no process state" do
     expect(PostHog.API.Mock, :request, 2, fn :stub_client, method, path, _opts ->
       case {method, path} do
