@@ -1,5 +1,11 @@
 # posthog
 
+## 2.23.2 — 2026-11-18
+
+### Patch changes
+
+- [8516142](https://github.com/posthog/posthog-elixir/commit/8516142f50f5166383ea6da4edc1d67f59fece15) `PostHog.Emails` now sends emails, uploads attachments and reads email status through `/api/messaging/`, which takes the project from the project secret API key, instead of `/api/projects/@current/messaging/`. Needs PostHog Cloud, or a self-hosted PostHog from 2026-11-18 or later. Older self-hosted versions answer these calls with a 404. — Thanks @rafaeelaudibert!
+
 ## 2.23.1 — 2026-11-18
 
 ### Patch changes
