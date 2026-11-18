@@ -442,8 +442,14 @@ defmodule PostHog.FeatureFlags do
         []
       )
     else
-      with_missing_probe_locks(name, probe_keys, fn ->
-        evaluate_after_missing_probe_lock(name, distinct_id, body, requested_keys, probe_keys)
+      __MODULE__.MissingProbeCoordinator.run(name, probe_keys, fn owned_probe_keys ->
+        evaluate_after_missing_probe_lock(
+          name,
+          distinct_id,
+          body,
+          requested_keys,
+          owned_probe_keys
+        )
       end)
     end
   end
@@ -520,6 +526,8 @@ defmodule PostHog.FeatureFlags do
       |> Map.delete(:only_evaluate_locally)
       |> translate_flag_keys()
 
+    started = probe_started(name, generation, negative_candidates)
+
     case flags(name, remote_body) do
       {:ok, %{body: %{"flags" => remote_flags} = response_body}} when is_map(remote_flags) ->
         scoped_remote_flags = maybe_scope_remote_results(remote_flags, requested_keys)
@@ -530,7 +538,8 @@ defmodule PostHog.FeatureFlags do
           generation,
           negative_candidates,
           Map.keys(scoped_remote_flags),
-          clean_remote_response?(response_body) and not malformed?
+          clean_remote_response?(response_body) and not malformed?,
+          started
         )
 
         merged = Map.merge(remote_results, local.results)
@@ -608,15 +617,25 @@ defmodule PostHog.FeatureFlags do
       Map.get(body, "quotaLimited") in [nil, false, []]
   end
 
-  defp update_negative_knowledge(_name, nil, _requested, _returned, _clean?), do: :ok
+  defp probe_started(_name, nil, _candidates), do: nil
+  defp probe_started(_name, _generation, []), do: nil
 
-  defp update_negative_knowledge(name, generation, requested, returned, clean?) do
+  defp probe_started(name, _generation, _candidates) do
+    __MODULE__.DefinitionLoader.probe_started(name)
+  catch
+    :exit, _reason -> nil
+  end
+
+  defp update_negative_knowledge(_name, nil, _requested, _returned, _clean?, _started), do: :ok
+
+  defp update_negative_knowledge(name, generation, requested, returned, clean?, started) do
     __MODULE__.DefinitionLoader.update_negative_knowledge(
       name,
       generation,
       requested,
       returned,
-      clean?
+      clean? and (started != nil or requested == []),
+      started
     )
   catch
     :exit, _reason -> :ok
@@ -636,24 +655,6 @@ defmodule PostHog.FeatureFlags do
     end
   catch
     :exit, _reason -> %{definitions: nil, generation: nil, known_missing: MapSet.new()}
-  end
-
-  defp with_missing_probe_locks(name, keys, callback) do
-    keys
-    |> Enum.uniq()
-    |> Enum.sort()
-    |> acquire_missing_probe_locks(name, callback)
-  end
-
-  defp acquire_missing_probe_locks([], _name, callback), do: callback.()
-
-  defp acquire_missing_probe_locks([key | rest], name, callback) do
-    lock = {{__MODULE__, :missing_probe, name, key}, self()}
-
-    # The lock intentionally spans the remote probe. Overlapping evaluations must
-    # wait for its existence result before deciding whether another fallback is
-    # needed; sorted keys keep multi-key probes from deadlocking each other.
-    :global.trans(lock, fn -> acquire_missing_probe_locks(rest, name, callback) end)
   end
 
   @doc """

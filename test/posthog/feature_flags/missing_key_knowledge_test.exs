@@ -43,6 +43,20 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     FeatureFlags.evaluate_flags(name, %{distinct_id: distinct_id, flag_keys: keys})
   end
 
+  defp eventually(check, attempts \\ 100) do
+    cond do
+      check.() ->
+        :ok
+
+      attempts == 0 ->
+        flunk("condition was not met")
+
+      true ->
+        Process.sleep(10)
+        eventually(check, attempts - 1)
+    end
+  end
+
   defp sync_loader(name) do
     :sys.get_state(PostHog.Registry.via(name, DefinitionLoader))
     :ok
@@ -458,5 +472,386 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
 
     assert MapSet.size(DefinitionLoader.evaluation_state(__MODULE__.Capacity, keys).known_missing) ==
              0
+  end
+
+  test "a stalled probe bounds how long overlapping evaluations wait" do
+    owner = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    expect(PostHog.API.Mock, :request, 3, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          call = Agent.get_and_update(calls, &{&1, &1 + 1})
+          send(owner, {:stalled_probe, call, self()})
+          if call == 0, do: receive(do: (:release_stalled -> :ok))
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    start_instance(__MODULE__.Stalled)
+    stalled = Task.async(fn -> scoped(__MODULE__.Stalled, ["missing"], "one") end)
+    assert_receive {:stalled_probe, 0, worker}
+
+    waiter = Task.async(fn -> scoped(__MODULE__.Stalled, ["missing"], "two") end)
+    refute_receive {:stalled_probe, 1, _worker}, 1_000
+    assert_receive {:stalled_probe, 1, _worker}, 2_000
+    assert {:ok, _snapshot} = Task.await(waiter)
+
+    coordinator = PostHog.Registry.via(__MODULE__.Stalled, FeatureFlags.MissingProbeCoordinator)
+    assert :sys.get_state(coordinator).waiters == %{}
+
+    send(worker, :release_stalled)
+    assert {:ok, _snapshot} = Task.await(stalled)
+  end
+
+  test "a crashed probe owner hands the probe to one waiter" do
+    owner = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    expect(PostHog.API.Mock, :request, 3, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          call = Agent.get_and_update(calls, &{&1, &1 + 1})
+          send(owner, {:crash_probe, call, self()})
+          if call == 0, do: receive(do: (:never -> :ok))
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    start_instance(__MODULE__.Crashed)
+
+    {:ok, crashed} =
+      Task.start(fn -> scoped(__MODULE__.Crashed, ["missing"], "one") end)
+
+    assert_receive {:crash_probe, 0, _worker}
+
+    waiters =
+      for id <- ["two", "three", "four"],
+          do: Task.async(fn -> scoped(__MODULE__.Crashed, ["missing"], id) end)
+
+    refute_receive {:crash_probe, 1, _worker}, 50
+    Process.exit(crashed, :kill)
+    assert_receive {:crash_probe, 1, _worker}, 500
+    Enum.each(waiters, &assert({:ok, _snapshot} = Task.await(&1)))
+    refute_receive {:crash_probe, 2, _worker}, 50
+  end
+
+  test "killed waiters are removed from a stalled probe" do
+    owner = self()
+
+    expect(PostHog.API.Mock, :request, 2, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          send(owner, {:killed_waiter_probe, self()})
+          receive do: (:release_killed_waiter -> :ok)
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    start_instance(__MODULE__.KilledWaiter)
+    stalled = Task.async(fn -> scoped(__MODULE__.KilledWaiter, ["missing"], "one") end)
+    assert_receive {:killed_waiter_probe, worker}
+
+    coordinator =
+      PostHog.Registry.via(__MODULE__.KilledWaiter, FeatureFlags.MissingProbeCoordinator)
+
+    {:ok, waiter} = Task.start(fn -> scoped(__MODULE__.KilledWaiter, ["missing"], "two") end)
+    eventually(fn -> map_size(:sys.get_state(coordinator).waiters) == 1 end)
+
+    Process.exit(waiter, :kill)
+
+    eventually(fn ->
+      state = :sys.get_state(coordinator)
+      state.waiters == %{} and not Map.has_key?(state.procs, waiter)
+    end)
+
+    send(worker, :release_killed_waiter)
+    assert {:ok, _snapshot} = Task.await(stalled)
+    assert :sys.get_state(coordinator).procs == %{}
+  end
+
+  test "a probe that raises hands the probe to one waiter" do
+    owner = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    expect(PostHog.API.Mock, :request, 3, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          call = Agent.get_and_update(calls, &{&1, &1 + 1})
+          send(owner, {:raising_probe, call, self()})
+
+          if call == 0 do
+            receive do: (:raise_probe -> :ok)
+            raise "probe failed"
+          end
+
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    start_instance(__MODULE__.Raising)
+
+    raising =
+      Task.async(fn ->
+        try do
+          scoped(__MODULE__.Raising, ["missing"], "one")
+        rescue
+          error -> error
+        end
+      end)
+
+    assert_receive {:raising_probe, 0, worker}
+
+    waiters =
+      for id <- ["two", "three", "four"],
+          do: Task.async(fn -> scoped(__MODULE__.Raising, ["missing"], id) end)
+
+    refute_receive {:raising_probe, 1, _worker}, 50
+    send(worker, :raise_probe)
+    assert %RuntimeError{message: "probe failed"} = Task.await(raising)
+    assert_receive {:raising_probe, 1, _worker}, 500
+    Enum.each(waiters, &assert({:ok, _snapshot} = Task.await(&1)))
+    refute_receive {:raising_probe, 2, _worker}, 50
+  end
+
+  test "returned-key history overflow only distrusts probes that overlapped it" do
+    expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+      {:ok, %{status: 200, body: envelope(), headers: %{}}}
+    end)
+
+    name = __MODULE__.ReturnedHistory
+    start_instance(name)
+    %{generation: generation} = DefinitionLoader.evaluation_state(name, [])
+    returned = for index <- 0..1_000, do: "returned-#{index}"
+
+    update = fn requested, returned, started ->
+      :ok =
+        DefinitionLoader.update_negative_knowledge(
+          name,
+          generation,
+          requested,
+          returned,
+          true,
+          started
+        )
+
+      DefinitionLoader.evaluation_state(name, requested).known_missing
+    end
+
+    overlapping = DefinitionLoader.probe_started(name)
+
+    assert update.(["missing" | returned], returned, DefinitionLoader.probe_started(name)) ==
+             MapSet.new(["missing"])
+
+    assert update.(["overlapping-missing"], [], overlapping) == MapSet.new()
+
+    assert update.(["later-missing"], [], DefinitionLoader.probe_started(name)) ==
+             MapSet.new(["later-missing"])
+  end
+
+  test "an omission from before a negative-knowledge restart is not retained" do
+    expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+      {:ok, %{status: 200, body: envelope(), headers: %{}}}
+    end)
+
+    name = __MODULE__.KnowledgeRestart
+    start_instance(name)
+    %{generation: generation} = DefinitionLoader.evaluation_state(name, [])
+    knowledge = PostHog.Registry.via(name, DefinitionLoader.NegativeKnowledge)
+
+    update = fn requested, returned, started ->
+      :ok =
+        DefinitionLoader.update_negative_knowledge(
+          name,
+          generation,
+          requested,
+          returned,
+          true,
+          started
+        )
+    end
+
+    Enum.each(1..5, fn _ -> update.([], ["other"], DefinitionLoader.probe_started(name)) end)
+    older = DefinitionLoader.probe_started(name)
+
+    old_pid = GenServer.whereis(knowledge)
+    Process.exit(old_pid, :kill)
+    eventually(fn -> GenServer.whereis(knowledge) not in [nil, old_pid] end)
+
+    update.([], ["new"], DefinitionLoader.probe_started(name))
+    update.(["new"], [], older)
+
+    refute MapSet.member?(DefinitionLoader.evaluation_state(name, ["new"]).known_missing, "new")
+  end
+
+  test "an older probe's omission cannot hide a key a newer probe returned" do
+    owner = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    expect(PostHog.API.Mock, :request, 3, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          case Agent.get_and_update(calls, &{&1, &1 + 1}) do
+            0 ->
+              send(owner, {:older_probe, self()})
+              receive do: (:release_older -> :ok)
+              {:ok, %{status: 200, body: %{"flags" => %{}}}}
+
+            1 ->
+              {:ok, %{status: 200, body: %{"flags" => %{"new" => %{"enabled" => true}}}}}
+          end
+      end
+    end)
+
+    start_instance(__MODULE__.Superseded)
+    older = Task.async(fn -> scoped(__MODULE__.Superseded, ["new"], "one") end)
+    assert_receive {:older_probe, older_worker}
+
+    # The waiter gives up after its bounded wait and makes the newer probe.
+    assert {:ok, newer} = scoped(__MODULE__.Superseded, ["new"], "two")
+    assert newer.flags["new"].enabled
+
+    send(older_worker, :release_older)
+    assert {:ok, _snapshot} = Task.await(older)
+    sync_loader(__MODULE__.Superseded)
+
+    refute MapSet.member?(
+             DefinitionLoader.evaluation_state(__MODULE__.Superseded, ["new"]).known_missing,
+             "new"
+           )
+  end
+
+  test "waiters of an errored probe make their own requests in parallel" do
+    owner = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    expect(PostHog.API.Mock, :request, 5, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          call = Agent.get_and_update(calls, &{&1, &1 + 1})
+          send(owner, {:errored_probe, call, self()})
+          receive do: (:release_errored -> :ok)
+          {:ok, %{status: 200, body: %{"flags" => %{}, "errorsWhileComputingFlags" => true}}}
+      end
+    end)
+
+    name = __MODULE__.Errored
+    start_instance(name)
+    coordinator = PostHog.Registry.via(name, FeatureFlags.MissingProbeCoordinator)
+    first = Task.async(fn -> scoped(name, ["missing"], "one") end)
+    assert_receive {:errored_probe, 0, first_worker}
+
+    waiters =
+      for id <- ["two", "three", "four"], do: Task.async(fn -> scoped(name, ["missing"], id) end)
+
+    eventually(fn ->
+      map_size(Map.get(:sys.get_state(coordinator).waiters, "missing", %{})) == 3
+    end)
+
+    send(first_worker, :release_errored)
+    assert {:ok, _snapshot} = Task.await(first)
+
+    workers =
+      for call <- 1..3 do
+        assert_receive {:errored_probe, ^call, worker}
+        worker
+      end
+
+    Enum.each(workers, &send(&1, :release_errored))
+    Enum.each(waiters, &assert({:ok, _snapshot} = Task.await(&1)))
+  end
+
+  test "waiters on a settled probe still share one probe for their other missing key" do
+    owner = self()
+
+    expect(PostHog.API.Mock, :request, 3, fn :stub_client, method, path, opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          keys = opts[:json].flag_keys_to_evaluate
+          send(owner, {:shared_probe, keys, self()})
+          receive do: (:release_shared -> :ok)
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    start_instance(__MODULE__.Reclaim)
+    first = Task.async(fn -> scoped(__MODULE__.Reclaim, ["a"], "one") end)
+    assert_receive {:shared_probe, ["a"], first_worker}
+
+    waiters =
+      for id <- ["two", "three"],
+          do: Task.async(fn -> scoped(__MODULE__.Reclaim, ["a", "b"], id) end)
+
+    refute_receive {:shared_probe, _keys, _worker}, 50
+    send(first_worker, :release_shared)
+    assert {:ok, _snapshot} = Task.await(first)
+
+    assert_receive {:shared_probe, ["a", "b"], second_worker}
+    refute_receive {:shared_probe, _keys, _worker}, 100
+    send(second_worker, :release_shared)
+    Enum.each(waiters, &assert({:ok, _snapshot} = Task.await(&1)))
+  end
+
+  test "waiters whose probe returned the key make their own requests in parallel" do
+    owner = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    expect(PostHog.API.Mock, :request, 4, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          call = Agent.get_and_update(calls, &{&1, &1 + 1})
+          send(owner, {:parallel_probe, call, self()})
+          receive do: (:release_parallel -> :ok)
+          {:ok, %{status: 200, body: %{"flags" => %{"remote" => %{"enabled" => true}}}}}
+      end
+    end)
+
+    start_instance(__MODULE__.Parallel)
+    first = Task.async(fn -> scoped(__MODULE__.Parallel, ["remote"], "one") end)
+    assert_receive {:parallel_probe, 0, first_worker}
+
+    waiters =
+      for id <- ["two", "three"],
+          do: Task.async(fn -> scoped(__MODULE__.Parallel, ["remote"], id) end)
+
+    coordinator = PostHog.Registry.via(__MODULE__.Parallel, FeatureFlags.MissingProbeCoordinator)
+
+    eventually(fn ->
+      map_size(Map.get(:sys.get_state(coordinator).waiters, "remote", %{})) == 2
+    end)
+
+    refute_receive {:parallel_probe, _call, _worker}, 50
+    send(first_worker, :release_parallel)
+    assert {:ok, _snapshot} = Task.await(first)
+
+    assert_receive {:parallel_probe, 1, worker_one}
+    assert_receive {:parallel_probe, 2, worker_two}
+    send(worker_one, :release_parallel)
+    send(worker_two, :release_parallel)
+    Enum.each(waiters, &assert({:ok, _snapshot} = Task.await(&1)))
   end
 end
