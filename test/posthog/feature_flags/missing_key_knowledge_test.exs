@@ -493,7 +493,7 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     assert {:ok, _snapshot} = Task.await(stalled)
   end
 
-  test "a crashed probe owner releases overlapping evaluations" do
+  test "a crashed probe owner hands the probe to one waiter" do
     owner = self()
     {:ok, calls} = Agent.start_link(fn -> 0 end)
 
@@ -516,11 +516,53 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
       Task.start(fn -> scoped(__MODULE__.Crashed, ["missing"], "one") end)
 
     assert_receive {:crash_probe, 0, _worker}
-    waiter = Task.async(fn -> scoped(__MODULE__.Crashed, ["missing"], "two") end)
+
+    waiters =
+      for id <- ["two", "three", "four"],
+          do: Task.async(fn -> scoped(__MODULE__.Crashed, ["missing"], id) end)
+
     refute_receive {:crash_probe, 1, _worker}, 50
     Process.exit(crashed, :kill)
     assert_receive {:crash_probe, 1, _worker}, 500
-    assert {:ok, _snapshot} = Task.await(waiter)
+    Enum.each(waiters, &assert({:ok, _snapshot} = Task.await(&1)))
+    refute_receive {:crash_probe, 2, _worker}, 50
+  end
+
+  test "killed waiters are removed from a stalled probe" do
+    owner = self()
+
+    expect(PostHog.API.Mock, :request, 2, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          send(owner, {:killed_waiter_probe, self()})
+          receive do: (:release_killed_waiter -> :ok)
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    start_instance(__MODULE__.KilledWaiter)
+    stalled = Task.async(fn -> scoped(__MODULE__.KilledWaiter, ["missing"], "one") end)
+    assert_receive {:killed_waiter_probe, worker}
+
+    coordinator =
+      PostHog.Registry.via(__MODULE__.KilledWaiter, FeatureFlags.MissingProbeCoordinator)
+
+    {:ok, waiter} = Task.start(fn -> scoped(__MODULE__.KilledWaiter, ["missing"], "two") end)
+    Process.sleep(50)
+    assert map_size(:sys.get_state(coordinator).waiters["missing"]) == 1
+
+    Process.exit(waiter, :kill)
+    Process.sleep(50)
+    state = :sys.get_state(coordinator)
+    assert state.waiters == %{}
+    refute Map.has_key?(state.procs, waiter)
+
+    send(worker, :release_killed_waiter)
+    assert {:ok, _snapshot} = Task.await(stalled)
+    assert :sys.get_state(coordinator).procs == %{}
   end
 
   test "waiters on a settled probe still share one probe for their other missing key" do

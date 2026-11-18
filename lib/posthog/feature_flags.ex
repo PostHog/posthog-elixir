@@ -319,8 +319,14 @@ defmodule PostHog.FeatureFlags do
         []
       )
     else
-      __MODULE__.MissingProbeCoordinator.run(name, probe_keys, fn ->
-        evaluate_after_missing_probe_lock(name, distinct_id, body, requested_keys, probe_keys)
+      __MODULE__.MissingProbeCoordinator.run(name, probe_keys, fn owned_probe_keys ->
+        evaluate_after_missing_probe_lock(
+          name,
+          distinct_id,
+          body,
+          requested_keys,
+          owned_probe_keys
+        )
       end)
     end
   end
