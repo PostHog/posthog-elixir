@@ -33,12 +33,23 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
     reply_to = Process.alias()
 
     try do
-      {led, waiting} = request_claim(name, keys, reply_to)
-      await_settled(reply_to, MapSet.new(waiting), deadline())
-      led
+      claim_until_led(name, keys, reply_to, deadline())
     after
       Process.unalias(reply_to)
       flush_settled(reply_to)
+    end
+  end
+
+  defp claim_until_led(name, keys, reply_to, deadline) do
+    case request_claim(name, keys, reply_to) do
+      {led, []} ->
+        led
+
+      {[], waiting} ->
+        case await_settled(reply_to, MapSet.new(waiting), deadline) do
+          :ok -> claim_until_led(name, keys, reply_to, deadline)
+          :timeout -> []
+        end
     end
   end
 

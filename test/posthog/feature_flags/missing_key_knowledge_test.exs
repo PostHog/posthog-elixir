@@ -519,4 +519,38 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     assert_receive {:crash_probe, 1, _worker}, 500
     assert {:ok, _snapshot} = Task.await(waiter)
   end
+
+  test "waiters on a settled probe still share one probe for their other missing key" do
+    owner = self()
+
+    expect(PostHog.API.Mock, :request, 3, fn :stub_client, method, path, opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          keys = opts[:json].flag_keys_to_evaluate
+          send(owner, {:shared_probe, keys, self()})
+          receive do: (:release_shared -> :ok)
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    start_instance(__MODULE__.Reclaim)
+    first = Task.async(fn -> scoped(__MODULE__.Reclaim, ["a"], "one") end)
+    assert_receive {:shared_probe, ["a"], first_worker}
+
+    waiters =
+      for id <- ["two", "three"],
+          do: Task.async(fn -> scoped(__MODULE__.Reclaim, ["a", "b"], id) end)
+
+    refute_receive {:shared_probe, _keys, _worker}, 50
+    send(first_worker, :release_shared)
+    assert {:ok, _snapshot} = Task.await(first)
+
+    assert_receive {:shared_probe, ["a", "b"], second_worker}
+    refute_receive {:shared_probe, _keys, _worker}, 100
+    send(second_worker, :release_shared)
+    Enum.each(waiters, &assert({:ok, _snapshot} = Task.await(&1)))
+  end
 end
