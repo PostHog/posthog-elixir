@@ -483,17 +483,20 @@ defmodule PostHog.FeatureFlags do
     state = local_evaluation_state(name, keys)
     defined = if state.definitions, do: Map.keys(state.definitions.flags_by_key), else: []
 
-    returned =
-      if marker,
-        do: __MODULE__.DefinitionLoader.returned_since(name, keys, marker),
-        else: MapSet.new()
+    returned = returned_since(name, keys, marker)
 
     Enum.reject(keys, fn key ->
       key in defined or MapSet.member?(state.known_missing, key) or
         MapSet.member?(returned, key)
     end)
+  end
+
+  defp returned_since(_name, _keys, nil), do: MapSet.new()
+
+  defp returned_since(name, keys, marker) do
+    __MODULE__.DefinitionLoader.returned_since(name, keys, marker)
   catch
-    :exit, _reason -> keys
+    :exit, _reason -> MapSet.new()
   end
 
   @probe_returned_key {__MODULE__, :probe_returned}

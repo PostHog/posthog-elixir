@@ -156,6 +156,7 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
       state = Enum.reduce(free, state, &lead(&2, &1, pid, claim))
       {:reply, {:led, free, joined(state, free, rounds)}, state}
     else
+      state = mark_joined(state, keys)
       state = Enum.reduce(in_flight, state, &add_waiter(&2, &1, pid, claim))
       state = update_proc(state, pid, &%{&1 | wait: {claim, MapSet.new(in_flight)}})
       # Record every round the caller saw, including reopened free keys, so it
@@ -202,6 +203,20 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
     end
   end
 
+  # A round some other caller is waiting on, or has seen while waiting on another
+  # key, keeps its shared retry for that group.
+  defp mark_joined(state, keys) do
+    rounds =
+      Enum.reduce(keys, state.rounds, fn key, rounds ->
+        case Map.fetch(rounds, key) do
+          {:ok, round} -> Map.put(rounds, key, %{round | joined?: true})
+          :error -> rounds
+        end
+      end)
+
+    %{state | rounds: rounds}
+  end
+
   defp joined(state, keys, rounds) do
     Enum.reduce(keys, rounds, fn key, rounds ->
       case Map.fetch(state.rounds, key) do
@@ -223,7 +238,7 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
   end
 
   defp new_round,
-    do: %{id: make_ref(), owner: nil, retried?: false, expires_at: expires_at()}
+    do: %{id: make_ref(), owner: nil, retried?: false, joined?: false, expires_at: expires_at()}
 
   defp expires_at, do: System.monotonic_time(:millisecond) + @round_ttl_ms
 
@@ -241,10 +256,12 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
     round = Map.fetch!(state.rounds, key)
     state = %{state | owners: Map.delete(state.owners, key)}
 
-    case {outcome, round.retried?} do
-      {:abandoned, _retried?} -> reopen(state, key, round)
-      {:unresolved, false} -> reopen(state, key, %{round | retried?: true})
-      _settled_or_retried -> end_round(state, key, round)
+    # A failed probe nobody else joined has no group to retry for, so the round
+    # ends and the next batch of callers gets its own shared retry.
+    case {outcome, round.retried?, round.joined?} do
+      {:abandoned, _retried?, true} -> reopen(state, key, round)
+      {:unresolved, false, true} -> reopen(state, key, %{round | retried?: true})
+      _settled_retried_or_alone -> end_round(state, key, round)
     end
   end
 

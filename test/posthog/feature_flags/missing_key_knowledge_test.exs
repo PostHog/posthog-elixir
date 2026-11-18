@@ -1376,6 +1376,80 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     Enum.each(waiters, &assert({:error, _reason} = Task.await(&1)))
   end
 
+  test "a lone failed probe doesn't use up the next group's shared retry" do
+    alias FeatureFlags.MissingProbeCoordinator, as: Coordinator
+
+    name = __MODULE__.LoneFailure
+    start_coordinator_only(name)
+    coordinator = PostHog.Registry.via(name, Coordinator)
+    owner = self()
+
+    lone = coordinated_probe(name, :lone, owner)
+    assert_receive {:probe, :lone, ["missing"], lone_worker}
+    send(lone_worker, {:finish, ["missing"]})
+    assert :ok = Task.await(lone)
+
+    first = coordinated_probe(name, :first, owner)
+    assert_receive {:probe, :first, ["missing"], first_worker}
+    waiters = for id <- [:a, :b], do: coordinated_probe(name, id, owner)
+    eventually(fn -> waiter_count(coordinator, "missing") == 2 end)
+
+    send(first_worker, {:finish, ["missing"]})
+    assert :ok = Task.await(first)
+    assert_receive {:probe, retry_id, ["missing"], retry_worker}
+    refute_receive {:probe, _id, _owned, _worker}, 50
+    send(retry_worker, {:finish, []})
+
+    [other] = [:a, :b] -- [retry_id]
+    assert_receive {:probe, ^other, [], other_worker}
+    send(other_worker, {:finish, []})
+    Enum.each(waiters, &assert(:ok = Task.await(&1)))
+  end
+
+  test "a probe's own returned keys settle it when the history lookup fails" do
+    owner = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+    name = __MODULE__.HistoryDown
+
+    stub(PostHog.API.Mock, :request, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          call = Agent.get_and_update(calls, &{&1, &1 + 1})
+          send(owner, {:history_probe, call, self()})
+          receive do: (:release_history -> :ok)
+          {:ok, %{status: 200, body: %{"flags" => %{"missing" => %{"enabled" => true}}}}}
+      end
+    end)
+
+    start_instance(name)
+    coordinator = PostHog.Registry.via(name, FeatureFlags.MissingProbeCoordinator)
+    knowledge = PostHog.Registry.via(name, DefinitionLoader.NegativeKnowledge)
+
+    first = Task.async(fn -> scoped(name, ["missing"], "one") end)
+    assert_receive {:history_probe, 0, first_worker}
+
+    waiters =
+      for id <- ["two", "three"], do: Task.async(fn -> scoped(name, ["missing"], id) end)
+
+    eventually(fn -> waiter_count(coordinator, "missing") == 2 end)
+
+    # The history process stops after the probe started, so the lookup exits.
+    knowledge_pid = GenServer.whereis(knowledge)
+    :ok = Supervisor.terminate_child(name, DefinitionLoader.NegativeKnowledge)
+    refute Process.alive?(knowledge_pid)
+
+    send(first_worker, :release_history)
+    assert_receive {:history_probe, 1, worker_one}, 1_000
+    assert_receive {:history_probe, 2, worker_two}, 1_000
+    send(worker_one, :release_history)
+    send(worker_two, :release_history)
+    assert {:ok, _snapshot} = Task.await(first)
+    Enum.each(waiters, &assert({:ok, _snapshot} = Task.await(&1)))
+  end
+
   test "remote evaluation outside a coordinated probe leaves no process state" do
     expect(PostHog.API.Mock, :request, 2, fn :stub_client, method, path, _opts ->
       case {method, path} do
