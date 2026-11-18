@@ -64,8 +64,8 @@ defmodule PostHog.EmailsTest.FakePostHog do
   # https://files.example.com unless set_storage_url/2 names another host.
 
   @secret_key "phs_secret_key"
-  @uploads_path "/api/projects/@current/messaging/attachments/uploads/"
-  @send_path "/api/projects/@current/messaging/send/email/"
+  @uploads_path "/api/messaging/attachments/uploads/"
+  @send_path "/api/messaging/send/email/"
   @storage_url "https://files.example.com"
   @max_body 64_000_000
   @max_message_bytes 40_000_000
@@ -452,7 +452,7 @@ defmodule PostHog.EmailsTest do
 
   setup :verify_on_exit!
 
-  @send_url "https://us.posthog.com/api/projects/@current/messaging/send/email/"
+  @send_url "https://us.posthog.com/api/messaging/send/email/"
   @template_id "0190F6D2-7C1E-7B3A-9F5E-1C2D3E4F5A6B"
   @message_id "01a18356-c56c-0001-e494-7666bc915188"
 
@@ -1699,8 +1699,7 @@ defmodule PostHog.EmailsTest do
 
       assert {:ok, _} = Emails.send(name, to: "user@example.com", template_id: @template_id)
 
-      assert_received {:request, :post,
-                       "https://eu.posthog.com/api/projects/@current/messaging/send/email/", _}
+      assert_received {:request, :post, "https://eu.posthog.com/api/messaging/send/email/", _}
     end
 
     @tag config: [api_host: "https://proxy.example.com"]
@@ -1720,8 +1719,7 @@ defmodule PostHog.EmailsTest do
 
       assert {:ok, _} = Emails.send(name, to: "user@example.com", template_id: @template_id)
 
-      assert_received {:request, :post,
-                       "https://posthog.example.com/api/projects/@current/messaging/send/email/",
+      assert_received {:request, :post, "https://posthog.example.com/api/messaging/send/email/",
                        _}
     end
 
@@ -1731,8 +1729,7 @@ defmodule PostHog.EmailsTest do
 
       assert {:ok, _} = Emails.send(name, to: "user@example.com", template_id: @template_id)
 
-      assert_received {:request, :post,
-                       "https://eu.posthog.com/api/projects/@current/messaging/send/email/", _}
+      assert_received {:request, :post, "https://eu.posthog.com/api/messaging/send/email/", _}
     end
 
     @tag config: [secret_key: nil]
@@ -2144,7 +2141,7 @@ defmodule PostHog.EmailsTest do
       assert status.status_at == ~U[2026-10-28 16:30:02.100000Z]
 
       assert_received {:request, :get,
-                       "https://us.posthog.com/api/projects/@current/messaging/emails/01a18356-c56c-0001-e494-7666bc915188/",
+                       "https://us.posthog.com/api/messaging/emails/01a18356-c56c-0001-e494-7666bc915188/",
                        opts}
 
       assert header(opts, "authorization") == "Bearer phs_secret_key"
@@ -2241,8 +2238,8 @@ defmodule PostHog.EmailsTest do
       assert {:ok, %Emails.SendResult{id: @message_id}} =
                Emails.send(name, to: "user@example.com", template_id: @template_id)
 
-      assert_received {:raw, "POST", "us.posthog.com",
-                       "/api/projects/@current/messaging/send/email/", headers, body}
+      assert_received {:raw, "POST", "us.posthog.com", "/api/messaging/send/email/", headers,
+                       body}
 
       refute Map.has_key?(Jason.decode!(body), "api_key")
       assert {"content-encoding", "gzip"} not in headers
