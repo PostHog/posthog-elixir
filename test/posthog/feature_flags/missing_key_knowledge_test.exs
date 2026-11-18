@@ -626,30 +626,39 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     refute_receive {:raising_probe, 2, _worker}, 50
   end
 
-  test "returned keys are never retained as missing, even past the history capacity" do
+  test "returned-key history overflow only distrusts probes that overlapped it" do
     expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
       {:ok, %{status: 200, body: envelope(), headers: %{}}}
     end)
 
-    start_instance(__MODULE__.ReturnedHistory)
-    %{generation: generation} = DefinitionLoader.evaluation_state(__MODULE__.ReturnedHistory, [])
+    name = __MODULE__.ReturnedHistory
+    start_instance(name)
+    %{generation: generation} = DefinitionLoader.evaluation_state(name, [])
     returned = for index <- 0..1_000, do: "returned-#{index}"
 
-    update = fn requested, returned, clean? ->
+    update = fn requested, returned, started ->
       :ok =
         DefinitionLoader.update_negative_knowledge(
-          __MODULE__.ReturnedHistory,
+          name,
           generation,
           requested,
           returned,
-          clean?
+          true,
+          started
         )
 
-      DefinitionLoader.evaluation_state(__MODULE__.ReturnedHistory, requested).known_missing
+      DefinitionLoader.evaluation_state(name, requested).known_missing
     end
 
-    assert update.(["missing" | returned], returned, true) == MapSet.new()
-    assert update.(["later-missing"], [], true) == MapSet.new()
+    overlapping = DefinitionLoader.probe_started(name)
+
+    assert update.(["missing" | returned], returned, DefinitionLoader.probe_started(name)) ==
+             MapSet.new(["missing"])
+
+    assert update.(["overlapping-missing"], [], overlapping) == MapSet.new()
+
+    assert update.(["later-missing"], [], DefinitionLoader.probe_started(name)) ==
+             MapSet.new(["later-missing"])
   end
 
   test "an older probe's omission cannot hide a key a newer probe returned" do

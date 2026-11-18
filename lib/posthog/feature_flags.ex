@@ -403,6 +403,8 @@ defmodule PostHog.FeatureFlags do
       |> Map.delete(:only_evaluate_locally)
       |> translate_flag_keys()
 
+    started = probe_started(name, generation, negative_candidates)
+
     case flags(name, remote_body) do
       {:ok, %{body: %{"flags" => remote_flags} = response_body}} when is_map(remote_flags) ->
         scoped_remote_flags = maybe_scope_remote_results(remote_flags, requested_keys)
@@ -413,7 +415,8 @@ defmodule PostHog.FeatureFlags do
           generation,
           negative_candidates,
           Map.keys(scoped_remote_flags),
-          clean_remote_response?(response_body) and not malformed?
+          clean_remote_response?(response_body) and not malformed?,
+          started
         )
 
         merged = Map.merge(remote_results, local.results)
@@ -491,15 +494,25 @@ defmodule PostHog.FeatureFlags do
       Map.get(body, "quotaLimited") in [nil, false, []]
   end
 
-  defp update_negative_knowledge(_name, nil, _requested, _returned, _clean?), do: :ok
+  defp probe_started(_name, nil, _candidates), do: nil
+  defp probe_started(_name, _generation, []), do: nil
 
-  defp update_negative_knowledge(name, generation, requested, returned, clean?) do
+  defp probe_started(name, _generation, _candidates) do
+    __MODULE__.DefinitionLoader.probe_started(name)
+  catch
+    :exit, _reason -> nil
+  end
+
+  defp update_negative_knowledge(_name, nil, _requested, _returned, _clean?, _started), do: :ok
+
+  defp update_negative_knowledge(name, generation, requested, returned, clean?, started) do
     __MODULE__.DefinitionLoader.update_negative_knowledge(
       name,
       generation,
       requested,
       returned,
-      clean?
+      clean? and (started != nil or requested == []),
+      started
     )
   catch
     :exit, _reason -> :ok
