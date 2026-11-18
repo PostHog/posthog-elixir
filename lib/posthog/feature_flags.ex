@@ -322,13 +322,19 @@ defmodule PostHog.FeatureFlags do
         []
       )
     else
-      with_missing_probe_locks(name, probe_keys, fn owned_keys ->
-        evaluate_after_missing_probe_lock(name, distinct_id, body, requested_keys, owned_keys)
+      with_missing_probe_claims(name, probe_keys, fn owned_keys ->
+        evaluate_after_missing_probe_claims(name, distinct_id, body, requested_keys, owned_keys)
       end)
     end
   end
 
-  defp evaluate_after_missing_probe_lock(name, distinct_id, body, requested_keys, probe_keys) do
+  defp evaluate_after_missing_probe_claims(
+         name,
+         distinct_id,
+         body,
+         requested_keys,
+         owned_probe_keys
+       ) do
     fresh_state = local_evaluation_state(name, requested_keys)
 
     if is_nil(fresh_state.definitions) do
@@ -341,7 +347,7 @@ defmodule PostHog.FeatureFlags do
         requested_keys,
         fresh_state,
         false,
-        probe_keys
+        owned_probe_keys
       )
     end
   end
@@ -523,20 +529,21 @@ defmodule PostHog.FeatureFlags do
   # or its owner dies. A waiter never takes over a claim: once the overlapping probe
   # settles, or the wait deadline passes, it rechecks knowledge and falls back itself.
   # Sorted keys keep multi-key claims from waiting on each other in a cycle.
-  defp with_missing_probe_locks(name, keys, callback) do
+  defp with_missing_probe_claims(name, keys, callback) do
     registry = PostHog.Registry.registry_name(name)
     deadline = System.monotonic_time(:millisecond) + @missing_probe_wait_ms
 
-    claims =
+    {owned_keys, holders} =
       keys
       |> Enum.uniq()
       |> Enum.sort()
       |> Enum.flat_map(&claim_missing_probe(registry, &1, deadline))
+      |> Enum.unzip()
 
     try do
-      callback.(Enum.map(claims, &elem(&1, 0)))
+      callback.(owned_keys)
     after
-      Enum.each(claims, fn {_key, holder} -> send(holder, {:release_missing_probe, self()}) end)
+      Enum.each(holders, &send(&1, :release_missing_probe))
     end
   end
 
@@ -577,7 +584,7 @@ defmodule PostHog.FeatureFlags do
         send(owner, {self(), :claimed})
 
         receive do
-          {:release_missing_probe, ^owner} -> :ok
+          :release_missing_probe -> :ok
           {:DOWN, ^owner_monitor, :process, ^owner, _reason} -> :ok
         end
 
