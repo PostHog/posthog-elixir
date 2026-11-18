@@ -959,6 +959,10 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
       waiter_count(coordinator, "a") == 3 and waiter_count(coordinator, "b") == 3
     end)
 
+    # One waiter is held until the shared retry for "a" has finished.
+    [held | running] = waiters
+    :erlang.suspend_process(held.pid)
+
     send(a_worker, {:finish, ["a"]})
     assert :ok = Task.await(a_owner)
     send(b_worker, {:finish, []})
@@ -968,12 +972,16 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     refute_receive {:probe, _id, _owned, _worker}, 50
     send(retry_worker, {:finish, ["a"]})
 
-    for id <- [:w1, :w2, :w3] -- [retry_id] do
+    for id <- [:w2, :w3] -- [retry_id] do
       assert_receive {:probe, ^id, [], worker}
       send(worker, {:finish, []})
     end
 
-    Enum.each(waiters, &assert(:ok = Task.await(&1)))
+    Enum.each(running, &assert(:ok = Task.await(&1)))
+    :erlang.resume_process(held.pid)
+    assert_receive {:probe, :w1, [], held_worker}
+    send(held_worker, {:finish, []})
+    assert :ok = Task.await(held)
   end
 
   defp waiter_count(coordinator, key),

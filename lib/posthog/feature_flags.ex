@@ -443,6 +443,7 @@ defmodule PostHog.FeatureFlags do
       )
     else
       __MODULE__.MissingProbeCoordinator.run(name, probe_keys, fn owned_probe_keys ->
+        pop_probe_returned()
         marker = probe_marker(name, owned_probe_keys)
 
         result =
@@ -454,7 +455,7 @@ defmodule PostHog.FeatureFlags do
             owned_probe_keys
           )
 
-        {result, unresolved_probe_keys(name, owned_probe_keys, marker)}
+        {result, unresolved_probe_keys(name, owned_probe_keys, marker, pop_probe_returned())}
       end)
     end
   end
@@ -467,14 +468,20 @@ defmodule PostHog.FeatureFlags do
     :exit, _reason -> nil
   end
 
-  # Keys the probe neither found defined, returned, nor recorded as missing.
-  defp unresolved_probe_keys(_name, [], _marker), do: []
-  defp unresolved_probe_keys(_name, keys, nil), do: keys
+  # Keys the probe neither found defined, returned, nor recorded as missing. The
+  # probe's own returned keys are checked directly instead of through the bounded
+  # history, which other responses may have overwritten.
+  defp unresolved_probe_keys(_name, [], _marker, _own_returned), do: []
 
-  defp unresolved_probe_keys(name, keys, marker) do
+  defp unresolved_probe_keys(name, keys, marker, own_returned) do
+    keys = Enum.reject(keys, &MapSet.member?(own_returned, &1))
     state = local_evaluation_state(name, keys)
     defined = if state.definitions, do: Map.keys(state.definitions.flags_by_key), else: []
-    returned = __MODULE__.DefinitionLoader.returned_since(name, keys, marker)
+
+    returned =
+      if marker,
+        do: __MODULE__.DefinitionLoader.returned_since(name, keys, marker),
+        else: MapSet.new()
 
     Enum.reject(keys, fn key ->
       key in defined or MapSet.member?(state.known_missing, key) or
@@ -483,6 +490,12 @@ defmodule PostHog.FeatureFlags do
   catch
     :exit, _reason -> keys
   end
+
+  @probe_returned_key {__MODULE__, :probe_returned}
+
+  defp put_probe_returned(keys), do: Process.put(@probe_returned_key, MapSet.new(keys))
+
+  defp pop_probe_returned, do: Process.delete(@probe_returned_key) || MapSet.new()
 
   defp evaluate_after_missing_probe_lock(name, distinct_id, body, requested_keys, probe_keys) do
     fresh_state = local_evaluation_state(name, requested_keys)
@@ -562,6 +575,7 @@ defmodule PostHog.FeatureFlags do
       {:ok, %{body: %{"flags" => remote_flags} = response_body}} when is_map(remote_flags) ->
         scoped_remote_flags = maybe_scope_remote_results(remote_flags, requested_keys)
         {remote_results, malformed?} = build_remote_results(scoped_remote_flags, response_body)
+        put_probe_returned(Map.keys(scoped_remote_flags))
 
         update_negative_knowledge(
           name,
