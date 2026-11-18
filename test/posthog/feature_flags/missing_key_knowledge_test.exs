@@ -1042,21 +1042,12 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     coordinator = PostHog.Registry.via(name, Coordinator)
     owner = self()
 
-    start_probe = fn id, keys ->
-      Task.start(fn ->
-        Coordinator.run(name, keys, fn owned ->
-          send(owner, {:probe, id, owned, self()})
-          receive do: ({:finish, unresolved} -> {:ok, unresolved})
-        end)
-      end)
-    end
-
-    {:ok, _a_owner} = start_probe.(:a_owner, ["a"])
+    {:ok, _a_owner} = start_unlinked_probe(name, owner, :a_owner, ["a"])
     assert_receive {:probe, :a_owner, ["a"], a_worker}
-    {:ok, _b_owner} = start_probe.(:b_owner, ["b"])
+    {:ok, _b_owner} = start_unlinked_probe(name, owner, :b_owner, ["b"])
     assert_receive {:probe, :b_owner, ["b"], b_worker}
-    {:ok, w1} = start_probe.(:w1, ["a", "b"])
-    {:ok, w2} = start_probe.(:w2, ["a", "b"])
+    {:ok, w1} = start_unlinked_probe(name, owner, :w1, ["a", "b"])
+    {:ok, w2} = start_unlinked_probe(name, owner, :w2, ["a", "b"])
     eventually(fn -> waiter_count(coordinator, "a") == 2 end)
 
     send(a_worker, {:finish, ["a"]})
@@ -1082,25 +1073,16 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     coordinator = PostHog.Registry.via(name, Coordinator)
     owner = self()
 
-    start_probe = fn id, keys ->
-      Task.start(fn ->
-        Coordinator.run(name, keys, fn owned ->
-          send(owner, {:probe, id, owned, self()})
-          receive do: ({:finish, unresolved} -> {:ok, unresolved})
-        end)
-      end)
-    end
-
     for {id, key} <- [a_owner: "a", c_owner: "c", d_owner: "d"] do
-      {:ok, _pid} = start_probe.(id, [key])
+      {:ok, _pid} = start_unlinked_probe(name, owner, id, [key])
       assert_receive {:probe, ^id, [^key], _worker}
     end
 
     [a_worker, c_worker, d_worker] =
       for key <- ["a", "c", "d"], do: Map.fetch!(:sys.get_state(coordinator).owners, key)
 
-    {:ok, w1} = start_probe.(:w1, ["a", "c"])
-    {:ok, _w2} = start_probe.(:w2, ["a", "c", "d"])
+    {:ok, w1} = start_unlinked_probe(name, owner, :w1, ["a", "c"])
+    {:ok, _w2} = start_unlinked_probe(name, owner, :w2, ["a", "c", "d"])
     eventually(fn -> waiter_count(coordinator, "a") == 2 end)
 
     send(a_worker, {:finish, ["a"]})
@@ -1109,7 +1091,7 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     assert_receive {:probe, :w1, ["a"], _w1_worker}
 
     # A fresh caller also waits on "a" while w1 runs the group's retry.
-    {:ok, _w3} = start_probe.(:w3, ["a", "d"])
+    {:ok, _w3} = start_unlinked_probe(name, owner, :w3, ["a", "d"])
     eventually(fn -> waiter_count(coordinator, "a") == 1 end)
 
     Process.exit(w1, :kill)
@@ -1154,24 +1136,15 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     coordinator = PostHog.Registry.via(name, Coordinator)
     owner = self()
 
-    start_probe = fn id, keys ->
-      Task.start(fn ->
-        Coordinator.run(name, keys, fn owned ->
-          send(owner, {:probe, id, owned, self()})
-          receive do: ({:finish, unresolved} -> {:ok, unresolved})
-        end)
-      end)
-    end
-
     workers =
       for {id, key} <- [a_owner: "a", b_owner: "b", c_owner: "c"], into: %{} do
-        {:ok, _pid} = start_probe.(id, [key])
+        {:ok, _pid} = start_unlinked_probe(name, owner, id, [key])
         assert_receive {:probe, ^id, [^key], worker}
         {key, worker}
       end
 
-    {:ok, _w1} = start_probe.(:w1, ["a", "b"])
-    {:ok, w2} = start_probe.(:w2, ["a", "c"])
+    {:ok, _w1} = start_unlinked_probe(name, owner, :w1, ["a", "b"])
+    {:ok, w2} = start_unlinked_probe(name, owner, :w2, ["a", "c"])
     eventually(fn -> waiter_count(coordinator, "a") == 2 end)
 
     send(workers["a"], {:finish, ["a"]})
@@ -1183,7 +1156,7 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     send(w1_worker, {:finish, []})
     eventually(fn -> not Map.has_key?(:sys.get_state(coordinator).owners, "a") end)
 
-    {:ok, later} = start_probe.(:later, ["a"])
+    {:ok, later} = start_unlinked_probe(name, owner, :later, ["a"])
     assert_receive {:probe, :later, ["a"], later_worker}
     :erlang.resume_process(w2)
 
@@ -1216,6 +1189,15 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     end)
 
     start_instance(name)
+  end
+
+  defp start_unlinked_probe(name, owner, id, keys) do
+    Task.start(fn ->
+      FeatureFlags.MissingProbeCoordinator.run(name, keys, fn owned ->
+        send(owner, {:probe, id, owned, self()})
+        receive do: ({:finish, unresolved} -> {:ok, unresolved})
+      end)
+    end)
   end
 
   defp coordinated_probe(name, id, owner) do
