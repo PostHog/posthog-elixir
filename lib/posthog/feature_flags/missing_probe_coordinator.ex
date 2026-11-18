@@ -153,11 +153,12 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
     state = state |> unwait(pid) |> prune_retries()
     {mine, others} = Enum.split_with(keys, &(Map.get(state.owners, &1) == pid))
     {free, in_flight} = Enum.split_with(others, &(not Map.has_key?(state.owners, &1)))
-    {free, state} = claimable_retries(state, free, retried)
+    {free, token_keys} = claimable_retries(state, free, retried)
 
     # A caller that waits owns nothing, so two callers can't wait on each other. A
     # caller handed a retry owns a key, so it doesn't wait on others' probes.
     if in_flight == [] or mine != [] do
+      state = claim_retries(state, token_keys)
       state = %{state | owners: Enum.reduce(free, state.owners, &Map.put(&2, &1, pid))}
       state = update_proc(state, pid, &%{&1 | owned: MapSet.union(&1.owned, MapSet.new(free))})
       {:reply, {mine ++ free, []}, maybe_forget(state, pid)}
@@ -219,7 +220,7 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
 
   defp release_key(state, key, notice) do
     state = %{state | owners: Map.delete(state.owners, key)}
-    state = finish_retry(state, key)
+    state = finish_retry(state, key, notice)
     key_waiters = Map.get(state.waiters, key, %{})
 
     case notice do
@@ -287,27 +288,38 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
   # first caller of that group to reclaim it. Once the retry has run, the rest of
   # the group proceeds without coordinating that key again.
   defp claimable_retries(state, free, retried) do
-    Enum.reduce(free, {[], state}, fn key, {free, state} ->
+    Enum.reduce(free, {[], []}, fn key, {free, token_keys} ->
       case {Map.fetch(retried, key), Map.get(state.retries, key)} do
-        {:error, _retry} ->
-          {[key | free], state}
-
-        {{:ok, token}, %{token: token, status: :open} = retry} ->
-          retries = Map.put(state.retries, key, %{retry | status: :claimed})
-          {[key | free], %{state | retries: retries}}
-
-        {{:ok, _token}, _retry} ->
-          {free, state}
+        {:error, _retry} -> {[key | free], token_keys}
+        {{:ok, token}, %{token: token, status: :open}} -> {[key | free], [key | token_keys]}
+        {{:ok, _token}, _retry} -> {free, token_keys}
       end
     end)
-    |> then(fn {free, state} -> {Enum.reverse(free), state} end)
+    |> then(fn {free, token_keys} -> {Enum.reverse(free), token_keys} end)
   end
 
-  defp finish_retry(state, key) do
-    case Map.fetch(state.retries, key) do
-      {:ok, retry} -> %{state | retries: Map.put(state.retries, key, %{retry | status: :done})}
-      :error -> state
-    end
+  defp claim_retries(state, keys), do: set_retry_status(state, keys, :claimed)
+
+  # A finished shared retry is done for its group. An abandoned one, with no other
+  # waiter to take it, reopens so the group's next caller to reclaim runs it.
+  defp finish_retry(state, key, :abandoned) do
+    if Map.has_key?(state.waiters, key),
+      do: set_retry_status(state, [key], :done),
+      else: set_retry_status(state, [key], :open)
+  end
+
+  defp finish_retry(state, key, _notice), do: set_retry_status(state, [key], :done)
+
+  defp set_retry_status(state, keys, status) do
+    retries =
+      Enum.reduce(keys, state.retries, fn key, retries ->
+        case Map.fetch(retries, key) do
+          {:ok, retry} -> Map.put(retries, key, %{retry | status: status})
+          :error -> retries
+        end
+      end)
+
+    %{state | retries: retries}
   end
 
   defp prune_retries(%{retries: retries} = state) when map_size(retries) == 0, do: state

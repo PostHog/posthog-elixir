@@ -443,19 +443,20 @@ defmodule PostHog.FeatureFlags do
       )
     else
       __MODULE__.MissingProbeCoordinator.run(name, probe_keys, fn owned_probe_keys ->
-        pop_probe_returned()
         marker = probe_marker(name, owned_probe_keys)
 
-        result =
-          evaluate_after_missing_probe_lock(
-            name,
-            distinct_id,
-            body,
-            requested_keys,
-            owned_probe_keys
-          )
+        {result, own_returned} =
+          collect_probe_returned(fn ->
+            evaluate_after_missing_probe_lock(
+              name,
+              distinct_id,
+              body,
+              requested_keys,
+              owned_probe_keys
+            )
+          end)
 
-        {result, unresolved_probe_keys(name, owned_probe_keys, marker, pop_probe_returned())}
+        {result, unresolved_probe_keys(name, owned_probe_keys, marker, own_returned)}
       end)
     end
   end
@@ -493,9 +494,25 @@ defmodule PostHog.FeatureFlags do
 
   @probe_returned_key {__MODULE__, :probe_returned}
 
-  defp put_probe_returned(keys), do: Process.put(@probe_returned_key, MapSet.new(keys))
+  # Records the keys returned by the probe that `fun` makes. Only active during a
+  # coordinated probe, and always cleared afterwards.
+  defp collect_probe_returned(fun) do
+    Process.put(@probe_returned_key, MapSet.new())
 
-  defp pop_probe_returned, do: Process.delete(@probe_returned_key) || MapSet.new()
+    try do
+      result = fun.()
+      {result, Process.get(@probe_returned_key, MapSet.new())}
+    after
+      Process.delete(@probe_returned_key)
+    end
+  end
+
+  defp put_probe_returned(keys) do
+    if Process.get(@probe_returned_key),
+      do: Process.put(@probe_returned_key, MapSet.new(keys))
+
+    :ok
+  end
 
   defp evaluate_after_missing_probe_lock(name, distinct_id, body, requested_keys, probe_keys) do
     fresh_state = local_evaluation_state(name, requested_keys)

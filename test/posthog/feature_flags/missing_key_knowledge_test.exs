@@ -984,6 +984,113 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     assert :ok = Task.await(held)
   end
 
+  test "a retry token is not used up by a caller that goes back to waiting" do
+    alias FeatureFlags.MissingProbeCoordinator, as: Coordinator
+
+    name = __MODULE__.TokenWait
+    start_coordinator_only(name)
+    coordinator = PostHog.Registry.via(name, Coordinator)
+    owner = self()
+
+    probe = fn id, keys ->
+      Task.async(fn ->
+        Coordinator.run(name, keys, fn owned ->
+          send(owner, {:probe, id, owned, self()})
+          receive do: ({:finish, unresolved} -> {:ok, unresolved})
+        end)
+      end)
+    end
+
+    a_owner = probe.(:a_owner, ["a"])
+    assert_receive {:probe, :a_owner, ["a"], a_worker}
+    b_owner = probe.(:b_owner, ["b"])
+    assert_receive {:probe, :b_owner, ["b"], b_worker}
+    waiters = for id <- [:w1, :w2], do: probe.(id, ["a", "b", "c"])
+    eventually(fn -> waiter_count(coordinator, "a") == 2 end)
+
+    # "a" fails while both waiters still wait on "b", so they get a retry token.
+    send(a_worker, {:finish, ["a"]})
+    assert :ok = Task.await(a_owner)
+    eventually(fn -> waiter_count(coordinator, "a") == 0 end)
+
+    # "c" gets an owner before "b" settles, so the waiters go back to waiting.
+    c_owner = probe.(:c_owner, ["c"])
+    assert_receive {:probe, :c_owner, ["c"], c_worker}
+    send(b_worker, {:finish, []})
+    assert :ok = Task.await(b_owner)
+    eventually(fn -> waiter_count(coordinator, "c") == 2 end)
+
+    send(c_worker, {:finish, []})
+    assert :ok = Task.await(c_owner)
+
+    assert_receive {:probe, retry_id, retry_owned, retry_worker}
+    assert "a" in retry_owned
+    send(retry_worker, {:finish, retry_owned})
+
+    [other] = [:w1, :w2] -- [retry_id]
+    assert_receive {:probe, ^other, other_owned, other_worker}
+    refute "a" in other_owned
+    send(other_worker, {:finish, []})
+    Enum.each(waiters, &assert(:ok = Task.await(&1)))
+  end
+
+  test "an abandoned retry token reopens for the rest of its group" do
+    alias FeatureFlags.MissingProbeCoordinator, as: Coordinator
+
+    name = __MODULE__.TokenAbandoned
+    start_coordinator_only(name)
+    coordinator = PostHog.Registry.via(name, Coordinator)
+    owner = self()
+
+    start_probe = fn id, keys ->
+      Task.start(fn ->
+        Coordinator.run(name, keys, fn owned ->
+          send(owner, {:probe, id, owned, self()})
+          receive do: ({:finish, unresolved} -> {:ok, unresolved})
+        end)
+      end)
+    end
+
+    {:ok, _a_owner} = start_probe.(:a_owner, ["a"])
+    assert_receive {:probe, :a_owner, ["a"], a_worker}
+    {:ok, _b_owner} = start_probe.(:b_owner, ["b"])
+    assert_receive {:probe, :b_owner, ["b"], b_worker}
+    {:ok, w1} = start_probe.(:w1, ["a", "b"])
+    {:ok, w2} = start_probe.(:w2, ["a", "b"])
+    eventually(fn -> waiter_count(coordinator, "a") == 2 end)
+
+    send(a_worker, {:finish, ["a"]})
+    eventually(fn -> waiter_count(coordinator, "a") == 0 end)
+
+    # One waiter claims the retry and dies before the other resumes.
+    :erlang.suspend_process(w2)
+    send(b_worker, {:finish, []})
+    assert_receive {:probe, :w1, ["a"], _w1_worker}
+    Process.exit(w1, :kill)
+    eventually(fn -> :sys.get_state(coordinator).owners == %{} end)
+    :erlang.resume_process(w2)
+
+    assert_receive {:probe, :w2, ["a"], w2_worker}
+    send(w2_worker, {:finish, []})
+  end
+
+  test "remote evaluation outside a coordinated probe leaves no process state" do
+    expect(PostHog.API.Mock, :request, 2, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          {:ok, %{status: 200, body: %{"flags" => %{"remote" => %{"enabled" => true}}}}}
+      end
+    end)
+
+    name = __MODULE__.NoProcessState
+    start_instance(name)
+    assert {:ok, _snapshot} = FeatureFlags.evaluate_flags(name, %{distinct_id: "one"})
+    assert Process.get({FeatureFlags, :probe_returned}) == nil
+  end
+
   defp waiter_count(coordinator, key),
     do: map_size(Map.get(:sys.get_state(coordinator).waiters, key, %{}))
 
