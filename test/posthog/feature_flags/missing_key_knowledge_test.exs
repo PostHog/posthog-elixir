@@ -904,7 +904,7 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     eventually(fn -> :sys.get_state(coordinator).owners == %{} end)
   end
 
-  test "a retry granted after the caller's deadline is passed on" do
+  test "a waiter that resumes after its deadline leaves the key free" do
     alias FeatureFlags.MissingProbeCoordinator, as: Coordinator
 
     name = __MODULE__.LateGrant
@@ -917,18 +917,21 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     late = coordinated_probe(name, :late, owner)
     eventually(fn -> waiter_count(coordinator, "missing") == 1 end)
 
-    # The waiter is suspended past its deadline while the retry is handed to it.
+    # The waiter is suspended past its deadline while the key reopens for a retry.
     :erlang.suspend_process(late.pid)
     send(first_worker, {:finish, ["missing"]})
     assert :ok = Task.await(first)
-    eventually(fn -> Map.get(:sys.get_state(coordinator).owners, "missing") == late.pid end)
     Process.sleep(2_100)
     :erlang.resume_process(late.pid)
 
     assert_receive {:probe, :late, [], late_worker}, 1_000
-    eventually(fn -> :sys.get_state(coordinator).owners == %{} end)
     send(late_worker, {:finish, []})
     assert :ok = Task.await(late)
+
+    next = coordinated_probe(name, :next, owner)
+    assert_receive {:probe, :next, ["missing"], next_worker}, 500
+    send(next_worker, {:finish, []})
+    assert :ok = Task.await(next)
   end
 
   test "an unresolved key still gets one shared retry when its waiters wait on another key" do
@@ -1226,6 +1229,68 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     :erlang.resume_process(w2)
     assert_receive {:probe, :w2, [], w2_worker}
     send(w2_worker, {:finish, []})
+  end
+
+  test "multi-key waiters of an abandoned probe share the replacement's result" do
+    alias FeatureFlags.MissingProbeCoordinator, as: Coordinator
+
+    name = __MODULE__.AbandonedMultiKey
+    start_coordinator_only(name)
+    coordinator = PostHog.Registry.via(name, Coordinator)
+    owner = self()
+
+    {:ok, a_owner} = start_unlinked_probe(name, owner, :a_owner, ["a"])
+    assert_receive {:probe, :a_owner, ["a"], _a_worker}
+    {:ok, _} = start_unlinked_probe(name, owner, :b_owner, ["b"])
+    assert_receive {:probe, :b_owner, ["b"], b_worker}
+    {:ok, _} = start_unlinked_probe(name, owner, :c_owner, ["c"])
+    assert_receive {:probe, :c_owner, ["c"], c_worker}
+    {:ok, _} = start_unlinked_probe(name, owner, :wb, ["a", "b"])
+    {:ok, _} = start_unlinked_probe(name, owner, :wc, ["a", "c"])
+    eventually(fn -> waiter_count(coordinator, "a") == 2 end)
+
+    Process.exit(a_owner, :kill)
+    eventually(fn -> waiter_count(coordinator, "a") == 0 end)
+
+    send(b_worker, {:finish, []})
+    assert_receive {:probe, :wb, ["a"], wb_worker}
+    send(wb_worker, {:finish, []})
+    eventually(fn -> not Map.has_key?(:sys.get_state(coordinator).owners, "a") end)
+
+    # An unrelated caller now probes "a"; the group member doesn't wait for it.
+    {:ok, _} = start_unlinked_probe(name, owner, :unrelated, ["a"])
+    assert_receive {:probe, :unrelated, ["a"], unrelated_worker}
+    send(c_worker, {:finish, []})
+    assert_receive {:probe, :wc, [], wc_worker}, 500
+    send(wc_worker, {:finish, []})
+    send(unrelated_worker, {:finish, []})
+  end
+
+  test "a nested evaluation that gives up doesn't release the outer probe" do
+    alias FeatureFlags.MissingProbeCoordinator, as: Coordinator
+
+    name = __MODULE__.NestedGiveUp
+    start_coordinator_only(name)
+    coordinator = PostHog.Registry.via(name, Coordinator)
+    owner = self()
+
+    {:ok, _} = start_unlinked_probe(name, owner, :b_owner, ["b"])
+    assert_receive {:probe, :b_owner, ["b"], b_worker}
+
+    outer =
+      Task.async(fn ->
+        Coordinator.run(name, ["a"], fn ["a"] ->
+          # A nested evaluation waits on "b" and gives up at its deadline.
+          Coordinator.run(name, ["b"], fn owned -> {owned, []} end)
+          send(owner, {:outer_still_leads, Map.get(:sys.get_state(coordinator).owners, "a")})
+          {:ok, []}
+        end)
+      end)
+
+    assert_receive {:outer_still_leads, outer_pid}, 3_000
+    assert outer_pid == outer.pid
+    assert :ok = Task.await(outer)
+    send(b_worker, {:finish, []})
   end
 
   test "remote evaluation outside a coordinated probe leaves no process state" do
