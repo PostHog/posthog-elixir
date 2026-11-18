@@ -1507,6 +1507,46 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     eventually(fn -> :sys.get_state(coordinator).rounds == %{} end)
   end
 
+  test "a free key seen while waiting on another key gets one shared round" do
+    alias FeatureFlags.MissingProbeCoordinator, as: Coordinator
+
+    name = __MODULE__.FreeKeyRound
+    start_coordinator_only(name)
+    coordinator = PostHog.Registry.via(name, Coordinator)
+    owner = self()
+
+    {:ok, _} = start_unlinked_probe(name, owner, :a_owner, ["a"])
+    assert_receive {:probe, :a_owner, ["a"], a_worker}
+
+    pids =
+      for id <- [:w1, :w2, :w3, :w4] do
+        {:ok, pid} = start_unlinked_probe(name, owner, id, ["a", "b"])
+        {id, pid}
+      end
+
+    eventually(fn -> waiter_count(coordinator, "a") == 4 end)
+    held = for {id, pid} <- pids, id in [:w3, :w4], do: pid
+    Enum.each(held, &:erlang.suspend_process/1)
+
+    # w1 and w2 run "b"'s probe and its shared retry; both are inconclusive.
+    send(a_worker, {:finish, []})
+    assert_receive {:probe, first_id, ["b"], first_worker}
+    eventually(fn -> waiter_count(coordinator, "b") == 1 end)
+    send(first_worker, {:finish, ["b"]})
+    assert_receive {:probe, retry_id, ["b"], retry_worker}
+    assert retry_id in ([:w1, :w2] -- [first_id])
+    send(retry_worker, {:finish, ["b"]})
+    eventually(fn -> not Map.has_key?(:sys.get_state(coordinator).rounds, "b") end)
+
+    Enum.each(held, &:erlang.resume_process/1)
+
+    for _id <- [:w3, :w4] do
+      assert_receive {:probe, id, [], worker}
+      assert id in [:w3, :w4]
+      send(worker, {:finish, []})
+    end
+  end
+
   test "remote evaluation outside a coordinated probe leaves no process state" do
     expect(PostHog.API.Mock, :request, 2, fn :stub_client, method, path, _opts ->
       case {method, path} do

@@ -215,7 +215,12 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
   # A round's members are the waiting calls that can still resume it, including
   # calls waiting on another key. The round keeps its shared retry only while it
   # has members.
-  defp add_members(state, keys, claim), do: update_members(state, keys, &MapSet.put(&1, claim))
+  # Free keys get an ownerless round, so every caller of this batch shares one
+  # round, and one retry, for them.
+  defp add_members(state, keys, claim) do
+    rounds = Enum.reduce(keys, state.rounds, &Map.put_new_lazy(&2, &1, fn -> new_round() end))
+    update_members(%{state | rounds: rounds}, keys, &MapSet.put(&1, claim))
+  end
 
   defp remove_member(state, pid, claim) do
     keys = for {key, round} <- state.rounds, MapSet.member?(round.members, claim), do: key
