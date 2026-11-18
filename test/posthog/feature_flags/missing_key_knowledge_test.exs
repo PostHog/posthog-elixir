@@ -1163,6 +1163,71 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     {coordinator, %{later: later, c_worker: workers["c"]}, later_worker}
   end
 
+  test "a lost retry owner leaves its overlapping group one shared retry" do
+    alias FeatureFlags.MissingProbeCoordinator, as: Coordinator
+
+    name = __MODULE__.LostRetryOwner
+    start_coordinator_only(name)
+    coordinator = PostHog.Registry.via(name, Coordinator)
+    owner = self()
+
+    {:ok, _} = start_unlinked_probe(name, owner, :a_owner, ["a"])
+    assert_receive {:probe, :a_owner, ["a"], a_worker}
+    {:ok, _} = start_unlinked_probe(name, owner, :b_owner, ["b"])
+    assert_receive {:probe, :b_owner, ["b"], b_worker}
+
+    {:ok, retrier} = start_unlinked_probe(name, owner, :retrier, ["a"])
+    eventually(fn -> waiter_count(coordinator, "a") == 1 end)
+    for id <- [:w2, :w3], do: {:ok, _} = start_unlinked_probe(name, owner, id, ["a", "b"])
+    eventually(fn -> waiter_count(coordinator, "a") == 3 end)
+
+    send(a_worker, {:finish, ["a"]})
+    assert_receive {:probe, :retrier, ["a"], _retry_worker}
+    Process.exit(retrier, :kill)
+    eventually(fn -> waiter_count(coordinator, "a") == 0 end)
+    send(b_worker, {:finish, []})
+
+    assert_receive {:probe, id, ["a"], worker}
+    send(worker, {:finish, ["a"]})
+    [other] = [:w2, :w3] -- [id]
+    assert_receive {:probe, ^other, [], other_worker}
+    send(other_worker, {:finish, []})
+  end
+
+  test "a caller that takes over a key runs its open group retry" do
+    alias FeatureFlags.MissingProbeCoordinator, as: Coordinator
+
+    name = __MODULE__.TakeOverRetry
+    start_coordinator_only(name)
+    coordinator = PostHog.Registry.via(name, Coordinator)
+    owner = self()
+
+    {:ok, _} = start_unlinked_probe(name, owner, :a_owner, ["a"])
+    assert_receive {:probe, :a_owner, ["a"], a_worker}
+    {:ok, _} = start_unlinked_probe(name, owner, :b_owner, ["b"])
+    assert_receive {:probe, :b_owner, ["b"], b_worker}
+    {:ok, _w1} = start_unlinked_probe(name, owner, :w1, ["a", "b"])
+    {:ok, w2} = start_unlinked_probe(name, owner, :w2, ["a", "b"])
+    eventually(fn -> waiter_count(coordinator, "a") == 2 end)
+
+    send(a_worker, {:finish, ["a"]})
+    eventually(fn -> waiter_count(coordinator, "a") == 0 end)
+
+    {:ok, _} = start_unlinked_probe(name, owner, :fresh, ["a"])
+    assert_receive {:probe, :fresh, ["a"], fresh_worker}
+
+    :erlang.suspend_process(w2)
+    send(b_worker, {:finish, []})
+    eventually(fn -> waiter_count(coordinator, "a") == 1 end)
+    send(fresh_worker, {:finish, ["a"]})
+    assert_receive {:probe, :w1, [], w1_worker}
+    send(w1_worker, {:finish, []})
+
+    :erlang.resume_process(w2)
+    assert_receive {:probe, :w2, [], w2_worker}
+    send(w2_worker, {:finish, []})
+  end
+
   test "remote evaluation outside a coordinated probe leaves no process state" do
     expect(PostHog.API.Mock, :request, 2, fn :stub_client, method, path, _opts ->
       case {method, path} do

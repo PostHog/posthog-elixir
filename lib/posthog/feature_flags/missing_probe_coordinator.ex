@@ -154,7 +154,8 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
     keys = Enum.reject(keys, &finished_retry?(state, &1, retried))
     {mine, others} = Enum.split_with(keys, &(Map.get(state.owners, &1) == pid))
     {free, in_flight} = Enum.split_with(others, &(not Map.has_key?(state.owners, &1)))
-    token_keys = Enum.filter(free, &Map.has_key?(retried, &1))
+    # Whoever leads a key with an open shared retry runs that retry for its group.
+    token_keys = Enum.filter(free, &match?(%{status: :open}, Map.get(state.retries, &1)))
 
     # A caller that waits owns nothing, so two callers can't wait on each other. A
     # caller handed a retry owns a key, so it doesn't wait on others' probes.
@@ -256,15 +257,22 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
       |> Enum.find(fn {_ref, %{pid: pid}} -> waited_key_count(state, pid) == 1 end)
 
     case candidate do
-      nil when fallback == :retry and is_map_key(state.waiters, key) ->
-        token = make_ref()
-        expires_at = System.monotonic_time(:millisecond) + @wait_timeout_ms
-        retry = %{token: token, status: :open, owner: nil, expires_at: expires_at}
-        state = %{state | retries: Map.put(state.retries, key, retry)}
-        notify_waiters(state, key, {:retry, token})
-
+      # Waiters that are owed their group's retry keep that identity, so a
+      # replacement caller's attempt counts for all of them.
       nil ->
-        notify_waiters(state, key, fallback)
+        {retried, fresh} =
+          state.waiters |> Map.get(key, %{}) |> Enum.split_with(fn {_ref, w} -> w.retried? end)
+
+        state = %{state | waiters: put_key_waiters(state.waiters, key, Map.new(fresh))}
+        state = notify_waiters(state, key, fallback)
+        state = %{state | waiters: put_key_waiters(state.waiters, key, Map.new(retried))}
+
+        if retried == [] do
+          state
+        else
+          {token, state} = open_retry(state, key)
+          notify_waiters(state, key, {:retry, token})
+        end
 
       {reply_to, %{pid: waiter}} ->
         send(reply_to, {reply_to, :granted, key})
@@ -298,6 +306,19 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
       {:error, _retry} -> false
       {{:ok, token}, %{token: token, status: status}} -> status == :done
       {{:ok, _token}, _retry} -> true
+    end
+  end
+
+  defp open_retry(state, key) do
+    case Map.get(state.retries, key) do
+      %{status: :open, token: token} ->
+        {token, state}
+
+      _other ->
+        token = make_ref()
+        expires_at = System.monotonic_time(:millisecond) + @wait_timeout_ms
+        retry = %{token: token, status: :open, owner: nil, expires_at: expires_at}
+        {token, %{state | retries: Map.put(state.retries, key, retry)}}
     end
   end
 
