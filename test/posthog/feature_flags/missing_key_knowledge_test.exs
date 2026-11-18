@@ -904,6 +904,78 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     eventually(fn -> :sys.get_state(coordinator).owners == %{} end)
   end
 
+  test "a retry granted after the caller's deadline is passed on" do
+    alias FeatureFlags.MissingProbeCoordinator, as: Coordinator
+
+    name = __MODULE__.LateGrant
+    start_coordinator_only(name)
+    coordinator = PostHog.Registry.via(name, Coordinator)
+    owner = self()
+
+    first = coordinated_probe(name, :first, owner)
+    assert_receive {:probe, :first, ["missing"], first_worker}
+    late = coordinated_probe(name, :late, owner)
+    eventually(fn -> waiter_count(coordinator, "missing") == 1 end)
+
+    # The waiter is suspended past its deadline while the retry is handed to it.
+    :erlang.suspend_process(late.pid)
+    send(first_worker, {:finish, ["missing"]})
+    assert :ok = Task.await(first)
+    eventually(fn -> Map.get(:sys.get_state(coordinator).owners, "missing") == late.pid end)
+    Process.sleep(2_100)
+    :erlang.resume_process(late.pid)
+
+    assert_receive {:probe, :late, [], late_worker}, 1_000
+    eventually(fn -> :sys.get_state(coordinator).owners == %{} end)
+    send(late_worker, {:finish, []})
+    assert :ok = Task.await(late)
+  end
+
+  test "an unresolved key still gets one shared retry when its waiters wait on another key" do
+    alias FeatureFlags.MissingProbeCoordinator, as: Coordinator
+
+    name = __MODULE__.OverlapRetry
+    start_coordinator_only(name)
+    coordinator = PostHog.Registry.via(name, Coordinator)
+    owner = self()
+
+    probe = fn id, keys ->
+      Task.async(fn ->
+        Coordinator.run(name, keys, fn owned ->
+          send(owner, {:probe, id, owned, self()})
+          receive do: ({:finish, unresolved} -> {:ok, unresolved})
+        end)
+      end)
+    end
+
+    a_owner = probe.(:a_owner, ["a"])
+    assert_receive {:probe, :a_owner, ["a"], a_worker}
+    b_owner = probe.(:b_owner, ["b"])
+    assert_receive {:probe, :b_owner, ["b"], b_worker}
+
+    waiters = for id <- [:w1, :w2, :w3], do: probe.(id, ["a", "b"])
+
+    eventually(fn ->
+      waiter_count(coordinator, "a") == 3 and waiter_count(coordinator, "b") == 3
+    end)
+
+    send(a_worker, {:finish, ["a"]})
+    assert :ok = Task.await(a_owner)
+    send(b_worker, {:finish, []})
+    assert :ok = Task.await(b_owner)
+
+    assert_receive {:probe, retry_id, ["a"], retry_worker}
+    refute_receive {:probe, _id, _owned, _worker}, 50
+    send(retry_worker, {:finish, ["a"]})
+
+    for id <- [:w1, :w2, :w3] -- [retry_id] do
+      assert_receive {:probe, ^id, [], worker}
+      send(worker, {:finish, []})
+    end
+
+    Enum.each(waiters, &assert(:ok = Task.await(&1)))
+  end
+
   defp waiter_count(coordinator, key),
     do: map_size(Map.get(:sys.get_state(coordinator).waiters, key, %{}))
 

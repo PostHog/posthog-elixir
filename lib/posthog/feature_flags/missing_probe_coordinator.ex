@@ -59,44 +59,51 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
     reply_to = Process.alias()
 
     try do
-      claim_until_led(name, keys, reply_to, deadline())
+      claim_until_led(name, keys, reply_to, deadline(), MapSet.new())
     after
       Process.unalias(reply_to)
       flush_notices(reply_to)
     end
   end
 
-  defp claim_until_led(_name, [], _reply_to, _deadline), do: []
+  # `retried` holds keys whose shared retry this caller already waited for, so a
+  # failed retry is never followed by another one for the same caller.
+  defp claim_until_led(_name, [], _reply_to, _deadline, _retried), do: []
 
-  defp claim_until_led(name, keys, reply_to, deadline) do
+  defp claim_until_led(name, keys, reply_to, deadline, retried) do
     case remaining(deadline) do
-      0 -> []
-      remaining -> claim_within(name, keys, reply_to, deadline, remaining)
+      0 -> give_up(name, reply_to)
+      remaining -> claim_within(name, keys, reply_to, deadline, remaining, retried)
     end
   end
 
-  defp claim_within(name, keys, reply_to, deadline, remaining) do
-    case request_claim(name, keys, reply_to, min(remaining, @call_timeout_ms)) do
+  # Stops waiting and passes on any key the coordinator handed over meanwhile.
+  defp give_up(name, reply_to) do
+    GenServer.cast(via(name), {:unwait, self(), reply_to})
+    []
+  end
+
+  defp claim_within(name, keys, reply_to, deadline, remaining, retried) do
+    case request_claim(name, keys, reply_to, retried, min(remaining, @call_timeout_ms)) do
       {led, []} -> led
-      {[], waiting} -> await_then_reclaim(name, keys, waiting, reply_to, deadline)
+      {[], waiting} -> await_then_reclaim(name, keys, waiting, reply_to, deadline, retried)
     end
   end
 
-  defp await_then_reclaim(name, keys, waiting, reply_to, deadline) do
-    case await_notices(reply_to, MapSet.new(waiting), [], deadline) do
+  defp await_then_reclaim(name, keys, waiting, reply_to, deadline, retried) do
+    case await_notices(reply_to, MapSet.new(waiting), {[], retried}, deadline) do
       # Settled keys are not claimed again, so their waiters run in parallel
       # instead of queueing behind each other. Abandoned keys are claimed again.
-      {:ok, settled} ->
-        claim_until_led(name, keys -- settled, reply_to, deadline)
+      {:ok, {settled, retried}} ->
+        claim_until_led(name, keys -- settled, reply_to, deadline, retried)
 
       :timeout ->
-        GenServer.cast(via(name), {:unwait, self(), reply_to})
-        []
+        give_up(name, reply_to)
     end
   end
 
-  defp request_claim(name, keys, reply_to, timeout) do
-    GenServer.call(via(name), {:claim, keys, reply_to}, timeout)
+  defp request_claim(name, keys, reply_to, retried, timeout) do
+    GenServer.call(via(name), {:claim, keys, reply_to, retried}, timeout)
   catch
     :exit, _reason ->
       # The claim may have been recorded even though the reply was lost.
@@ -109,16 +116,21 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
 
   defp remaining(deadline), do: max(deadline - System.monotonic_time(:millisecond), 0)
 
-  defp await_notices(reply_to, waiting, settled, deadline) do
+  defp await_notices(reply_to, waiting, {settled, retried} = acc, deadline) do
     if MapSet.size(waiting) == 0 do
-      {:ok, settled}
+      {:ok, acc}
     else
       receive do
         {^reply_to, :settled, key} ->
-          await_notices(reply_to, MapSet.delete(waiting, key), [key | settled], deadline)
+          acc = {[key | settled], retried}
+          await_notices(reply_to, MapSet.delete(waiting, key), acc, deadline)
+
+        {^reply_to, :retry, key} ->
+          acc = {settled, MapSet.put(retried, key)}
+          await_notices(reply_to, MapSet.delete(waiting, key), acc, deadline)
 
         {^reply_to, notice, key} when notice in [:granted, :abandoned] ->
-          await_notices(reply_to, MapSet.delete(waiting, key), settled, deadline)
+          await_notices(reply_to, MapSet.delete(waiting, key), acc, deadline)
       after
         remaining(deadline) -> :timeout
       end
@@ -137,7 +149,7 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
   def init(:ok), do: {:ok, %{owners: %{}, waiters: %{}, procs: %{}}}
 
   @impl GenServer
-  def handle_call({:claim, keys, reply_to}, {pid, _tag}, state) do
+  def handle_call({:claim, keys, reply_to, retried}, {pid, _tag}, state) do
     state = unwait(state, pid)
     {mine, others} = Enum.split_with(keys, &(Map.get(state.owners, &1) == pid))
     {free, in_flight} = Enum.split_with(others, &(not Map.has_key?(state.owners, &1)))
@@ -151,7 +163,7 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
     else
       waiters =
         Enum.reduce(in_flight, state.waiters, fn key, waiters ->
-          waiter = %{pid: pid, retried?: false}
+          waiter = %{pid: pid, retried?: MapSet.member?(retried, key)}
           Map.update(waiters, key, %{reply_to => waiter}, &Map.put(&1, reply_to, waiter))
         end)
 
@@ -224,14 +236,14 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
 
         fresh = Map.new(fresh, fn {ref, w} -> {ref, %{w | retried?: true}} end)
         state = %{state | waiters: put_key_waiters(state.waiters, key, fresh)}
-        hand_off(state, key, :settled)
+        hand_off(state, key, :retry)
     end
   end
 
   # Hands the key to one waiting caller that waits on nothing else. The other
   # waiters stay registered and wait for that caller's request instead of
-  # competing to make their own. Without such a caller, every waiter gets
-  # `fallback` and the key is no longer coordinated in this round.
+  # competing to make their own. If every waiter still waits on another key, they
+  # are all told `fallback`, and reclaim this key once their other keys settle.
   defp hand_off(state, key, fallback) do
     candidate =
       state.waiters

@@ -91,9 +91,9 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
       {:reply, {state.generation, state.instance, state.clock}, state}
     end
 
-    def handle_call({:returned_since, keys, {generation, started}}, _from, state) do
+    def handle_call({:returned_since, keys, {generation, instance, started}}, _from, state) do
       returned =
-        if generation == state.generation,
+        if generation == state.generation and instance == state.instance,
           do: Enum.filter(keys, &(Map.get(state.returned_at, &1, -1) > started)),
           else: []
 
