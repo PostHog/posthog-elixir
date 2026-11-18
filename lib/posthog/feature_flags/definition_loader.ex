@@ -72,7 +72,7 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
     @impl GenServer
     def init(name) do
       state =
-        %{name: name, generation: current_generation(name)}
+        %{name: name, generation: current_generation(name), instance: make_ref()}
         |> Map.merge(empty_keys())
 
       {:ok, publish(state)}
@@ -85,7 +85,7 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
     end
 
     def handle_call(:probe_started, _from, state) do
-      {:reply, {state.generation, state.clock}, state}
+      {:reply, {state.generation, state.instance, state.clock}, state}
     end
 
     def handle_call(
@@ -151,9 +151,11 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
     # start, the probe's omissions are not trusted.
     defp returned_since?(_state, _key, nil), do: false
 
-    defp returned_since?(state, key, {generation, started}) do
+    # A restart resets the clock, so a marker from an earlier instance can't be compared.
+    defp returned_since?(state, key, {generation, instance, started}) do
       cond do
         generation != state.generation -> true
+        instance != state.instance -> true
         state.returned_floor > started -> true
         true -> Map.get(state.returned_at, key, -1) > started
       end

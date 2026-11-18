@@ -661,6 +661,41 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
              MapSet.new(["later-missing"])
   end
 
+  test "an omission from before a negative-knowledge restart is not retained" do
+    expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+      {:ok, %{status: 200, body: envelope(), headers: %{}}}
+    end)
+
+    name = __MODULE__.KnowledgeRestart
+    start_instance(name)
+    %{generation: generation} = DefinitionLoader.evaluation_state(name, [])
+    knowledge = PostHog.Registry.via(name, DefinitionLoader.NegativeKnowledge)
+
+    update = fn requested, returned, started ->
+      :ok =
+        DefinitionLoader.update_negative_knowledge(
+          name,
+          generation,
+          requested,
+          returned,
+          true,
+          started
+        )
+    end
+
+    Enum.each(1..5, fn _ -> update.([], ["other"], DefinitionLoader.probe_started(name)) end)
+    older = DefinitionLoader.probe_started(name)
+
+    old_pid = GenServer.whereis(knowledge)
+    Process.exit(old_pid, :kill)
+    eventually(fn -> GenServer.whereis(knowledge) not in [nil, old_pid] end)
+
+    update.([], ["new"], DefinitionLoader.probe_started(name))
+    update.(["new"], [], older)
+
+    refute MapSet.member?(DefinitionLoader.evaluation_state(name, ["new"]).known_missing, "new")
+  end
+
   test "an older probe's omission cannot hide a key a newer probe returned" do
     owner = self()
     {:ok, calls} = Agent.start_link(fn -> 0 end)
