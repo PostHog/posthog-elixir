@@ -137,6 +137,35 @@ defmodule PostHog.FeatureFlagsTest do
       assert {:ok, _} = FeatureFlags.flags(body)
     end
 
+    test "preserves legacy group aliases without adding competing defaults" do
+      groups = %{"company" => "acme"}
+      group_properties = %{"company" => %{"plan" => "paid"}}
+
+      for {group_key, properties_key} <- [
+            {"$groups", "$group_properties"},
+            {:"$groups", :"$group_properties"}
+          ],
+          {body, expected_groups} <- [
+            {%{group_key => groups}, %{"$groups" => groups, "group_properties" => %{}}},
+            {%{properties_key => group_properties},
+             %{"groups" => %{}, "$group_properties" => group_properties}},
+            {%{group_key => groups, properties_key => group_properties},
+             %{"$groups" => groups, "$group_properties" => group_properties}}
+          ] do
+        expect(API.Mock, :request, fn _client, :post, "/flags", opts ->
+          assert Jason.decode!(Jason.encode!(opts[:json])) ==
+                   Map.merge(expected_groups, %{"distinct_id" => "foo", "geoip_disable" => true})
+
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+        end)
+
+        assert {:ok, _} =
+                 FeatureFlags.flags(
+                   Map.merge(body, %{"distinct_id" => "foo", "geoip_disable" => true})
+                 )
+      end
+    end
+
     test "client errors passed as is" do
       expect(API.Mock, :request, fn _client, _method, _url, _opts ->
         {:error, :transport_error}

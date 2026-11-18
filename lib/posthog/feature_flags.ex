@@ -605,11 +605,16 @@ defmodule PostHog.FeatureFlags do
   defp translate_flag_keys(body), do: body
 
   defp flags_request_defaults(body) when is_map(body) do
-    Enum.reduce([groups: %{}, group_properties: %{}, geoip_disable: false], body, fn
-      {key, default}, body ->
-        if Map.has_key?(body, Atom.to_string(key)),
-          do: body,
-          else: Map.put_new(body, key, default)
+    defaults = [
+      {:groups, %{}, ["groups", :"$groups", "$groups"]},
+      {:group_properties, %{}, ["group_properties", :"$group_properties", "$group_properties"]},
+      {:geoip_disable, false, ["geoip_disable"]}
+    ]
+
+    Enum.reduce(defaults, body, fn {key, default, aliases}, body ->
+      if Enum.any?(aliases, &Map.has_key?(body, &1)),
+        do: body,
+        else: Map.put_new(body, key, default)
     end)
   end
 
