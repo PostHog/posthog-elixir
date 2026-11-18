@@ -459,4 +459,64 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     assert MapSet.size(DefinitionLoader.evaluation_state(__MODULE__.Capacity, keys).known_missing) ==
              0
   end
+
+  test "a stalled probe bounds how long overlapping evaluations wait" do
+    owner = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    expect(PostHog.API.Mock, :request, 3, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          call = Agent.get_and_update(calls, &{&1, &1 + 1})
+          send(owner, {:stalled_probe, call, self()})
+          if call == 0, do: receive(do: (:release_stalled -> :ok))
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    start_instance(__MODULE__.Stalled)
+    stalled = Task.async(fn -> scoped(__MODULE__.Stalled, ["missing"], "one") end)
+    assert_receive {:stalled_probe, 0, worker}
+
+    waiter = Task.async(fn -> scoped(__MODULE__.Stalled, ["missing"], "two") end)
+    refute_receive {:stalled_probe, 1, _worker}, 1_000
+    assert_receive {:stalled_probe, 1, _worker}, 2_000
+    assert {:ok, _snapshot} = Task.await(waiter)
+
+    send(worker, :release_stalled)
+    assert {:ok, _snapshot} = Task.await(stalled)
+  end
+
+  test "a crashed probe owner releases overlapping evaluations" do
+    owner = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    expect(PostHog.API.Mock, :request, 3, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          call = Agent.get_and_update(calls, &{&1, &1 + 1})
+          send(owner, {:crash_probe, call, self()})
+          if call == 0, do: receive(do: (:never -> :ok))
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    start_instance(__MODULE__.Crashed)
+
+    {:ok, crashed} =
+      Task.start(fn -> scoped(__MODULE__.Crashed, ["missing"], "one") end)
+
+    assert_receive {:crash_probe, 0, _worker}
+    waiter = Task.async(fn -> scoped(__MODULE__.Crashed, ["missing"], "two") end)
+    refute_receive {:crash_probe, 1, _worker}, 50
+    Process.exit(crashed, :kill)
+    assert_receive {:crash_probe, 1, _worker}, 500
+    assert {:ok, _snapshot} = Task.await(waiter)
+  end
 end

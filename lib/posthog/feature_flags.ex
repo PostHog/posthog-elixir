@@ -319,7 +319,7 @@ defmodule PostHog.FeatureFlags do
         []
       )
     else
-      with_missing_probe_locks(name, probe_keys, fn ->
+      __MODULE__.MissingProbeCoordinator.run(name, probe_keys, fn ->
         evaluate_after_missing_probe_lock(name, distinct_id, body, requested_keys, probe_keys)
       end)
     end
@@ -513,24 +513,6 @@ defmodule PostHog.FeatureFlags do
     end
   catch
     :exit, _reason -> %{definitions: nil, generation: nil, known_missing: MapSet.new()}
-  end
-
-  defp with_missing_probe_locks(name, keys, callback) do
-    keys
-    |> Enum.uniq()
-    |> Enum.sort()
-    |> acquire_missing_probe_locks(name, callback)
-  end
-
-  defp acquire_missing_probe_locks([], _name, callback), do: callback.()
-
-  defp acquire_missing_probe_locks([key | rest], name, callback) do
-    lock = {{__MODULE__, :missing_probe, name, key}, self()}
-
-    # The lock intentionally spans the remote probe. Overlapping evaluations must
-    # wait for its existence result before deciding whether another fallback is
-    # needed; sorted keys keep multi-key probes from deadlocking each other.
-    :global.trans(lock, fn -> acquire_missing_probe_locks(rest, name, callback) end)
   end
 
   @doc """

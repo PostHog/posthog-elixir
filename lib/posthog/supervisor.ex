@@ -81,6 +81,7 @@ defmodule PostHog.Supervisor do
     [
       {PostHog.FeatureFlags.DefinitionLoader.NegativeKnowledge,
        supervisor_name: config.supervisor_name},
+      {PostHog.FeatureFlags.MissingProbeCoordinator, supervisor_name: config.supervisor_name},
       {PostHog.FeatureFlags.DefinitionLoader, config: config, callers: callers}
     ]
   end
