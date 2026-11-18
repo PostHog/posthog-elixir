@@ -7,7 +7,8 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
   # Each key has at most one round. Callers that coordinate on the key join it and
   # keep its id. A round ends when a probe settles the key, or when a single
   # shared retry after an inconclusive probe is also inconclusive. Callers holding
-  # an ended round's id skip the key; later callers start a new round.
+  # an ended round's id skip the key; later callers start a new round. Ended
+  # rounds are dropped, since an unknown id already counts as ended.
 
   use GenServer
 
@@ -142,7 +143,7 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
   end
 
   @impl GenServer
-  def init(:ok), do: {:ok, %{owners: %{}, waiters: %{}, procs: %{}, rounds: %{}, ended: %{}}}
+  def init(:ok), do: {:ok, %{owners: %{}, waiters: %{}, procs: %{}, rounds: %{}}}
 
   @impl GenServer
   def handle_call({:claim, keys, claim, rounds}, {pid, _tag}, state) do
@@ -157,7 +158,9 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
     else
       state = Enum.reduce(in_flight, state, &add_waiter(&2, &1, pid, claim))
       state = update_proc(state, pid, &%{&1 | wait: {claim, MapSet.new(in_flight)}})
-      {:reply, {:wait, in_flight, skipped, joined(state, in_flight, rounds)}, state}
+      # Record every round the caller saw, including reopened free keys, so it
+      # doesn't start another probe if that round ends while it waits.
+      {:reply, {:wait, in_flight, skipped, joined(state, keys, rounds)}, state}
     end
   end
 
@@ -199,8 +202,14 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
     end
   end
 
-  defp joined(state, keys, rounds),
-    do: Enum.reduce(keys, rounds, &Map.put(&2, &1, state.rounds[&1].id))
+  defp joined(state, keys, rounds) do
+    Enum.reduce(keys, rounds, fn key, rounds ->
+      case Map.fetch(state.rounds, key) do
+        {:ok, %{id: id}} -> Map.put(rounds, key, id)
+        :error -> rounds
+      end
+    end)
+  end
 
   defp lead(state, key, pid, claim) do
     round = Map.get(state.rounds, key) || new_round()
@@ -245,9 +254,8 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
     notify_waiters(state, key, :reopened)
   end
 
-  defp end_round(state, key, round) do
-    ended = Map.put(state.ended, {key, round.id}, expires_at())
-    state = %{state | rounds: Map.delete(state.rounds, key), ended: ended}
+  defp end_round(state, key, _round) do
+    state = %{state | rounds: Map.delete(state.rounds, key)}
     notify_waiters(state, key, :settled)
   end
 
@@ -269,8 +277,7 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
         is_nil(round.owner) and round.expires_at < now and not Map.has_key?(state.waiters, key)
       end)
 
-    ended = Map.reject(state.ended, fn {_key_id, expires_at} -> expires_at < now end)
-    %{state | rounds: rounds, ended: ended}
+    %{state | rounds: rounds}
   end
 
   defp unwait_claim(state, pid, claim) do

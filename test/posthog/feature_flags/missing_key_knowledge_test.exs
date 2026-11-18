@@ -1293,6 +1293,89 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     send(b_worker, {:finish, []})
   end
 
+  test "a caller that sees a reopened round keeps it while waiting on another key" do
+    alias FeatureFlags.MissingProbeCoordinator, as: Coordinator
+
+    name = __MODULE__.ReopenedSeen
+    start_coordinator_only(name)
+    coordinator = PostHog.Registry.via(name, Coordinator)
+    owner = self()
+
+    {:ok, _} = start_unlinked_probe(name, owner, :a_owner, ["a"])
+    assert_receive {:probe, :a_owner, ["a"], a_worker}
+    {:ok, _} = start_unlinked_probe(name, owner, :b_owner, ["b"])
+    assert_receive {:probe, :b_owner, ["b"], b_worker}
+    {:ok, retrier} = start_unlinked_probe(name, owner, :retrier, ["a"])
+    eventually(fn -> waiter_count(coordinator, "a") == 1 end)
+
+    # "a" reopens for its shared retry while the retrier is held.
+    :erlang.suspend_process(retrier)
+    send(a_worker, {:finish, ["a"]})
+    eventually(fn -> waiter_count(coordinator, "a") == 0 end)
+
+    {:ok, _} = start_unlinked_probe(name, owner, :late, ["a", "b"])
+    eventually(fn -> waiter_count(coordinator, "b") == 1 end)
+
+    :erlang.resume_process(retrier)
+    assert_receive {:probe, :retrier, ["a"], retry_worker}
+    send(retry_worker, {:finish, ["a"]})
+    eventually(fn -> not Map.has_key?(:sys.get_state(coordinator).rounds, "a") end)
+
+    send(b_worker, {:finish, []})
+    assert_receive {:probe, :late, [], late_worker}
+    send(late_worker, {:finish, []})
+  end
+
+  test "a remote request nested in a probe can't settle the probe's keys" do
+    owner = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+    nested = __MODULE__.NestedOther
+
+    stub(PostHog.API.Mock, :request, fn :stub_client, method, path, opts ->
+      case {method, path, opts[:json][:distinct_id]} do
+        {:get, "/flags/definitions", _id} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags", "nested"} ->
+          {:ok, %{status: 200, body: %{"flags" => %{"missing" => %{"enabled" => true}}}}}
+
+        {:post, "/flags", _id} ->
+          call = Agent.get_and_update(calls, &{&1, &1 + 1})
+
+          # The first probe's request evaluates flags on another instance.
+          if call == 0,
+            do: {:ok, _} = FeatureFlags.evaluate_flags(nested, %{distinct_id: "nested"})
+
+          send(owner, {:nested_probe, call, self()})
+          receive do: (:release_nested -> :ok)
+          {:error, %RuntimeError{message: "offline"}}
+      end
+    end)
+
+    start_instance(nested)
+    name = __MODULE__.NestedOuter
+    start_instance(name)
+    coordinator = PostHog.Registry.via(name, FeatureFlags.MissingProbeCoordinator)
+
+    first = Task.async(fn -> scoped(name, ["missing"], "one") end)
+    assert_receive {:nested_probe, 0, first_worker}
+
+    waiters =
+      for id <- ["two", "three"], do: Task.async(fn -> scoped(name, ["missing"], id) end)
+
+    eventually(fn -> waiter_count(coordinator, "missing") == 2 end)
+    send(first_worker, :release_nested)
+    assert {:error, _reason} = Task.await(first)
+
+    # The probe was inconclusive, so one waiter retries while the other waits.
+    assert_receive {:nested_probe, 1, retry_worker}
+    refute_receive {:nested_probe, 2, _worker}, 50
+    send(retry_worker, :release_nested)
+    assert_receive {:nested_probe, 2, other_worker}
+    send(other_worker, :release_nested)
+    Enum.each(waiters, &assert({:error, _reason} = Task.await(&1)))
+  end
+
   test "remote evaluation outside a coordinated probe leaves no process state" do
     expect(PostHog.API.Mock, :request, 2, fn :stub_client, method, path, _opts ->
       case {method, path} do

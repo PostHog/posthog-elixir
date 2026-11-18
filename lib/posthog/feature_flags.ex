@@ -498,22 +498,48 @@ defmodule PostHog.FeatureFlags do
 
   @probe_returned_key {__MODULE__, :probe_returned}
 
-  # Records the keys returned by the probe that `fun` makes. Only active during a
-  # coordinated probe, and always cleared afterwards.
+  # Records the keys returned by the probe that `fun` makes. Each remote request
+  # hides the collector while it runs, so evaluations nested in that request
+  # can't write to it, and only writes its own keys back.
   defp collect_probe_returned(fun) do
-    Process.put(@probe_returned_key, MapSet.new())
+    previous = Process.put(@probe_returned_key, {:collecting, MapSet.new()})
 
     try do
       result = fun.()
-      {result, Process.get(@probe_returned_key, MapSet.new())}
+
+      returned =
+        case Process.get(@probe_returned_key) do
+          {:collecting, returned} -> returned
+          _other -> MapSet.new()
+        end
+
+      {result, returned}
     after
-      Process.delete(@probe_returned_key)
+      restore_probe_returned(previous)
     end
   end
 
+  defp isolate_probe_returned(fun) do
+    previous = Process.delete(@probe_returned_key)
+
+    try do
+      fun.()
+    after
+      restore_probe_returned(previous)
+    end
+  end
+
+  defp restore_probe_returned(nil), do: Process.delete(@probe_returned_key)
+  defp restore_probe_returned(previous), do: Process.put(@probe_returned_key, previous)
+
   defp put_probe_returned(keys) do
-    if Process.get(@probe_returned_key),
-      do: Process.put(@probe_returned_key, MapSet.new(keys))
+    case Process.get(@probe_returned_key) do
+      {:collecting, _returned} ->
+        Process.put(@probe_returned_key, {:collecting, MapSet.new(keys)})
+
+      _other ->
+        :ok
+    end
 
     :ok
   end
@@ -592,7 +618,7 @@ defmodule PostHog.FeatureFlags do
 
     started = probe_started(name, generation, negative_candidates)
 
-    case flags(name, remote_body) do
+    case isolate_probe_returned(fn -> flags(name, remote_body) end) do
       {:ok, %{body: %{"flags" => remote_flags} = response_body}} when is_map(remote_flags) ->
         scoped_remote_flags = maybe_scope_remote_results(remote_flags, requested_keys)
         {remote_results, malformed?} = build_remote_results(scoped_remote_flags, response_body)
