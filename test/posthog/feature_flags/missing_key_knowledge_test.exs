@@ -751,6 +751,12 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
       for id <- ["two", "three"],
           do: Task.async(fn -> scoped(__MODULE__.Parallel, ["remote"], id) end)
 
+    coordinator = PostHog.Registry.via(__MODULE__.Parallel, FeatureFlags.MissingProbeCoordinator)
+
+    eventually(fn ->
+      map_size(Map.get(:sys.get_state(coordinator).waiters, "remote", %{})) == 2
+    end)
+
     refute_receive {:parallel_probe, _call, _worker}, 50
     send(first_worker, :release_parallel)
     assert {:ok, _snapshot} = Task.await(first)
