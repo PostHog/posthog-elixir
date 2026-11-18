@@ -48,7 +48,9 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
       {[], waiting} ->
         case await_settled(reply_to, MapSet.new(waiting), deadline) do
           :ok ->
-            claim_until_led(name, keys, reply_to, deadline)
+            # Settled keys are not claimed again, so their waiters run in parallel
+            # instead of queueing behind each other.
+            claim_until_led(name, keys -- waiting, reply_to, deadline)
 
           :timeout ->
             GenServer.cast(via(name), {:unwait, reply_to, waiting})

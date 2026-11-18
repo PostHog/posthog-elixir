@@ -556,4 +556,40 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     send(second_worker, :release_shared)
     Enum.each(waiters, &assert({:ok, _snapshot} = Task.await(&1)))
   end
+
+  test "waiters whose probe returned the key make their own requests in parallel" do
+    owner = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    expect(PostHog.API.Mock, :request, 4, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          call = Agent.get_and_update(calls, &{&1, &1 + 1})
+          send(owner, {:parallel_probe, call, self()})
+          receive do: (:release_parallel -> :ok)
+          {:ok, %{status: 200, body: %{"flags" => %{"remote" => %{"enabled" => true}}}}}
+      end
+    end)
+
+    start_instance(__MODULE__.Parallel)
+    first = Task.async(fn -> scoped(__MODULE__.Parallel, ["remote"], "one") end)
+    assert_receive {:parallel_probe, 0, first_worker}
+
+    waiters =
+      for id <- ["two", "three"],
+          do: Task.async(fn -> scoped(__MODULE__.Parallel, ["remote"], id) end)
+
+    refute_receive {:parallel_probe, _call, _worker}, 50
+    send(first_worker, :release_parallel)
+    assert {:ok, _snapshot} = Task.await(first)
+
+    assert_receive {:parallel_probe, 1, worker_one}
+    assert_receive {:parallel_probe, 2, worker_two}
+    send(worker_one, :release_parallel)
+    send(worker_two, :release_parallel)
+    Enum.each(waiters, &assert({:ok, _snapshot} = Task.await(&1)))
+  end
 end
