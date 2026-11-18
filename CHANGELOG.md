@@ -1,5 +1,11 @@
 # posthog
 
+## 2.23.0 — 2026-11-18
+
+### Minor changes
+
+- [5ed434f](https://github.com/posthog/posthog-elixir/commit/5ed434f0e084a0dfffa1ae55dac971b9e366d8d8) `PostHog.FeatureFlags.get_remote_config_payload/2` reads the payload of a remote config feature flag by its key, with no distinct ID. It needs the `secret_key` option. It returns `{:ok, payload}`, or `{:error, exception}` on a failure. — Thanks @ioannisj!
+
 ## 2.22.2 — 2026-11-18
 
 ### Patch changes
