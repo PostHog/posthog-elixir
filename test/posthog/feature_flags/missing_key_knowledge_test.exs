@@ -236,6 +236,103 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     assert {:ok, _snapshot} = Task.await(returned_waiter)
   end
 
+  test "a waiter stops waiting for a stalled probe and falls back itself" do
+    owner = self()
+
+    expect(PostHog.API.Mock, :request, 3, fn :stub_client, method, path, opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          distinct_id = opts[:json].distinct_id
+          send(owner, {:stalled_probe, distinct_id, self()})
+          if distinct_id == "one", do: receive(do: (:release_stalled -> :ok))
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    start_instance(__MODULE__.Stalled)
+    first = Task.async(fn -> scoped(__MODULE__.Stalled, ["missing"], "one") end)
+    assert_receive {:stalled_probe, "one", worker}
+
+    waiter = Task.async(fn -> scoped(__MODULE__.Stalled, ["missing"], "two") end)
+    refute_receive {:stalled_probe, "two", _worker}, 200
+    assert_receive {:stalled_probe, "two", _worker}, 2_000
+    assert {:ok, snapshot} = Task.await(waiter)
+    assert Evaluations.keys(snapshot) == []
+
+    send(worker, :release_stalled)
+    assert {:ok, _snapshot} = Task.await(first)
+  end
+
+  test "waiters behind a probe that returns the key fall back concurrently" do
+    owner = self()
+
+    expect(PostHog.API.Mock, :request, 4, fn :stub_client, method, path, opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          send(owner, {:returned_probe, opts[:json].distinct_id, self()})
+          receive do: (:release_returned -> :ok)
+          {:ok, %{status: 200, body: %{"flags" => %{"missing" => %{"enabled" => true}}}}}
+      end
+    end)
+
+    start_instance(__MODULE__.Concurrent)
+    first = Task.async(fn -> scoped(__MODULE__.Concurrent, ["missing"], "one") end)
+    assert_receive {:returned_probe, "one", first_worker}
+
+    waiters =
+      for distinct_id <- ["two", "three"] do
+        Task.async(fn -> scoped(__MODULE__.Concurrent, ["missing"], distinct_id) end)
+      end
+
+    refute_receive {:returned_probe, _distinct_id, _worker}, 50
+    send(first_worker, :release_returned)
+
+    # Both waiters are in flight together, so neither waits for the other's request.
+    assert_receive {:returned_probe, "two", second_worker}, 500
+    assert_receive {:returned_probe, "three", third_worker}, 500
+    send(second_worker, :release_returned)
+    send(third_worker, :release_returned)
+
+    for task <- [first | waiters] do
+      assert {:ok, snapshot} = Task.await(task)
+      assert snapshot.flags["missing"].enabled
+    end
+  end
+
+  test "a probe owner that dies releases its waiters immediately" do
+    owner = self()
+
+    expect(PostHog.API.Mock, :request, 3, fn :stub_client, method, path, opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          distinct_id = opts[:json].distinct_id
+          send(owner, {:crashing_probe, distinct_id, self()})
+          if distinct_id == "one", do: receive(do: (:never -> :ok))
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    start_instance(__MODULE__.OwnerDown)
+    spawn(fn -> scoped(__MODULE__.OwnerDown, ["missing"], "one") end)
+    assert_receive {:crashing_probe, "one", probe_owner}
+
+    waiter = Task.async(fn -> scoped(__MODULE__.OwnerDown, ["missing"], "two") end)
+    refute_receive {:crashing_probe, "two", _worker}, 50
+    Process.exit(probe_owner, :kill)
+
+    assert_receive {:crashing_probe, "two", _worker}, 500
+    assert {:ok, _snapshot} = Task.await(waiter)
+  end
+
   test "disjoint probes proceed concurrently and mixed overlapping sets recheck before one original-scope request" do
     owner = self()
 

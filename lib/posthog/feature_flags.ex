@@ -4,6 +4,7 @@ defmodule PostHog.FeatureFlags do
   """
 
   @missing_probe_coordination_limit 1_000
+  @missing_probe_wait_ms 1_000
   @no_local_results %{results: %{}, reasons: %{}}
 
   @doc """
@@ -151,6 +152,8 @@ defmodule PostHog.FeatureFlags do
     snapshot in memory. Clean remote omissions for explicitly requested keys
     are retained in a bounded per-instance set until definitions refresh, so
     repeated and concurrent missing-key probes avoid duplicate requests.
+    Concurrent evaluations on the same node wait at most one second for an
+    in-flight probe of the same key, then make their own request.
 
   ## Examples
 
@@ -319,13 +322,19 @@ defmodule PostHog.FeatureFlags do
         []
       )
     else
-      with_missing_probe_locks(name, probe_keys, fn ->
-        evaluate_after_missing_probe_lock(name, distinct_id, body, requested_keys, probe_keys)
+      with_missing_probe_claims(name, probe_keys, fn owned_keys ->
+        evaluate_after_missing_probe_claims(name, distinct_id, body, requested_keys, owned_keys)
       end)
     end
   end
 
-  defp evaluate_after_missing_probe_lock(name, distinct_id, body, requested_keys, probe_keys) do
+  defp evaluate_after_missing_probe_claims(
+         name,
+         distinct_id,
+         body,
+         requested_keys,
+         owned_probe_keys
+       ) do
     fresh_state = local_evaluation_state(name, requested_keys)
 
     if is_nil(fresh_state.definitions) do
@@ -338,7 +347,7 @@ defmodule PostHog.FeatureFlags do
         requested_keys,
         fresh_state,
         false,
-        probe_keys
+        owned_probe_keys
       )
     end
   end
@@ -515,22 +524,88 @@ defmodule PostHog.FeatureFlags do
     :exit, _reason -> %{definitions: nil, generation: nil, known_missing: MapSet.new()}
   end
 
-  defp with_missing_probe_locks(name, keys, callback) do
-    keys
-    |> Enum.uniq()
-    |> Enum.sort()
-    |> acquire_missing_probe_locks(name, callback)
+  # Probe claims are node-local and bounded. A claim is held by a small process
+  # registered in this instance's registry, so waiters wake when the probe settles
+  # or its owner dies. A waiter never takes over a claim: once the overlapping probe
+  # settles, or the wait deadline passes, it rechecks knowledge and falls back itself.
+  # Sorted keys keep multi-key claims from waiting on each other in a cycle.
+  defp with_missing_probe_claims(name, keys, callback) do
+    registry = PostHog.Registry.registry_name(name)
+    deadline = System.monotonic_time(:millisecond) + @missing_probe_wait_ms
+
+    {owned_keys, holders} =
+      keys
+      |> Enum.uniq()
+      |> Enum.sort()
+      |> Enum.flat_map(&claim_missing_probe(registry, &1, deadline))
+      |> Enum.unzip()
+
+    try do
+      callback.(owned_keys)
+    after
+      Enum.each(holders, &send(&1, :release_missing_probe))
+    end
   end
 
-  defp acquire_missing_probe_locks([], _name, callback), do: callback.()
+  defp claim_missing_probe(registry, key, deadline) do
+    lock = {__MODULE__, :missing_probe, key}
 
-  defp acquire_missing_probe_locks([key | rest], name, callback) do
-    lock = {{__MODULE__, :missing_probe, name, key}, self()}
+    case Registry.lookup(registry, lock) do
+      [{holder, _value}] -> await_missing_probe(holder, deadline)
+      [] -> start_missing_probe_holder(registry, lock, key, deadline)
+    end
+  rescue
+    ArgumentError -> []
+  end
 
-    # The lock intentionally spans the remote probe. Overlapping evaluations must
-    # wait for its existence result before deciding whether another fallback is
-    # needed; sorted keys keep multi-key probes from deadlocking each other.
-    :global.trans(lock, fn -> acquire_missing_probe_locks(rest, name, callback) end)
+  defp start_missing_probe_holder(registry, lock, key, deadline) do
+    owner = self()
+    {holder, monitor} = spawn_monitor(fn -> hold_missing_probe(registry, lock, owner) end)
+
+    receive do
+      {^holder, :claimed} ->
+        Process.demonitor(monitor, [:flush])
+        [{key, holder}]
+
+      {^holder, {:busy, current}} ->
+        Process.demonitor(monitor, [:flush])
+        await_missing_probe(current, deadline)
+
+      {:DOWN, ^monitor, :process, ^holder, _reason} ->
+        []
+    end
+  end
+
+  defp hold_missing_probe(registry, lock, owner) do
+    owner_monitor = Process.monitor(owner)
+
+    case Registry.register(registry, lock, nil) do
+      {:ok, _owner} ->
+        send(owner, {self(), :claimed})
+
+        receive do
+          :release_missing_probe -> :ok
+          {:DOWN, ^owner_monitor, :process, ^owner, _reason} -> :ok
+        end
+
+      {:error, {:already_registered, current}} ->
+        send(owner, {self(), {:busy, current}})
+    end
+  rescue
+    ArgumentError -> :ok
+  end
+
+  defp await_missing_probe(holder, deadline) do
+    monitor = Process.monitor(holder)
+    timeout = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {:DOWN, ^monitor, :process, ^holder, _reason} -> :ok
+    after
+      timeout -> Process.demonitor(monitor, [:flush])
+    end
+
+    []
   end
 
   @doc """
