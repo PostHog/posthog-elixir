@@ -120,7 +120,13 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
     defp empty, do: %{generation: nil, keys: MapSet.new()}
 
     defp empty_keys,
-      do: %{keys: MapSet.new(), order: [], returned: MapSet.new(), returned_order: []}
+      do: %{
+        keys: MapSet.new(),
+        order: [],
+        returned: MapSet.new(),
+        returned_order: [],
+        returned_overflow?: false
+      }
 
     defp publish(state) do
       registry = PostHog.Registry.registry_name(state.name)
@@ -137,10 +143,11 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
       keys = MapSet.difference(state.keys, returned)
 
       {order, keys} =
-        if clean? do
+        if clean? and not state.returned_overflow? do
           omissions =
             requested
             |> MapSet.new()
+            |> MapSet.difference(returned)
             |> MapSet.difference(state.returned)
             |> MapSet.to_list()
             |> Enum.sort()
@@ -163,11 +170,18 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
     end
 
     # Keys returned in this generation never become missing again until the next
-    # refresh, so a slower overlapping probe's omission can't hide a new flag.
+    # refresh, so a slower overlapping probe's omission can't hide a new flag. Once
+    # that history overflows, no omission is retained until the next refresh.
     defp remember_returned(state, returned) do
-      new = returned |> MapSet.difference(state.returned) |> MapSet.to_list() |> Enum.sort()
-      order = Enum.take(state.returned_order ++ new, -@capacity)
-      %{state | returned_order: order, returned: MapSet.new(order)}
+      new = returned |> MapSet.difference(state.returned) |> MapSet.to_list()
+      size = MapSet.size(state.returned) + length(new)
+
+      if size > @capacity do
+        %{state | returned_order: [], returned: MapSet.new(), returned_overflow?: true}
+      else
+        order = state.returned_order ++ new
+        %{state | returned_order: order, returned: MapSet.new(order)}
+      end
     end
 
     defp via(name), do: PostHog.Registry.via(name, __MODULE__)

@@ -626,6 +626,32 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     refute_receive {:raising_probe, 2, _worker}, 50
   end
 
+  test "returned keys are never retained as missing, even past the history capacity" do
+    expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+      {:ok, %{status: 200, body: envelope(), headers: %{}}}
+    end)
+
+    start_instance(__MODULE__.ReturnedHistory)
+    %{generation: generation} = DefinitionLoader.evaluation_state(__MODULE__.ReturnedHistory, [])
+    returned = for index <- 0..1_000, do: "returned-#{index}"
+
+    update = fn requested, returned, clean? ->
+      :ok =
+        DefinitionLoader.update_negative_knowledge(
+          __MODULE__.ReturnedHistory,
+          generation,
+          requested,
+          returned,
+          clean?
+        )
+
+      DefinitionLoader.evaluation_state(__MODULE__.ReturnedHistory, requested).known_missing
+    end
+
+    assert update.(["missing" | returned], returned, true) == MapSet.new()
+    assert update.(["later-missing"], [], true) == MapSet.new()
+  end
+
   test "an older probe's omission cannot hide a key a newer probe returned" do
     owner = self()
     {:ok, calls} = Agent.start_link(fn -> 0 end)
