@@ -179,9 +179,9 @@ defmodule PostHog.Emails do
   alias PostHog.Emails.Status
   alias PostHog.Emails.Warning
 
-  @send_path "/api/projects/@current/messaging/send/email/"
-  @uploads_path "/api/projects/@current/messaging/attachments/uploads/"
-  @status_path "/api/projects/@current/messaging/emails/"
+  @send_path "/api/messaging/send/email/"
+  @uploads_path "/api/messaging/attachments/uploads/"
+  @status_path "/api/messaging/emails/"
   @us_app_host "https://us.posthog.com"
   @eu_app_host "https://eu.posthog.com"
   @cloud_app_hosts %{
