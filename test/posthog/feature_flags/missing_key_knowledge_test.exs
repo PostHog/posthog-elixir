@@ -745,6 +745,57 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     Enum.each(waiters, &assert({:ok, _snapshot} = Task.await(&1)))
   end
 
+  test "a shared retry that fails before waiters reclaim does not start another round" do
+    alias FeatureFlags.MissingProbeCoordinator, as: Coordinator
+
+    expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+      {:ok, %{status: 200, body: envelope(), headers: %{}}}
+    end)
+
+    name = __MODULE__.FastRetry
+    start_instance(name)
+    owner = self()
+
+    probe = fn id ->
+      Task.async(fn ->
+        Coordinator.run(name, ["missing"], fn owned ->
+          send(owner, {:probe, id, owned, self()})
+          receive do: ({:finish, unresolved} -> {:ok, unresolved})
+        end)
+      end)
+    end
+
+    first = probe.(:first)
+    assert_receive {:probe, :first, ["missing"], first_worker}
+
+    coordinator = PostHog.Registry.via(name, Coordinator)
+    waiters = for id <- [:a, :b, :c], do: probe.(id)
+
+    eventually(fn ->
+      map_size(Map.get(:sys.get_state(coordinator).waiters, "missing", %{})) == 3
+    end)
+
+    # Only one waiter runs until the shared retry has already failed.
+    [retrier | held] = waiters
+    Enum.each(held, &:erlang.suspend_process(&1.pid))
+    send(first_worker, {:finish, ["missing"]})
+    assert :ok = Task.await(first)
+
+    assert_receive {:probe, :a, ["missing"], retry_worker}
+    send(retry_worker, {:finish, ["missing"]})
+    assert :ok = Task.await(retrier)
+
+    Enum.each(held, &:erlang.resume_process(&1.pid))
+
+    for id <- [:b, :c] do
+      assert_receive {:probe, ^id, owned, worker}
+      assert owned == []
+      send(worker, {:finish, []})
+    end
+
+    Enum.each(held, &assert(:ok = Task.await(&1)))
+  end
+
   test "waiters on a settled probe still share one probe for their other missing key" do
     owner = self()
 

@@ -137,7 +137,9 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
 
   @impl GenServer
   def handle_call({:claim, keys, reply_to}, {pid, _tag}, state) do
-    state = unwait(state, pid)
+    state = state |> unwait(pid) |> prune_retrying()
+    # Keys whose shared retry already failed are not coordinated again this round.
+    keys = Enum.reject(keys, &(Map.get(state.retrying, &1) |> exhausted?()))
     {free, in_flight} = Enum.split_with(keys, &(not Map.has_key?(state.owners, &1)))
 
     # A caller that must wait owns nothing, so two callers can't wait on each other.
@@ -213,12 +215,14 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
   # unresolved, the remaining waiters proceed together instead of queueing.
   defp retry_notice(state, key, notice, waiters?) do
     state = prune_retrying(state)
-    retried? = Map.has_key?(state.retrying, key)
+    retry = Map.get(state.retrying, key)
 
     cond do
-      notice == :unresolved and waiters? and not retried? ->
-        expires_at = System.monotonic_time(:millisecond) + @wait_timeout_ms
-        {:abandoned, %{state | retrying: Map.put(state.retrying, key, expires_at)}}
+      notice == :unresolved and waiters? and is_nil(retry) ->
+        {:abandoned, put_retry(state, key, :in_progress)}
+
+      notice == :unresolved and not is_nil(retry) ->
+        {:settled, put_retry(state, key, :exhausted)}
 
       notice == :abandoned and waiters? ->
         {:abandoned, state}
@@ -228,13 +232,21 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
     end
   end
 
+  defp put_retry(state, key, status) do
+    expires_at = System.monotonic_time(:millisecond) + @wait_timeout_ms
+    %{state | retrying: Map.put(state.retrying, key, {status, expires_at})}
+  end
+
+  defp exhausted?({:exhausted, _expires_at}), do: true
+  defp exhausted?(_retry), do: false
+
   defp prune_retrying(%{retrying: retrying} = state) when map_size(retrying) == 0, do: state
 
   defp prune_retrying(state) do
     now = System.monotonic_time(:millisecond)
 
     retrying =
-      Map.reject(state.retrying, fn {key, expires_at} ->
+      Map.reject(state.retrying, fn {key, {_status, expires_at}} ->
         expires_at < now and not Map.has_key?(state.owners, key)
       end)
 
