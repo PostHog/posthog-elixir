@@ -1450,6 +1450,41 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     Enum.each(waiters, &assert({:ok, _snapshot} = Task.await(&1)))
   end
 
+  test "a round whose only waiter left doesn't use up the next group's shared retry" do
+    alias FeatureFlags.MissingProbeCoordinator, as: Coordinator
+
+    name = __MODULE__.DepartedWaiter
+    start_coordinator_only(name)
+    coordinator = PostHog.Registry.via(name, Coordinator)
+    owner = self()
+
+    lone = coordinated_probe(name, :lone, owner)
+    assert_receive {:probe, :lone, ["missing"], lone_worker}
+    {:ok, departed} = start_unlinked_probe(name, owner, :departed, ["missing"])
+    eventually(fn -> waiter_count(coordinator, "missing") == 1 end)
+    Process.exit(departed, :kill)
+    eventually(fn -> waiter_count(coordinator, "missing") == 0 end)
+
+    send(lone_worker, {:finish, ["missing"]})
+    assert :ok = Task.await(lone)
+
+    first = coordinated_probe(name, :first, owner)
+    assert_receive {:probe, :first, ["missing"], first_worker}
+    waiters = for id <- [:a, :b], do: coordinated_probe(name, id, owner)
+    eventually(fn -> waiter_count(coordinator, "missing") == 2 end)
+
+    send(first_worker, {:finish, ["missing"]})
+    assert :ok = Task.await(first)
+    assert_receive {:probe, retry_id, ["missing"], retry_worker}
+    refute_receive {:probe, _id, _owned, _worker}, 50
+    send(retry_worker, {:finish, []})
+
+    [other] = [:a, :b] -- [retry_id]
+    assert_receive {:probe, ^other, [], other_worker}
+    send(other_worker, {:finish, []})
+    Enum.each(waiters, &assert(:ok = Task.await(&1)))
+  end
+
   test "remote evaluation outside a coordinated probe leaves no process state" do
     expect(PostHog.API.Mock, :request, 2, fn :stub_client, method, path, _opts ->
       case {method, path} do

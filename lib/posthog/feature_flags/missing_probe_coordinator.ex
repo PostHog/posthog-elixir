@@ -43,6 +43,7 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
 
     try do
       led = claim_until_led(name, Enum.uniq(keys), claim, deadline(), %{})
+      GenServer.cast(via(name), {:done, self(), claim})
       run_led(name, claim, led, callback)
     after
       Process.unalias(claim)
@@ -156,7 +157,8 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
       state = Enum.reduce(free, state, &lead(&2, &1, pid, claim))
       {:reply, {:led, free, joined(state, free, rounds)}, state}
     else
-      state = mark_joined(state, keys)
+      state = add_members(state, keys, claim)
+      state = update_proc(state, pid, &%{&1 | claims: MapSet.put(&1.claims, claim)})
       state = Enum.reduce(in_flight, state, &add_waiter(&2, &1, pid, claim))
       state = update_proc(state, pid, &%{&1 | wait: {claim, MapSet.new(in_flight)}})
       # Record every round the caller saw, including reopened free keys, so it
@@ -178,14 +180,22 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
   def handle_cast({:abandon_claim, pid, claim}, state) do
     keys = for {key, %{owner: {^pid, ^claim}}} <- state.rounds, do: key
     state = Enum.reduce(keys, state, &end_probe(&2, &1, :abandoned))
-    {:noreply, state |> unwait_claim(pid, claim) |> maybe_forget(pid)}
+    state = state |> unwait_claim(pid, claim) |> remove_member(pid, claim)
+    {:noreply, maybe_forget(state, pid)}
   end
 
-  def handle_cast({:unwait, pid, claim}, state),
-    do: {:noreply, state |> unwait_claim(pid, claim) |> maybe_forget(pid)}
+  def handle_cast({:done, pid, claim}, state),
+    do: {:noreply, state |> remove_member(pid, claim) |> maybe_forget(pid)}
+
+  def handle_cast({:unwait, pid, claim}, state) do
+    state = state |> unwait_claim(pid, claim) |> remove_member(pid, claim)
+    {:noreply, maybe_forget(state, pid)}
+  end
 
   @impl GenServer
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
+    claims = state.procs |> Map.get(pid, %{claims: MapSet.new()}) |> Map.fetch!(:claims)
+    state = Enum.reduce(claims, state, &remove_member(&2, pid, &1))
     keys = for {key, %{owner: {^pid, _claim}}} <- state.rounds, do: key
     state = Enum.reduce(keys, state, &end_probe(&2, &1, :abandoned))
     state = unwait(state, pid)
@@ -203,13 +213,30 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
     end
   end
 
-  # A round some other caller is waiting on, or has seen while waiting on another
-  # key, keeps its shared retry for that group.
-  defp mark_joined(state, keys) do
+  # A round's members are the waiting calls that can still resume it, including
+  # calls waiting on another key. The round keeps its shared retry only while it
+  # has members.
+  defp add_members(state, keys, claim), do: update_members(state, keys, &MapSet.put(&1, claim))
+
+  defp remove_member(state, pid, claim) do
+    keys = for {key, round} <- state.rounds, MapSet.member?(round.members, claim), do: key
+    state = update_members(state, keys, &MapSet.delete(&1, claim))
+
+    case state.procs do
+      %{^pid => proc} ->
+        procs = Map.put(state.procs, pid, %{proc | claims: MapSet.delete(proc.claims, claim)})
+        %{state | procs: procs}
+
+      _other ->
+        state
+    end
+  end
+
+  defp update_members(state, keys, fun) do
     rounds =
       Enum.reduce(keys, state.rounds, fn key, rounds ->
         case Map.fetch(rounds, key) do
-          {:ok, round} -> Map.put(rounds, key, %{round | joined?: true})
+          {:ok, round} -> Map.put(rounds, key, %{round | members: fun.(round.members)})
           :error -> rounds
         end
       end)
@@ -228,6 +255,7 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
 
   defp lead(state, key, pid, claim) do
     round = Map.get(state.rounds, key) || new_round()
+    round = %{round | members: MapSet.delete(round.members, claim)}
 
     %{
       state
@@ -238,7 +266,13 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
   end
 
   defp new_round,
-    do: %{id: make_ref(), owner: nil, retried?: false, joined?: false, expires_at: expires_at()}
+    do: %{
+      id: make_ref(),
+      owner: nil,
+      retried?: false,
+      members: MapSet.new(),
+      expires_at: expires_at()
+    }
 
   defp expires_at, do: System.monotonic_time(:millisecond) + @round_ttl_ms
 
@@ -258,7 +292,9 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
 
     # A failed probe nobody else joined has no group to retry for, so the round
     # ends and the next batch of callers gets its own shared retry.
-    case {outcome, round.retried?, round.joined?} do
+    members? = MapSet.size(round.members) > 0
+
+    case {outcome, round.retried?, members?} do
       {:abandoned, _retried?, true} -> reopen(state, key, round)
       {:unresolved, false, true} -> reopen(state, key, %{round | retried?: true})
       _settled_retried_or_alone -> end_round(state, key, round)
@@ -346,7 +382,7 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
   defp update_proc(state, pid, fun) do
     proc =
       Map.get_lazy(state.procs, pid, fn ->
-        %{ref: Process.monitor(pid), wait: nil}
+        %{ref: Process.monitor(pid), wait: nil, claims: MapSet.new()}
       end)
 
     %{state | procs: Map.put(state.procs, pid, fun.(proc))}
@@ -356,9 +392,13 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
     leads? = Enum.any?(state.owners, fn {_key, owner} -> owner == pid end)
 
     case state.procs do
-      %{^pid => %{ref: ref, wait: nil}} when not leads? ->
-        Process.demonitor(ref, [:flush])
-        %{state | procs: Map.delete(state.procs, pid)}
+      %{^pid => %{ref: ref, wait: nil, claims: claims}} ->
+        if leads? or MapSet.size(claims) > 0 do
+          state
+        else
+          Process.demonitor(ref, [:flush])
+          %{state | procs: Map.delete(state.procs, pid)}
+        end
 
       _other ->
         state
