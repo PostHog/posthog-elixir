@@ -47,8 +47,12 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
 
       {[], waiting} ->
         case await_settled(reply_to, MapSet.new(waiting), deadline) do
-          :ok -> claim_until_led(name, keys, reply_to, deadline)
-          :timeout -> []
+          :ok ->
+            claim_until_led(name, keys, reply_to, deadline)
+
+          :timeout ->
+            GenServer.cast(via(name), {:unwait, reply_to, waiting})
+            []
         end
     end
   end
@@ -67,6 +71,7 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
     :exit, _reason ->
       # The claim may have been recorded even though the reply was lost.
       GenServer.cast(via(name), {:release, self(), keys})
+      GenServer.cast(via(name), {:unwait, reply_to, keys})
       {[], []}
   end
 
@@ -103,7 +108,7 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
     else
       waiters =
         Enum.reduce(in_flight, state.waiters, fn key, waiters ->
-          Map.update(waiters, key, [reply_to], &[reply_to | &1])
+          Map.update(waiters, key, MapSet.new([reply_to]), &MapSet.put(&1, reply_to))
         end)
 
       {:reply, {[], in_flight}, %{state | waiters: waiters}}
@@ -113,10 +118,29 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
   @impl GenServer
   def handle_cast({:release, pid, keys}, state), do: {:noreply, release(state, pid, keys)}
 
+  def handle_cast({:unwait, reply_to, keys}, state) do
+    waiters = Enum.reduce(keys, state.waiters, &remove_waiter(&2, &1, reply_to))
+    {:noreply, %{state | waiters: waiters}}
+  end
+
   @impl GenServer
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
     keys = for {key, ^pid} <- state.owners, do: key
     {:noreply, release(state, pid, keys)}
+  end
+
+  defp remove_waiter(waiters, key, reply_to) do
+    case Map.fetch(waiters, key) do
+      {:ok, key_waiters} ->
+        key_waiters = MapSet.delete(key_waiters, reply_to)
+
+        if MapSet.size(key_waiters) == 0,
+          do: Map.delete(waiters, key),
+          else: Map.put(waiters, key, key_waiters)
+
+      :error ->
+        waiters
+    end
   end
 
   defp monitor_owner(state, pid) do
@@ -131,7 +155,7 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
     {owners, waiters} =
       Enum.reduce(keys, {state.owners, state.waiters}, fn key, {owners, waiters} ->
         if Map.get(owners, key) == pid do
-          {key_waiters, waiters} = Map.pop(waiters, key, [])
+          {key_waiters, waiters} = Map.pop(waiters, key, MapSet.new())
           Enum.each(key_waiters, &send(&1, {&1, :settled, key}))
           {Map.delete(owners, key), waiters}
         else

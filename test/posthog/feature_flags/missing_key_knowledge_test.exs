@@ -486,6 +486,9 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     assert_receive {:stalled_probe, 1, _worker}, 2_000
     assert {:ok, _snapshot} = Task.await(waiter)
 
+    coordinator = PostHog.Registry.via(__MODULE__.Stalled, FeatureFlags.MissingProbeCoordinator)
+    assert :sys.get_state(coordinator).waiters == %{}
+
     send(worker, :release_stalled)
     assert {:ok, _snapshot} = Task.await(stalled)
   end
