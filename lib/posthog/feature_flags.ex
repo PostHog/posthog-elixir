@@ -443,22 +443,26 @@ defmodule PostHog.FeatureFlags do
       )
     else
       __MODULE__.MissingProbeCoordinator.run(name, probe_keys, fn owned_probe_keys ->
-        marker = probe_marker(name, owned_probe_keys)
-
-        {result, own_returned} =
-          collect_probe_returned(fn ->
-            evaluate_after_missing_probe_lock(
-              name,
-              distinct_id,
-              body,
-              requested_keys,
-              owned_probe_keys
-            )
-          end)
-
-        {result, unresolved_probe_keys(name, owned_probe_keys, marker, own_returned)}
+        run_owned_probe(name, distinct_id, body, requested_keys, owned_probe_keys)
       end)
     end
+  end
+
+  defp run_owned_probe(name, distinct_id, body, requested_keys, owned_probe_keys) do
+    marker = probe_marker(name, owned_probe_keys)
+
+    {result, own_returned} =
+      collect_probe_returned(fn ->
+        evaluate_after_missing_probe_lock(
+          name,
+          distinct_id,
+          body,
+          requested_keys,
+          owned_probe_keys
+        )
+      end)
+
+    {result, unresolved_probe_keys(name, owned_probe_keys, marker, own_returned)}
   end
 
   defp probe_marker(_name, []), do: nil
