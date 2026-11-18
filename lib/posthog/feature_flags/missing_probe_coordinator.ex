@@ -21,13 +21,20 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
   @doc """
   Runs `callback` with the keys whose probe this caller owns. Keys whose probe
   settled elsewhere, or that could not be claimed in time, are not owned.
+
+  The callback returns `{result, unresolved}`, where `unresolved` lists owned keys
+  whose existence the probe did not establish.
   """
-  @spec run(PostHog.supervisor_name(), [String.t()], ([String.t()] -> result)) :: result
+  @spec run(
+          PostHog.supervisor_name(),
+          [String.t()],
+          ([String.t()] -> {result, [String.t()]})
+        ) :: result
         when result: var
   def run(name, keys, callback) do
     led = await_overlapping_probes(name, Enum.uniq(keys))
 
-    result =
+    {result, unresolved} =
       try do
         callback.(led)
       catch
@@ -36,7 +43,9 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
           :erlang.raise(kind, reason, __STACKTRACE__)
       end
 
-    release(name, led, :settled)
+    unresolved = Enum.filter(unresolved, &(&1 in led))
+    release(name, led -- unresolved, :settled)
+    release(name, unresolved, :unresolved)
     result
   end
 
@@ -124,7 +133,7 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
   end
 
   @impl GenServer
-  def init(:ok), do: {:ok, %{owners: %{}, waiters: %{}, procs: %{}}}
+  def init(:ok), do: {:ok, %{owners: %{}, waiters: %{}, procs: %{}, retrying: %{}}}
 
   @impl GenServer
   def handle_call({:claim, keys, reply_to}, {pid, _tag}, state) do
@@ -191,11 +200,45 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
   defp release_key(state, key, notice) do
     {key_waiters, waiters} = Map.pop(state.waiters, key, %{})
     state = %{state | owners: Map.delete(state.owners, key), waiters: waiters}
+    {notice, state} = retry_notice(state, key, notice, map_size(key_waiters) > 0)
 
     Enum.reduce(key_waiters, state, fn {reply_to, waiter}, state ->
       send(reply_to, {reply_to, notice, key})
       state |> drop_waited_key(waiter, key) |> maybe_forget(waiter)
     end)
+  end
+
+  # An unresolved probe hands the key to one waiter for a single retry, so a
+  # transient error doesn't send every waiter to `/flags`. If the retry is also
+  # unresolved, the remaining waiters proceed together instead of queueing.
+  defp retry_notice(state, key, notice, waiters?) do
+    state = prune_retrying(state)
+    retried? = Map.has_key?(state.retrying, key)
+
+    cond do
+      notice == :unresolved and waiters? and not retried? ->
+        expires_at = System.monotonic_time(:millisecond) + @wait_timeout_ms
+        {:abandoned, %{state | retrying: Map.put(state.retrying, key, expires_at)}}
+
+      notice == :abandoned and waiters? ->
+        {:abandoned, state}
+
+      true ->
+        {:settled, %{state | retrying: Map.delete(state.retrying, key)}}
+    end
+  end
+
+  defp prune_retrying(%{retrying: retrying} = state) when map_size(retrying) == 0, do: state
+
+  defp prune_retrying(state) do
+    now = System.monotonic_time(:millisecond)
+
+    retrying =
+      Map.reject(state.retrying, fn {key, expires_at} ->
+        expires_at < now and not Map.has_key?(state.owners, key)
+      end)
+
+    %{state | retrying: retrying}
   end
 
   defp unwait(state, pid) do

@@ -701,6 +701,50 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
            )
   end
 
+  test "an errored probe gets one shared retry, then waiters proceed in parallel" do
+    owner = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    expect(PostHog.API.Mock, :request, 6, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          call = Agent.get_and_update(calls, &{&1, &1 + 1})
+          send(owner, {:errored_probe, call, self()})
+          receive do: (:release_errored -> :ok)
+          {:ok, %{status: 200, body: %{"flags" => %{}, "errorsWhileComputingFlags" => true}}}
+      end
+    end)
+
+    name = __MODULE__.Errored
+    start_instance(name)
+    coordinator = PostHog.Registry.via(name, FeatureFlags.MissingProbeCoordinator)
+    first = Task.async(fn -> scoped(name, ["missing"], "one") end)
+    assert_receive {:errored_probe, 0, first_worker}
+
+    waiters =
+      for id <- ["two", "three", "four", "five"],
+          do: Task.async(fn -> scoped(name, ["missing"], id) end)
+
+    eventually(fn ->
+      map_size(Map.get(:sys.get_state(coordinator).waiters, "missing", %{})) == 4
+    end)
+
+    send(first_worker, :release_errored)
+    assert {:ok, _snapshot} = Task.await(first)
+    assert_receive {:errored_probe, 1, retry_worker}
+    refute_receive {:errored_probe, 2, _worker}, 50
+
+    send(retry_worker, :release_errored)
+    assert_receive {:errored_probe, 2, worker_a}
+    assert_receive {:errored_probe, 3, worker_b}
+    assert_receive {:errored_probe, 4, worker_c}
+    Enum.each([worker_a, worker_b, worker_c], &send(&1, :release_errored))
+    Enum.each(waiters, &assert({:ok, _snapshot} = Task.await(&1)))
+  end
+
   test "waiters on a settled probe still share one probe for their other missing key" do
     owner = self()
 
