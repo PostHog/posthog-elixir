@@ -1,5 +1,11 @@
 # posthog
 
+## 2.23.1 — 2026-11-18
+
+### Patch changes
+
+- [c82105e](https://github.com/posthog/posthog-elixir/commit/c82105ecca5889a7f71d476e80772d31a292d691) Coordinate concurrent `evaluate_flags` probes for flags missing from local definitions within each node instead of across the cluster, and cap how long overlapping evaluations wait so a slow `/flags` request no longer queues every other evaluation. — Thanks @marandaneto!
+
 ## 2.23.0 — 2026-11-18
 
 ### Minor changes
