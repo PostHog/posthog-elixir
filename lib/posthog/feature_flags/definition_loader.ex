@@ -164,7 +164,9 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
     defp record_returned(state, returned) do
       clock = state.clock + 1
       returned_at = Enum.reduce(returned, state.returned_at, &Map.put(&2, &1, clock))
-      order = Enum.reject(state.returned_order, &(&1 in returned)) ++ Enum.sort(returned)
+      returned_set = MapSet.new(returned)
+      order = Enum.reject(state.returned_order, &MapSet.member?(returned_set, &1))
+      order = order ++ (returned_set |> MapSet.to_list() |> Enum.sort())
       {evicted, order} = Enum.split(order, max(length(order) - @capacity, 0))
 
       floor =
