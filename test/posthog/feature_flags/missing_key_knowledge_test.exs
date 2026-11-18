@@ -43,6 +43,20 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     FeatureFlags.evaluate_flags(name, %{distinct_id: distinct_id, flag_keys: keys})
   end
 
+  defp eventually(check, attempts \\ 100) do
+    cond do
+      check.() ->
+        :ok
+
+      attempts == 0 ->
+        flunk("condition was not met")
+
+      true ->
+        Process.sleep(10)
+        eventually(check, attempts - 1)
+    end
+  end
+
   defp sync_loader(name) do
     :sys.get_state(PostHog.Registry.via(name, DefinitionLoader))
     :ok
@@ -551,18 +565,105 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
       PostHog.Registry.via(__MODULE__.KilledWaiter, FeatureFlags.MissingProbeCoordinator)
 
     {:ok, waiter} = Task.start(fn -> scoped(__MODULE__.KilledWaiter, ["missing"], "two") end)
-    Process.sleep(50)
-    assert map_size(:sys.get_state(coordinator).waiters["missing"]) == 1
+    eventually(fn -> map_size(:sys.get_state(coordinator).waiters) == 1 end)
 
     Process.exit(waiter, :kill)
-    Process.sleep(50)
-    state = :sys.get_state(coordinator)
-    assert state.waiters == %{}
-    refute Map.has_key?(state.procs, waiter)
+
+    eventually(fn ->
+      state = :sys.get_state(coordinator)
+      state.waiters == %{} and not Map.has_key?(state.procs, waiter)
+    end)
 
     send(worker, :release_killed_waiter)
     assert {:ok, _snapshot} = Task.await(stalled)
     assert :sys.get_state(coordinator).procs == %{}
+  end
+
+  test "a probe that raises hands the probe to one waiter" do
+    owner = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    expect(PostHog.API.Mock, :request, 3, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          call = Agent.get_and_update(calls, &{&1, &1 + 1})
+          send(owner, {:raising_probe, call, self()})
+
+          if call == 0 do
+            receive do: (:raise_probe -> :ok)
+            raise "probe failed"
+          end
+
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    start_instance(__MODULE__.Raising)
+
+    raising =
+      Task.async(fn ->
+        try do
+          scoped(__MODULE__.Raising, ["missing"], "one")
+        rescue
+          error -> error
+        end
+      end)
+
+    assert_receive {:raising_probe, 0, worker}
+
+    waiters =
+      for id <- ["two", "three", "four"],
+          do: Task.async(fn -> scoped(__MODULE__.Raising, ["missing"], id) end)
+
+    refute_receive {:raising_probe, 1, _worker}, 50
+    send(worker, :raise_probe)
+    assert %RuntimeError{message: "probe failed"} = Task.await(raising)
+    assert_receive {:raising_probe, 1, _worker}, 500
+    Enum.each(waiters, &assert({:ok, _snapshot} = Task.await(&1)))
+    refute_receive {:raising_probe, 2, _worker}, 50
+  end
+
+  test "an older probe's omission cannot hide a key a newer probe returned" do
+    owner = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    expect(PostHog.API.Mock, :request, 3, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          case Agent.get_and_update(calls, &{&1, &1 + 1}) do
+            0 ->
+              send(owner, {:older_probe, self()})
+              receive do: (:release_older -> :ok)
+              {:ok, %{status: 200, body: %{"flags" => %{}}}}
+
+            1 ->
+              {:ok, %{status: 200, body: %{"flags" => %{"new" => %{"enabled" => true}}}}}
+          end
+      end
+    end)
+
+    start_instance(__MODULE__.Superseded)
+    older = Task.async(fn -> scoped(__MODULE__.Superseded, ["new"], "one") end)
+    assert_receive {:older_probe, older_worker}
+
+    # The waiter gives up after its bounded wait and makes the newer probe.
+    assert {:ok, newer} = scoped(__MODULE__.Superseded, ["new"], "two")
+    assert newer.flags["new"].enabled
+
+    send(older_worker, :release_older)
+    assert {:ok, _snapshot} = Task.await(older)
+    sync_loader(__MODULE__.Superseded)
+
+    refute MapSet.member?(
+             DefinitionLoader.evaluation_state(__MODULE__.Superseded, ["new"]).known_missing,
+             "new"
+           )
   end
 
   test "waiters on a settled probe still share one probe for their other missing key" do

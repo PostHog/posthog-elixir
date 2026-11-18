@@ -27,12 +27,23 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
   def run(name, keys, callback) do
     led = await_overlapping_probes(name, Enum.uniq(keys))
 
-    try do
-      callback.(led)
-    after
-      if led != [], do: GenServer.cast(via(name), {:release, self(), led})
-    end
+    result =
+      try do
+        callback.(led)
+      catch
+        kind, reason ->
+          release(name, led, :abandoned)
+          :erlang.raise(kind, reason, __STACKTRACE__)
+      end
+
+    release(name, led, :settled)
+    result
   end
+
+  defp release(_name, [], _notice), do: :ok
+
+  defp release(name, keys, notice),
+    do: GenServer.cast(via(name), {:release, self(), keys, notice})
 
   defp await_overlapping_probes(name, keys) do
     reply_to = Process.alias()
@@ -79,7 +90,7 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
   catch
     :exit, _reason ->
       # The claim may have been recorded even though the reply was lost.
-      GenServer.cast(via(name), {:release, self(), keys})
+      release(name, keys, :abandoned)
       GenServer.cast(via(name), {:unwait, self(), reply_to})
       {[], []}
   end
@@ -138,8 +149,8 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
   end
 
   @impl GenServer
-  def handle_cast({:release, pid, keys}, state),
-    do: {:noreply, release(state, pid, keys, :settled)}
+  def handle_cast({:release, pid, keys, notice}, state),
+    do: {:noreply, release_owned(state, pid, keys, notice)}
 
   def handle_cast({:unwait, pid, reply_to}, state) do
     state =
@@ -158,13 +169,13 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
         {:noreply, state}
 
       {proc, _procs} ->
-        state = release(state, pid, MapSet.to_list(proc.owned), :abandoned)
+        state = release_owned(state, pid, MapSet.to_list(proc.owned), :abandoned)
         state = unwait(state, pid)
         {:noreply, %{state | procs: Map.delete(state.procs, pid)}}
     end
   end
 
-  defp release(state, pid, keys, notice) do
+  defp release_owned(state, pid, keys, notice) do
     state =
       Enum.reduce(keys, state, fn key, state ->
         if Map.get(state.owners, key) == pid,

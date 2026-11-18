@@ -65,13 +65,16 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
 
     @impl GenServer
     def init(name) do
-      state = %{name: name, generation: current_generation(name), keys: MapSet.new(), order: []}
+      state =
+        %{name: name, generation: current_generation(name)}
+        |> Map.merge(empty_keys())
+
       {:ok, publish(state)}
     end
 
     @impl GenServer
     def handle_call({:reset, generation}, _from, state) do
-      state = %{state | generation: generation, keys: MapSet.new(), order: []}
+      state = state |> Map.merge(empty_keys()) |> Map.put(:generation, generation)
       {:reply, :ok, publish(state)}
     end
 
@@ -116,6 +119,9 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
 
     defp empty, do: %{generation: nil, keys: MapSet.new()}
 
+    defp empty_keys,
+      do: %{keys: MapSet.new(), order: [], returned: MapSet.new(), returned_order: []}
+
     defp publish(state) do
       registry = PostHog.Registry.registry_name(state.name)
       cached = Map.take(state, [:generation, :keys])
@@ -126,6 +132,7 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
     defp update_retained_missing(state, requested, returned, clean?) do
       returned = MapSet.new(returned)
 
+      state = remember_returned(state, returned)
       order = Enum.reject(state.order, &MapSet.member?(returned, &1))
       keys = MapSet.difference(state.keys, returned)
 
@@ -134,7 +141,7 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
           omissions =
             requested
             |> MapSet.new()
-            |> MapSet.difference(returned)
+            |> MapSet.difference(state.returned)
             |> MapSet.to_list()
             |> Enum.sort()
             |> Enum.take(-@capacity)
@@ -146,14 +153,21 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
           {order, keys}
         end
 
-      overflow = max(length(order) - @capacity, 0)
-      retained_order = Enum.drop(order, overflow)
+      retained_order = Enum.take(order, -@capacity)
 
       %{
         state
         | order: retained_order,
           keys: MapSet.intersection(keys, MapSet.new(retained_order))
       }
+    end
+
+    # Keys returned in this generation never become missing again until the next
+    # refresh, so a slower overlapping probe's omission can't hide a new flag.
+    defp remember_returned(state, returned) do
+      new = returned |> MapSet.difference(state.returned) |> MapSet.to_list() |> Enum.sort()
+      order = Enum.take(state.returned_order ++ new, -@capacity)
+      %{state | returned_order: order, returned: MapSet.new(order)}
     end
 
     defp via(name), do: PostHog.Registry.via(name, __MODULE__)
