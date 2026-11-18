@@ -320,45 +320,15 @@ defmodule PostHog.FeatureFlags do
       )
     else
       __MODULE__.MissingProbeCoordinator.run(name, probe_keys, fn owned_probe_keys ->
-        marker = probe_marker(name, owned_probe_keys)
-
-        result =
-          evaluate_after_missing_probe_lock(
-            name,
-            distinct_id,
-            body,
-            requested_keys,
-            owned_probe_keys
-          )
-
-        {result, unresolved_probe_keys(name, owned_probe_keys, marker)}
+        evaluate_after_missing_probe_lock(
+          name,
+          distinct_id,
+          body,
+          requested_keys,
+          owned_probe_keys
+        )
       end)
     end
-  end
-
-  defp probe_marker(_name, []), do: nil
-
-  defp probe_marker(name, _keys) do
-    __MODULE__.DefinitionLoader.probe_started(name)
-  catch
-    :exit, _reason -> nil
-  end
-
-  # Keys the probe neither found defined, returned, nor recorded as missing.
-  defp unresolved_probe_keys(_name, [], _marker), do: []
-  defp unresolved_probe_keys(_name, keys, nil), do: keys
-
-  defp unresolved_probe_keys(name, keys, marker) do
-    state = local_evaluation_state(name, keys)
-    defined = if state.definitions, do: Map.keys(state.definitions.flags_by_key), else: []
-    returned = __MODULE__.DefinitionLoader.returned_since(name, keys, marker)
-
-    Enum.reject(keys, fn key ->
-      key in defined or MapSet.member?(state.known_missing, key) or
-        MapSet.member?(returned, key)
-    end)
-  catch
-    :exit, _reason -> keys
   end
 
   defp evaluate_after_missing_probe_lock(name, distinct_id, body, requested_keys, probe_keys) do

@@ -59,9 +59,6 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
     """
     def probe_started(name), do: GenServer.call(via(name), :probe_started, :infinity)
 
-    def returned_since(name, keys, started),
-      do: GenServer.call(via(name), {:returned_since, keys, started}, :infinity)
-
     def known(name, generation, keys) do
       state = cached(name)
 
@@ -89,15 +86,6 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
 
     def handle_call(:probe_started, _from, state) do
       {:reply, {state.generation, state.clock}, state}
-    end
-
-    def handle_call({:returned_since, keys, {generation, started}}, _from, state) do
-      returned =
-        if generation == state.generation,
-          do: Enum.filter(keys, &(Map.get(state.returned_at, &1, -1) > started)),
-          else: []
-
-      {:reply, MapSet.new(returned), state}
     end
 
     def handle_call(
@@ -298,10 +286,6 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
 
   @doc false
   def probe_started(name), do: NegativeKnowledge.probe_started(name)
-
-  @doc false
-  def returned_since(name, keys, started),
-    do: NegativeKnowledge.returned_since(name, keys, started)
 
   defp readable_evaluation_state(name) do
     state = cached_evaluation_state(name)
