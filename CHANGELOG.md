@@ -1,5 +1,11 @@
 # posthog
 
+## 2.22.2 — 2026-11-18
+
+### Patch changes
+
+- [e94faf5](https://github.com/posthog/posthog-elixir/commit/e94faf5908db5460d2132296a12fe08bbae6dd7c) Normalize event timestamp overrides from before_send to UTC without losing fractional precision, and send explicit defaults in feature flag requests. — Thanks @marandaneto!
+
 ## 2.22.1 — 2026-11-13
 
 ### Patch changes
