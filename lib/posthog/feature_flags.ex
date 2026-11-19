@@ -789,17 +789,22 @@ defmodule PostHog.FeatureFlags do
 
   defp normalize_known_absent_keys(body), do: {:ok, body}
 
+  # Local evaluation reads the atom key before the string key, so the same precedence picks
+  # the value here and only the validated atom key is kept.
   defp normalize_known_absent_field(body, field, normalize) do
-    case Map.fetch(body, field) do
-      :error ->
-        {:ok, body}
+    string_field = Atom.to_string(field)
 
-      {:ok, value} ->
-        case normalize.(value) do
-          {:ok, nil} -> {:ok, Map.delete(body, field)}
-          {:ok, normalized} -> {:ok, Map.put(body, field, normalized)}
-          {:error, _} = error -> error
-        end
+    if Map.has_key?(body, field) or Map.has_key?(body, string_field) do
+      value = Map.get(body, field, Map.get(body, string_field))
+      body = Map.drop(body, [field, string_field])
+
+      case normalize.(value) do
+        {:ok, nil} -> {:ok, body}
+        {:ok, normalized} -> {:ok, Map.put(body, field, normalized)}
+        {:error, _} = error -> error
+      end
+    else
+      {:ok, body}
     end
   end
 
@@ -808,7 +813,7 @@ defmodule PostHog.FeatureFlags do
 
   defp normalize_known_absent_list(keys, field) when is_list(keys) do
     cond do
-      not Enum.all?(keys, &(is_binary(&1) or (is_atom(&1) and not is_nil(&1)))) ->
+      not known_absent_key_list?(keys) ->
         known_absent_error("#{field} must be a list of strings")
 
       length(keys) > @known_absent_keys_limit ->
@@ -822,18 +827,22 @@ defmodule PostHog.FeatureFlags do
   defp normalize_known_absent_list(_keys, field),
     do: known_absent_error("#{field} must be a list of strings")
 
+  # Also rejects improper lists, which `Enum` functions would raise on.
+  defp known_absent_key_list?([]), do: true
+
+  defp known_absent_key_list?([key | rest]),
+    do: known_absent_key?(key) and known_absent_key_list?(rest)
+
+  defp known_absent_key_list?(_improper_tail), do: false
+
+  defp known_absent_key?(key), do: is_binary(key) or (is_atom(key) and not is_nil(key))
+
   defp normalize_known_absent_groups(nil), do: {:ok, nil}
 
   defp normalize_known_absent_groups(groups) when is_map(groups) and not is_struct(groups) do
     groups
     |> Enum.reduce_while({:ok, %{}}, fn {group_type, keys}, {:ok, acc} ->
-      field = "group_property_keys_known_absent[#{group_type}]"
-
-      case normalize_known_absent_list(keys, field) do
-        {:ok, nil} -> {:cont, {:ok, acc}}
-        {:ok, keys} -> {:cont, {:ok, Map.put(acc, to_string(group_type), keys)}}
-        {:error, _} = error -> {:halt, error}
-      end
+      normalize_known_absent_group(group_type, keys, acc)
     end)
     |> case do
       {:ok, normalized} when map_size(normalized) == 0 -> {:ok, nil}
@@ -843,6 +852,29 @@ defmodule PostHog.FeatureFlags do
 
   defp normalize_known_absent_groups(_groups),
     do: known_absent_error("group_property_keys_known_absent must be a map of lists of strings")
+
+  defp normalize_known_absent_group(group_type, keys, acc) do
+    if known_absent_key?(group_type) do
+      group_type = to_string(group_type)
+      field = "group_property_keys_known_absent[#{group_type}]"
+
+      case normalize_known_absent_list(keys, field) do
+        _result when is_map_key(acc, group_type) ->
+          {:halt, known_absent_error("#{field} is listed more than once")}
+
+        {:ok, nil} ->
+          {:cont, {:ok, acc}}
+
+        {:ok, keys} ->
+          {:cont, {:ok, Map.put(acc, group_type, keys)}}
+
+        {:error, _} = error ->
+          {:halt, error}
+      end
+    else
+      {:halt, known_absent_error("group_property_keys_known_absent group types must be strings")}
+    end
+  end
 
   defp known_absent_error(message), do: {:error, %PostHog.Error{message: message}}
 

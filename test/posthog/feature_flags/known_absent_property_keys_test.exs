@@ -484,11 +484,45 @@ defmodule PostHog.FeatureFlags.KnownAbsentPropertyKeysTest do
             %{person_property_keys_known_absent: "plan"},
             %{person_property_keys_known_absent: [1]},
             %{group_property_keys_known_absent: ["tier"]},
-            %{group_property_keys_known_absent: %{organization: "tier"}}
+            %{group_property_keys_known_absent: %{organization: "tier"}},
+            %{person_property_keys_known_absent: ["plan" | :improper]},
+            %{group_property_keys_known_absent: %{organization: ["tier" | :improper]}},
+            %{group_property_keys_known_absent: %{{:organization} => ["tier"]}},
+            %{
+              group_property_keys_known_absent: %{"organization" => ["tier"], organization: ["x"]}
+            }
           ] do
         body = Map.put(extra, :distinct_id, "user")
         assert {:error, %PostHog.Error{}} = FeatureFlags.evaluate_flags(name, body)
+        assert {:error, %PostHog.Error{}} = FeatureFlags.flags(name, body)
       end
+    end
+
+    test "raw /flags bodies validate and send string-keyed fields once" do
+      name = __MODULE__.StringKeys
+      start_instance(name, [])
+      keys = for index <- 1..1001, do: "key-#{index}"
+
+      assert {:error, %PostHog.Error{}} =
+               FeatureFlags.flags(name, %{
+                 "distinct_id" => "user",
+                 "person_property_keys_known_absent" => keys
+               })
+
+      expect_flags_request(self())
+
+      assert {:ok, _response} =
+               FeatureFlags.flags(name, %{
+                 "distinct_id" => "user",
+                 "person_property_keys_known_absent" => ["region"],
+                 "group_property_keys_known_absent" => %{"organization" => ["tier"]}
+               })
+
+      assert_received {:flags_body, sent}
+      assert sent.person_property_keys_known_absent == ["region"]
+      assert sent.group_property_keys_known_absent == %{"organization" => ["tier"]}
+      refute Map.has_key?(sent, "person_property_keys_known_absent")
+      refute Map.has_key?(sent, "group_property_keys_known_absent")
     end
   end
 end
