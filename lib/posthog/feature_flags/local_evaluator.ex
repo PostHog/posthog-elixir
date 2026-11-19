@@ -14,6 +14,12 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   @semver_range_operators ~w(semver_tilde semver_caret semver_wildcard)
   @search_operators ~w(icontains not_icontains starts_with not_starts_with ends_with not_ends_with)
   @cohort_operators ~w(exact in not_in)
+  @known_absent_matching_operators ~w(is_not_set is_not not_icontains not_starts_with not_ends_with not_regex)
+  @person_metadata_prefix "__posthog_person_metadata__"
+
+  # Stands in for the value of a property the caller listed as known absent. Property maps
+  # double as the present-key tables, so the marker overrides any supplied or default value.
+  @known_absent {__MODULE__, :known_absent}
 
   @type reason :: PostHog.FeatureFlags.Evaluations.unresolved_reason()
 
@@ -210,9 +216,16 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
       |> context_value(:person_properties)
       |> Kernel.||(%{})
       |> put_default_property("distinct_id", distinct_id)
+      |> mark_known_absent(
+        context
+        |> context_value(:person_property_keys_known_absent)
+        |> known_absent_keys()
+        |> Enum.reject(&String.starts_with?(&1, @person_metadata_prefix))
+      )
 
     group_properties =
-      Enum.reduce(groups, context_value(context, :group_properties) || %{}, fn
+      groups
+      |> Enum.reduce(context_value(context, :group_properties) || %{}, fn
         {group_type, group_key}, properties when is_map(properties) ->
           group_type = to_string(group_type)
           focused = map_value(properties, group_type) || %{}
@@ -221,6 +234,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
         _group, properties ->
           properties
       end)
+      |> mark_known_absent_groups(context_value(context, :group_property_keys_known_absent))
 
     %{
       distinct_id: distinct_id,
@@ -240,6 +254,27 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   end
 
   defp put_default_property(_properties, key, value), do: %{key => value}
+
+  defp mark_known_absent(properties, keys) when is_map(properties),
+    do: Enum.reduce(keys, properties, &Map.put(&2, &1, @known_absent))
+
+  defp mark_known_absent(properties, _keys), do: properties
+
+  defp mark_known_absent_groups(group_properties, known_absent)
+       when is_map(group_properties) and is_map(known_absent) do
+    Enum.reduce(known_absent, group_properties, fn {group_type, keys}, group_properties ->
+      group_type = to_string(group_type)
+      focused = map_value(group_properties, group_type) || %{}
+      Map.put(group_properties, group_type, mark_known_absent(focused, known_absent_keys(keys)))
+    end)
+  end
+
+  defp mark_known_absent_groups(group_properties, _known_absent), do: group_properties
+
+  defp known_absent_keys(keys) when is_list(keys),
+    do: for(key <- keys, is_binary(key) or (is_atom(key) and key != nil), do: to_string(key))
+
+  defp known_absent_keys(_keys), do: []
 
   defp context_value(context, key),
     do: Map.get(context, key, Map.get(context, Atom.to_string(key)))
@@ -846,6 +881,9 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
       :error ->
         {:inconclusive, property_reason(property, now, cohort?)}
 
+      {:ok, @known_absent} ->
+        known_absent_result(property, operator, filter_value, now, cohort?)
+
       {:ok, property_value} when operator in ["exact", "is_not"] ->
         match = exact_match?(property_value, filter_value, property_matching_version)
         boolean_result(if(operator == "exact", do: match, else: not match))
@@ -870,6 +908,22 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   rescue
     # Unsupported comparisons must not prevent later conditions from matching.
     _exception -> {:inconclusive, property_reason(property, now, cohort?)}
+  end
+
+  # Unsupported or malformed filters keep their existing result, so known absence never
+  # resolves a filter that local evaluation can't use.
+  defp known_absent_result(property, operator, filter_value, now, cohort?) do
+    cond do
+      not filter_supported?(property, now, cohort?) ->
+        {:inconclusive, :unsupported_definition}
+
+      operator in ["regex", "not_regex"] and
+          compile_regex(to_string(filter_value)) == :invalid_regex ->
+        :invalid_regex
+
+      true ->
+        boolean_result(operator in @known_absent_matching_operators)
+    end
   end
 
   # A filter that local evaluation can't use outranks missing or unusable context, so the
