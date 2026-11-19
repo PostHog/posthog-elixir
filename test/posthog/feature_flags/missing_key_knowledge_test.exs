@@ -937,6 +937,41 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     refute_receive {:deleted_probe, 2, _worker}, 50
   end
 
+  test "an oversized request still updates a known-present key it omits" do
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+    unknown = for index <- 0..1_000, do: "unknown-#{index}"
+
+    stub(PostHog.API.Mock, :request, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          if Agent.get_and_update(calls, &{&1, &1 + 1}) == 0,
+            do: {:ok, %{status: 200, body: %{"flags" => %{"remote" => %{"enabled" => true}}}}},
+            else: {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    name = __MODULE__.OversizedPresent
+    start_instance(name)
+    assert {:ok, _snapshot} = scoped(name, ["remote"], "one")
+    sync_loader(name)
+
+    assert MapSet.member?(
+             DefinitionLoader.evaluation_state(name, ["remote"]).known_present,
+             "remote"
+           )
+
+    assert {:ok, _snapshot} = scoped(name, ["remote" | unknown], "two")
+    sync_loader(name)
+
+    refute MapSet.member?(
+             DefinitionLoader.evaluation_state(name, ["remote"]).known_present,
+             "remote"
+           )
+  end
+
   test "a definitions refresh forgets known-present keys" do
     stub(PostHog.API.Mock, :request, fn :stub_client, method, path, _opts ->
       case {method, path} do

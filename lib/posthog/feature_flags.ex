@@ -437,19 +437,9 @@ defmodule PostHog.FeatureFlags do
     # keys whose existence is still unknown are coordinated.
     {present, unknown} = Enum.split_with(missing, &MapSet.member?(loader_state.known_present, &1))
 
+    # Known-present keys always go with the request, so a clean omission can clear them.
     cond do
-      length(unknown) > @missing_probe_coordination_limit ->
-        remote_snapshot(
-          name,
-          distinct_id,
-          body,
-          local,
-          requested_keys,
-          loader_state.generation,
-          []
-        )
-
-      unknown == [] ->
+      unknown == [] or length(unknown) > @missing_probe_coordination_limit ->
         remote_snapshot(
           name,
           distinct_id,
