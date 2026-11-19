@@ -331,15 +331,26 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
            } = usage
        }) do
     reasoning_tokens = usage["thoughtsTokenCount"] || 0
-    tool_use_tokens = usage["toolUsePromptTokenCount"] || 0
+
+    # Built-in tools report retrieved content separately from promptTokenCount.
+    # URL context content is billed as input; Google Search retrieval is not,
+    # so only add it (to input) when the response used URL context.
+    tool_use_tokens =
+      if gemini_url_context?(output), do: usage["toolUsePromptTokenCount"] || 0, else: 0
 
     successful_response_properties(
       model,
       output,
-      input_tokens,
-      candidates_tokens + reasoning_tokens + tool_use_tokens
+      input_tokens + tool_use_tokens,
+      candidates_tokens + reasoning_tokens
     )
   end
+
+  defp gemini_url_context?(candidates) when is_list(candidates) do
+    Enum.any?(candidates, &(is_map(&1) and is_map(Map.get(&1, "urlContextMetadata"))))
+  end
+
+  defp gemini_url_context?(_), do: false
 
   # Anthropic Create Message
   defp response_properties(%{
