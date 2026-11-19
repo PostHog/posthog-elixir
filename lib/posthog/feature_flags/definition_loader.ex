@@ -101,7 +101,7 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
         |> Map.put(:generation, generation)
         |> update_retained_missing(requested, returned, clean?)
         |> record_returned(returned)
-        |> forget_returned(state.keys)
+        |> forget_returned(clean_omissions(requested, returned, clean?))
         |> publish()
 
       {:reply, :ok, state}
@@ -163,15 +163,19 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
       end
     end
 
-    # A key newly recorded as missing is no longer confirmed present.
-    defp forget_returned(state, previously_missing) do
-      newly_missing = MapSet.difference(state.keys, previously_missing)
+    defp clean_omissions(_requested, _returned, false), do: MapSet.new()
 
-      if MapSet.size(newly_missing) == 0 do
+    defp clean_omissions(requested, returned, true),
+      do: MapSet.difference(MapSet.new(requested), MapSet.new(returned))
+
+    # A trusted clean omission means the key is no longer confirmed present, even
+    # when the bounded missing-key store couldn't retain it.
+    defp forget_returned(state, omitted) do
+      if MapSet.size(omitted) == 0 do
         state
       else
-        order = Enum.reject(state.returned_order, &MapSet.member?(newly_missing, &1))
-        returned_at = Map.drop(state.returned_at, MapSet.to_list(newly_missing))
+        order = Enum.reject(state.returned_order, &MapSet.member?(omitted, &1))
+        returned_at = Map.drop(state.returned_at, MapSet.to_list(omitted))
         %{state | returned_order: order, returned_at: returned_at}
       end
     end

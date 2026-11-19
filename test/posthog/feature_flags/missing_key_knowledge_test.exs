@@ -972,6 +972,42 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
            )
   end
 
+  test "a coordinated clean omission clears a known-present key past the missing-key limit" do
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+    unknown = for index <- 1..1_000, do: "z-#{String.pad_leading(to_string(index), 4, "0")}"
+
+    stub(PostHog.API.Mock, :request, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          if Agent.get_and_update(calls, &{&1, &1 + 1}) == 0,
+            do: {:ok, %{status: 200, body: %{"flags" => %{"a-retired" => %{"enabled" => true}}}}},
+            else: {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    name = __MODULE__.PresentPastLimit
+    start_instance(name)
+    assert {:ok, _snapshot} = scoped(name, ["a-retired"], "one")
+    sync_loader(name)
+
+    assert MapSet.member?(
+             DefinitionLoader.evaluation_state(name, ["a-retired"]).known_present,
+             "a-retired"
+           )
+
+    # 1,000 unknown keys stay within the coordination limit, so this request is coordinated.
+    assert {:ok, _snapshot} = scoped(name, ["a-retired" | unknown], "two")
+    sync_loader(name)
+
+    refute MapSet.member?(
+             DefinitionLoader.evaluation_state(name, ["a-retired"]).known_present,
+             "a-retired"
+           )
+  end
+
   test "a definitions refresh forgets known-present keys" do
     stub(PostHog.API.Mock, :request, fn :stub_client, method, path, _opts ->
       case {method, path} do
