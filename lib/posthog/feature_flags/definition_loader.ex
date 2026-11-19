@@ -145,7 +145,8 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
         clock: 0,
         returned_at: %{},
         returned_order: [],
-        returned_floor: 0
+        returned_floor: 0,
+        present: MapSet.new()
       }
 
     # A key returned after this probe started may be a flag the probe's own
@@ -169,16 +170,10 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
       do: MapSet.difference(MapSet.new(requested), MapSet.new(returned))
 
     # A trusted clean omission means the key is no longer confirmed present, even
-    # when the bounded missing-key store couldn't retain it.
-    defp forget_returned(state, omitted) do
-      if MapSet.size(omitted) == 0 do
-        state
-      else
-        order = Enum.reject(state.returned_order, &MapSet.member?(omitted, &1))
-        returned_at = Map.drop(state.returned_at, MapSet.to_list(omitted))
-        %{state | returned_order: order, returned_at: returned_at}
-      end
-    end
+    # when the bounded missing-key store couldn't retain it. The return history is
+    # kept, so older omissions still can't record the key as missing.
+    defp forget_returned(state, omitted),
+      do: %{state | present: MapSet.difference(state.present, omitted)}
 
     defp record_returned(state, returned) do
       clock = state.clock + 1
@@ -194,12 +189,18 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
         |> Enum.max(fn -> state.returned_floor end)
         |> max(state.returned_floor)
 
+      present =
+        state.present
+        |> MapSet.union(returned_set)
+        |> MapSet.difference(MapSet.new(evicted))
+
       %{
         state
         | clock: clock,
           returned_at: Map.drop(returned_at, evicted),
           returned_order: order,
-          returned_floor: floor
+          returned_floor: floor,
+          present: present
       }
     end
 
@@ -207,11 +208,7 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
     # refresh, eviction from the bounded history, or a clean omission.
     defp publish(state) do
       registry = PostHog.Registry.registry_name(state.name)
-
-      cached =
-        state
-        |> Map.take([:generation, :keys])
-        |> Map.put(:present, MapSet.new(state.returned_order))
+      cached = Map.take(state, [:generation, :keys, :present])
 
       Registry.update_value(registry, __MODULE__, fn _old -> cached end)
       state

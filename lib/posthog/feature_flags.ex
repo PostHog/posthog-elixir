@@ -455,13 +455,13 @@ defmodule PostHog.FeatureFlags do
           distinct_id,
           body,
           requested_keys,
-          owned_probe_keys ++ present
+          owned_probe_keys
         )
       end)
     end
   end
 
-  defp evaluate_after_missing_probe_lock(name, distinct_id, body, requested_keys, probe_keys) do
+  defp evaluate_after_missing_probe_lock(name, distinct_id, body, requested_keys, owned_keys) do
     fresh_state = local_evaluation_state(name, requested_keys)
 
     if is_nil(fresh_state.definitions) do
@@ -474,9 +474,24 @@ defmodule PostHog.FeatureFlags do
         requested_keys,
         fresh_state,
         false,
-        probe_keys
+        omission_candidates(requested_keys, fresh_state, owned_keys)
       )
     end
+  end
+
+  # Read after waiting, because definitions and existence knowledge may have
+  # changed meanwhile. A clean omission can record absence for keys this call
+  # owned plus keys currently known present, but never for a key that now has a
+  # local definition or is already known missing.
+  defp omission_candidates(requested_keys, state, owned_keys) do
+    absent = absent_definition_keys(requested_keys, state.definitions)
+
+    owned_keys
+    |> MapSet.new()
+    |> MapSet.union(state.known_present)
+    |> MapSet.intersection(absent)
+    |> MapSet.difference(state.known_missing)
+    |> MapSet.to_list()
   end
 
   defp remote_loaded_snapshot(
