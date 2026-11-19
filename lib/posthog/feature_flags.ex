@@ -438,28 +438,26 @@ defmodule PostHog.FeatureFlags do
     {present, unknown} = Enum.split_with(missing, &MapSet.member?(loader_state.known_present, &1))
 
     # Known-present keys always go with the request, so a clean omission can clear them.
-    cond do
-      unknown == [] or length(unknown) > @missing_probe_coordination_limit ->
-        remote_snapshot(
+    if unknown == [] or length(unknown) > @missing_probe_coordination_limit do
+      remote_snapshot(
+        name,
+        distinct_id,
+        body,
+        local,
+        requested_keys,
+        loader_state.generation,
+        present
+      )
+    else
+      __MODULE__.MissingProbeCoordinator.run(name, unknown, fn owned_probe_keys ->
+        evaluate_after_missing_probe_lock(
           name,
           distinct_id,
           body,
-          local,
           requested_keys,
-          loader_state.generation,
-          present
+          owned_probe_keys ++ present
         )
-
-      true ->
-        __MODULE__.MissingProbeCoordinator.run(name, unknown, fn owned_probe_keys ->
-          evaluate_after_missing_probe_lock(
-            name,
-            distinct_id,
-            body,
-            requested_keys,
-            owned_probe_keys ++ present
-          )
-        end)
+      end)
     end
   end
 
