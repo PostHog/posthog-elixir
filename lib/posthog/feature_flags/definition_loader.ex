@@ -63,9 +63,10 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
       state = cached(name)
 
       if state.generation == generation do
-        keys |> MapSet.new() |> MapSet.intersection(state.keys)
+        keys = MapSet.new(keys)
+        {MapSet.intersection(keys, state.keys), MapSet.intersection(keys, state.present)}
       else
-        MapSet.new()
+        {MapSet.new(), MapSet.new()}
       end
     end
 
@@ -100,6 +101,7 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
         |> Map.put(:generation, generation)
         |> update_retained_missing(requested, returned, clean?)
         |> record_returned(returned)
+        |> forget_returned(state.keys)
         |> publish()
 
       {:reply, :ok, state}
@@ -134,7 +136,7 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
       ArgumentError -> nil
     end
 
-    defp empty, do: %{generation: nil, keys: MapSet.new()}
+    defp empty, do: %{generation: nil, keys: MapSet.new(), present: MapSet.new()}
 
     defp empty_keys,
       do: %{
@@ -161,6 +163,19 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
       end
     end
 
+    # A key newly recorded as missing is no longer confirmed present.
+    defp forget_returned(state, previously_missing) do
+      newly_missing = MapSet.difference(state.keys, previously_missing)
+
+      if MapSet.size(newly_missing) == 0 do
+        state
+      else
+        order = Enum.reject(state.returned_order, &MapSet.member?(newly_missing, &1))
+        returned_at = Map.drop(state.returned_at, MapSet.to_list(newly_missing))
+        %{state | returned_order: order, returned_at: returned_at}
+      end
+    end
+
     defp record_returned(state, returned) do
       clock = state.clock + 1
       returned_at = Enum.reduce(returned, state.returned_at, &Map.put(&2, &1, clock))
@@ -184,9 +199,16 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
       }
     end
 
+    # Keys `/flags` returned in this generation are confirmed present until a
+    # refresh, eviction from the bounded history, or a clean omission.
     defp publish(state) do
       registry = PostHog.Registry.registry_name(state.name)
-      cached = Map.take(state, [:generation, :keys])
+
+      cached =
+        state
+        |> Map.take([:generation, :keys])
+        |> Map.put(:present, MapSet.new(state.returned_order))
+
       Registry.update_value(registry, __MODULE__, fn _old -> cached end)
       state
     end
@@ -268,11 +290,13 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
   @doc false
   def evaluation_state(name, keys) do
     state = readable_evaluation_state(name)
+    {known_missing, known_present} = NegativeKnowledge.known(name, state.generation, keys)
 
     %{
       definitions: state.definitions,
       generation: state.generation,
-      known_missing: NegativeKnowledge.known(name, state.generation, keys)
+      known_missing: known_missing,
+      known_present: known_present
     }
   end
 

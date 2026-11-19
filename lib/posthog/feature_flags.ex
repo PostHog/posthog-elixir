@@ -273,7 +273,9 @@ defmodule PostHog.FeatureFlags do
     `PostHog.FeatureFlags.Evaluations.only/2` which filters an already-fetched
     snapshot in memory. Clean remote omissions for explicitly requested keys
     are retained in a bounded per-instance set until definitions refresh, so
-    repeated and concurrent missing-key probes avoid duplicate requests.
+    repeated and concurrent missing-key probes avoid duplicate requests. Keys
+    that `/flags` returned are remembered the same way, so later evaluations
+    request them directly instead of waiting on another evaluation's probe.
 
   ## Examples
 
@@ -429,28 +431,45 @@ defmodule PostHog.FeatureFlags do
          unresolved
        ) do
     absent = absent_definition_keys(requested_keys, loader_state.definitions)
-    probe_keys = absent |> MapSet.intersection(unresolved) |> MapSet.to_list()
+    missing = MapSet.intersection(absent, unresolved)
 
-    if probe_keys == [] or length(probe_keys) > @missing_probe_coordination_limit do
-      remote_snapshot(
-        name,
-        distinct_id,
-        body,
-        local,
-        requested_keys,
-        loader_state.generation,
-        []
-      )
-    else
-      __MODULE__.MissingProbeCoordinator.run(name, probe_keys, fn owned_probe_keys ->
-        evaluate_after_missing_probe_lock(
+    # Keys `/flags` already returned exist, so callers request them directly. Only
+    # keys whose existence is still unknown are coordinated.
+    {present, unknown} = Enum.split_with(missing, &MapSet.member?(loader_state.known_present, &1))
+
+    cond do
+      length(unknown) > @missing_probe_coordination_limit ->
+        remote_snapshot(
           name,
           distinct_id,
           body,
+          local,
           requested_keys,
-          owned_probe_keys
+          loader_state.generation,
+          []
         )
-      end)
+
+      unknown == [] ->
+        remote_snapshot(
+          name,
+          distinct_id,
+          body,
+          local,
+          requested_keys,
+          loader_state.generation,
+          present
+        )
+
+      true ->
+        __MODULE__.MissingProbeCoordinator.run(name, unknown, fn owned_probe_keys ->
+          evaluate_after_missing_probe_lock(
+            name,
+            distinct_id,
+            body,
+            requested_keys,
+            owned_probe_keys ++ present
+          )
+        end)
     end
   end
 
@@ -651,10 +670,21 @@ defmodule PostHog.FeatureFlags do
          GenServer.whereis(PostHog.Registry.via(name, __MODULE__.DefinitionLoader)) do
       __MODULE__.DefinitionLoader.evaluation_state(name, keys)
     else
-      %{definitions: nil, generation: nil, known_missing: MapSet.new()}
+      %{
+        definitions: nil,
+        generation: nil,
+        known_missing: MapSet.new(),
+        known_present: MapSet.new()
+      }
     end
   catch
-    :exit, _reason -> %{definitions: nil, generation: nil, known_missing: MapSet.new()}
+    :exit, _reason ->
+      %{
+        definitions: nil,
+        generation: nil,
+        known_missing: MapSet.new(),
+        known_present: MapSet.new()
+      }
   end
 
   @doc """

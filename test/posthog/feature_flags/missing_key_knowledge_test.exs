@@ -854,4 +854,111 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     send(worker_two, :release_parallel)
     Enum.each(waiters, &assert({:ok, _snapshot} = Task.await(&1)))
   end
+
+  test "a key /flags already returned is requested directly without waiting on a probe" do
+    owner = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    stub(PostHog.API.Mock, :request, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          call = Agent.get_and_update(calls, &{&1, &1 + 1})
+          send(owner, {:present_probe, call, self()})
+          if call == 1, do: receive(do: (:release_present -> :ok))
+          {:ok, %{status: 200, body: %{"flags" => %{"remote" => %{"enabled" => true}}}}}
+      end
+    end)
+
+    name = __MODULE__.KnownPresent
+    start_instance(name)
+
+    # The first request confirms the key exists.
+    assert {:ok, first} = scoped(name, ["remote"], "one")
+    assert first.flags["remote"].enabled
+    assert_receive {:present_probe, 0, _worker}
+
+    # A later request for that key is in flight, and another caller doesn't wait for it.
+    stalled = Task.async(fn -> scoped(name, ["remote"], "two") end)
+    assert_receive {:present_probe, 1, stalled_worker}
+    direct = Task.async(fn -> scoped(name, ["remote"], "three") end)
+    assert_receive {:present_probe, 2, _worker}, 500
+    assert {:ok, snapshot} = Task.await(direct, 500)
+    assert snapshot.flags["remote"].enabled
+
+    send(stalled_worker, :release_present)
+    assert {:ok, _snapshot} = Task.await(stalled)
+  end
+
+  test "a clean omission of a known-present key makes it unknown again" do
+    owner = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    stub(PostHog.API.Mock, :request, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          call = Agent.get_and_update(calls, &{&1, &1 + 1})
+          send(owner, {:deleted_probe, call, self()})
+
+          if call == 0,
+            do: {:ok, %{status: 200, body: %{"flags" => %{"remote" => %{"enabled" => true}}}}},
+            else: {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    name = __MODULE__.PresentThenDeleted
+    start_instance(name)
+
+    assert {:ok, _snapshot} = scoped(name, ["remote"], "one")
+    assert_receive {:deleted_probe, 0, _worker}
+    sync_loader(name)
+
+    assert MapSet.member?(
+             DefinitionLoader.evaluation_state(name, ["remote"]).known_present,
+             "remote"
+           )
+
+    # The flag is deleted. A clean omission moves it back to unknown, then missing.
+    assert {:ok, snapshot} = scoped(name, ["remote"], "two")
+    assert Evaluations.keys(snapshot) == []
+    assert_receive {:deleted_probe, 1, _worker}
+    sync_loader(name)
+
+    state = DefinitionLoader.evaluation_state(name, ["remote"])
+    refute MapSet.member?(state.known_present, "remote")
+    assert MapSet.member?(state.known_missing, "remote")
+
+    assert {:ok, _snapshot} = scoped(name, ["remote"], "three")
+    refute_receive {:deleted_probe, 2, _worker}, 50
+  end
+
+  test "a definitions refresh forgets known-present keys" do
+    stub(PostHog.API.Mock, :request, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          {:ok, %{status: 200, body: %{"flags" => %{"remote" => %{"enabled" => true}}}}}
+      end
+    end)
+
+    name = __MODULE__.PresentRefresh
+    start_instance(name)
+    assert {:ok, _snapshot} = scoped(name, ["remote"], "one")
+    sync_loader(name)
+
+    assert MapSet.member?(
+             DefinitionLoader.evaluation_state(name, ["remote"]).known_present,
+             "remote"
+           )
+
+    DefinitionLoader.refresh(name)
+    assert DefinitionLoader.evaluation_state(name, ["remote"]).known_present == MapSet.new()
+  end
 end
