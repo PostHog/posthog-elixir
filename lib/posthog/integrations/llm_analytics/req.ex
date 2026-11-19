@@ -346,12 +346,6 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
     )
   end
 
-  defp gemini_url_context?(candidates) when is_list(candidates) do
-    Enum.any?(candidates, &(is_map(&1) and is_map(Map.get(&1, "urlContextMetadata"))))
-  end
-
-  defp gemini_url_context?(_), do: false
-
   # Anthropic Create Message
   defp response_properties(%{
          "model" => model,
@@ -369,6 +363,12 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
   end
 
   defp response_properties(_), do: %{}
+
+  defp gemini_url_context?(candidates) when is_list(candidates) do
+    Enum.any?(candidates, &(is_map(&1) and is_map(Map.get(&1, "urlContextMetadata"))))
+  end
+
+  defp gemini_url_context?(_), do: false
 
   defp successful_response_properties(model, output, input_tokens, output_tokens) do
     %{
