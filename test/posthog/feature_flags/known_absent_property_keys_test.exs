@@ -488,6 +488,10 @@ defmodule PostHog.FeatureFlags.KnownAbsentPropertyKeysTest do
             %{person_property_keys_known_absent: ["plan" | :improper]},
             %{group_property_keys_known_absent: %{organization: ["tier" | :improper]}},
             %{group_property_keys_known_absent: %{{:organization} => ["tier"]}},
+            %{person_property_keys_known_absent: [<<255>>]},
+            %{group_property_keys_known_absent: %{<<255>> => ["tier"]}},
+            %{group_property_keys_known_absent: %{"organization" => [], organization: ["x"]}},
+            %{group_property_keys_known_absent: %{"organization" => ["x"], organization: []}},
             %{
               group_property_keys_known_absent: %{"organization" => ["tier"], organization: ["x"]}
             }

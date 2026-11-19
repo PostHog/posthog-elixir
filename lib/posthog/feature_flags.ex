@@ -835,7 +835,8 @@ defmodule PostHog.FeatureFlags do
 
   defp known_absent_key_list?(_improper_tail), do: false
 
-  defp known_absent_key?(key), do: is_binary(key) or (is_atom(key) and not is_nil(key))
+  defp known_absent_key?(key) when is_binary(key), do: String.valid?(key)
+  defp known_absent_key?(key), do: is_atom(key) and not is_nil(key)
 
   defp normalize_known_absent_groups(nil), do: {:ok, nil}
 
@@ -845,8 +846,14 @@ defmodule PostHog.FeatureFlags do
       normalize_known_absent_group(group_type, keys, acc)
     end)
     |> case do
-      {:ok, normalized} when map_size(normalized) == 0 -> {:ok, nil}
-      result -> result
+      {:ok, normalized} ->
+        normalized =
+          for {group_type, keys} <- normalized, keys != nil, into: %{}, do: {group_type, keys}
+
+        if map_size(normalized) == 0, do: {:ok, nil}, else: {:ok, normalized}
+
+      error ->
+        error
     end
   end
 
@@ -862,9 +869,7 @@ defmodule PostHog.FeatureFlags do
         _result when is_map_key(acc, group_type) ->
           {:halt, known_absent_error("#{field} is listed more than once")}
 
-        {:ok, nil} ->
-          {:cont, {:ok, acc}}
-
+        # Empty lists are kept until the end so duplicate group types are always caught.
         {:ok, keys} ->
           {:cont, {:ok, Map.put(acc, group_type, keys)}}
 
