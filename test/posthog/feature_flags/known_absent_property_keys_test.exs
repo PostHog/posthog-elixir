@@ -283,6 +283,34 @@ defmodule PostHog.FeatureFlags.KnownAbsentPropertyKeysTest do
       assert local(definitions, %{}, "cohort") == {:unresolved, :missing_context}
     end
 
+    test "unsupported not_between in a dynamic cohort leaf on a listed key stays inconclusive" do
+      leaf = %{
+        "key" => "plan",
+        "type" => "person",
+        "operator" => "not_between",
+        "value" => [1, 2]
+      }
+
+      definitions =
+        snapshot(
+          [
+            flag("cohort", [%{"type" => "cohort", "value" => 1}]),
+            flag("negated", [%{"type" => "cohort", "value" => 2}])
+          ],
+          %{
+            cohorts: %{
+              "1" => %{"type" => "AND", "values" => [leaf]},
+              "2" => %{"type" => "AND", "values" => [Map.put(leaf, "negation", true)]}
+            }
+          }
+        )
+
+      context = %{person_property_keys_known_absent: ["plan"]}
+
+      assert local(definitions, context, "cohort") == {:unresolved, :unsupported_definition}
+      assert local(definitions, context, "negated") == {:unresolved, :unsupported_definition}
+    end
+
     test "flag dependencies evaluate with the same listing" do
       base = flag("base", [person_filter("is_not_set")])
 
