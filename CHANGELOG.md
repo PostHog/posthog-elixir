@@ -1,5 +1,11 @@
 # posthog
 
+## 2.23.3 — 2026-11-20
+
+### Patch changes
+
+- [c6d3504](https://github.com/posthog/posthog-elixir/commit/c6d350483f54cc5cc3484f5058559f01290d7916) Count Gemini URL context `toolUsePromptTokenCount` as input tokens in captured LLM generations (it was added to output tokens); Google Search retrieval is not billed as input and stays out of the totals. — Thanks @pcbeingused333 for your first contribution 🎉!
+
 ## 2.23.2 — 2026-11-18
 
 ### Patch changes
