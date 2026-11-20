@@ -1,5 +1,11 @@
 # posthog
 
+## 2.23.4 — 2026-11-20
+
+### Patch changes
+
+- [d837a95](https://github.com/posthog/posthog-elixir/commit/d837a95f08ac5dce8bebc00da3130af20563e1d4) `evaluate_flags` remembers flag keys that `/flags` returned but local definitions don't have yet, until the next definitions refresh. Later evaluations request those keys directly instead of waiting on another evaluation's in-flight request. — Thanks @marandaneto!
+
 ## 2.23.3 — 2026-11-20
 
 ### Patch changes
