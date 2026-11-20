@@ -1234,4 +1234,59 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     assert {:ok, _snapshot} = scoped(name, ["a"], "single")
     assert_receive :single_requested
   end
+
+  test "a waiter coordinates on a key that became unknown while it waited" do
+    owner = self()
+    {:ok, definition_calls} = Agent.start_link(fn -> 0 end)
+
+    stub(PostHog.API.Mock, :request, fn :stub_client, method, path, opts ->
+      case {method, path, opts[:json][:distinct_id]} do
+        {:get, "/flags/definitions", _id} ->
+          Agent.update(definition_calls, &(&1 + 1))
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags", "b-owner"} ->
+          send(owner, {:b_owner, self()})
+          receive do: (:release_b -> :ok)
+          {:ok, %{status: 200, body: %{"flags" => %{}, "errorsWhileComputingFlags" => true}}}
+
+        {:post, "/flags", "a-owner"} ->
+          send(owner, {:a_owner, self()})
+          receive do: (:release_a -> :ok)
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+
+        {:post, "/flags", "mixed"} ->
+          send(owner, :mixed_requested)
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    name = __MODULE__.UnknownAfterWait
+    start_instance(name)
+    %{generation: generation} = DefinitionLoader.evaluation_state(name, [])
+    record(name, generation, [], ["a"])
+
+    b_owner = Task.async(fn -> scoped(name, ["b"], "b-owner") end)
+    assert_receive {:b_owner, b_worker}
+    mixed = Task.async(fn -> scoped(name, ["a", "b"], "mixed") end)
+    eventually(fn -> waiting_on(name, "b") == 1 end)
+
+    # A refresh clears "a"'s presence, and another call starts checking "a".
+    DefinitionLoader.refresh(name)
+    a_owner = Task.async(fn -> scoped(name, ["a"], "a-owner") end)
+    assert_receive {:a_owner, a_worker}
+
+    # When "b" settles, the mixed call waits on the check for "a" instead of
+    # sending its request right away.
+    send(b_worker, :release_b)
+    assert {:ok, _snapshot} = Task.await(b_owner)
+    eventually(fn -> waiting_on(name, "a") == 1 end)
+    refute_received :mixed_requested
+
+    # The check for "a" cleanly omits it, so the mixed call requests only for "b".
+    send(a_worker, :release_a)
+    assert {:ok, _snapshot} = Task.await(a_owner)
+    assert {:ok, _snapshot} = Task.await(mixed)
+    assert_receive :mixed_requested
+  end
 end

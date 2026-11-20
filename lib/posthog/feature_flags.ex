@@ -449,15 +449,68 @@ defmodule PostHog.FeatureFlags do
         present
       )
     else
-      __MODULE__.MissingProbeCoordinator.run(name, unknown, fn owned_probe_keys ->
-        evaluate_after_missing_probe_lock(
-          name,
-          distinct_id,
-          body,
-          requested_keys,
-          owned_probe_keys
-        )
-      end)
+      deadline = __MODULE__.MissingProbeCoordinator.deadline()
+      coordinate_unknown(name, distinct_id, body, requested_keys, unknown, {[], []}, deadline)
+    end
+  end
+
+  # Every round shares the call's original deadline. `coordinated` holds the keys
+  # this call already waited on, so a key is never coordinated twice.
+  defp coordinate_unknown(
+         name,
+         distinct_id,
+         body,
+         requested_keys,
+         unknown,
+         {coordinated, owned},
+         deadline
+       ) do
+    __MODULE__.MissingProbeCoordinator.run(
+      name,
+      unknown,
+      fn owned_probe_keys ->
+        owned = owned ++ owned_probe_keys
+        coordinated = coordinated ++ unknown
+
+        case newly_unknown(name, requested_keys, coordinated) do
+          [] ->
+            evaluate_after_missing_probe_lock(name, distinct_id, body, requested_keys, owned)
+
+          # Only a call that owns nothing can wait again, so two calls never wait on
+          # each other.
+          more when owned == [] ->
+            coordinate_unknown(
+              name,
+              distinct_id,
+              body,
+              requested_keys,
+              more,
+              {coordinated, owned},
+              deadline
+            )
+
+          _more ->
+            evaluate_after_missing_probe_lock(name, distinct_id, body, requested_keys, owned)
+        end
+      end,
+      deadline
+    )
+  end
+
+  # Keys that became unknown while this call waited, for example after a refresh
+  # cleared their presence: not defined locally, present, missing, or coordinated.
+  defp newly_unknown(name, requested_keys, coordinated) do
+    state = local_evaluation_state(name, requested_keys)
+
+    if is_nil(state.definitions) do
+      []
+    else
+      requested_keys
+      |> absent_definition_keys(state.definitions)
+      |> MapSet.difference(state.known_present)
+      |> MapSet.difference(state.known_missing)
+      |> MapSet.difference(MapSet.new(coordinated))
+      |> MapSet.to_list()
     end
   end
 
