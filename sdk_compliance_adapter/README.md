@@ -52,10 +52,10 @@ No local definitions are configured, so each evaluation uses the remote SDK
 path for either value of `force_remote`. The SDK owns request construction,
 response parsing, retries, and `$feature_flag_called` events.
 
-Harness 1.32.0 selects 30 server V0 capture tests and 17 feature-flag tests.
+Harness 1.34.0 selects 30 server V0 capture tests and 17 feature-flag tests.
 The SDK sends empty `groups` / `group_properties` objects and
 `geoip_disable: false` when those flag request options are omitted.
-Harness 1.32.0 supplies rich v2 `flags` alongside legacy `featureFlags` in
+Harness 1.34.0 supplies rich v2 `flags` alongside legacy `featureFlags` in
 flag value, retry, and called-event fixtures. These assertions remain selected;
 the SDK still requires rich v2 responses for `/flags?v=2`. Adapter regression
 tests cover rich v2 values, retries, and SDK event metadata.
