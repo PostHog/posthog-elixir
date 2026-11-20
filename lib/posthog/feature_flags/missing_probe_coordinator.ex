@@ -22,10 +22,15 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
   Runs `callback` with the keys whose probe this caller owns. Keys whose probe
   settled elsewhere, or that could not be claimed in time, are not owned.
   """
-  @spec run(PostHog.supervisor_name(), [String.t()], ([String.t()] -> result)) :: result
+  @spec run(
+          PostHog.supervisor_name(),
+          [String.t()],
+          ([String.t()] -> result),
+          integer() | nil
+        ) :: result
         when result: var
-  def run(name, keys, callback) do
-    led = await_overlapping_probes(name, Enum.uniq(keys))
+  def run(name, keys, callback, deadline \\ nil) do
+    led = await_overlapping_probes(name, Enum.uniq(keys), deadline || deadline())
 
     result =
       try do
@@ -45,11 +50,14 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
   defp release(name, keys, notice),
     do: GenServer.cast(via(name), {:release, self(), keys, notice})
 
-  defp await_overlapping_probes(name, keys) do
+  @doc "Returns a new coordination deadline, in monotonic milliseconds."
+  def deadline, do: System.monotonic_time(:millisecond) + @wait_timeout_ms
+
+  defp await_overlapping_probes(name, keys, deadline) do
     reply_to = Process.alias()
 
     try do
-      claim_until_led(name, keys, reply_to, deadline())
+      claim_until_led(name, keys, reply_to, deadline)
     after
       Process.unalias(reply_to)
       flush_notices(reply_to)
@@ -94,8 +102,6 @@ defmodule PostHog.FeatureFlags.MissingProbeCoordinator do
       GenServer.cast(via(name), {:unwait, self(), reply_to})
       {[], []}
   end
-
-  defp deadline, do: System.monotonic_time(:millisecond) + @wait_timeout_ms
 
   defp remaining(deadline), do: max(deadline - System.monotonic_time(:millisecond), 0)
 

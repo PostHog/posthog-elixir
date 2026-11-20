@@ -273,7 +273,9 @@ defmodule PostHog.FeatureFlags do
     `PostHog.FeatureFlags.Evaluations.only/2` which filters an already-fetched
     snapshot in memory. Clean remote omissions for explicitly requested keys
     are retained in a bounded per-instance set until definitions refresh, so
-    repeated and concurrent missing-key probes avoid duplicate requests.
+    repeated and concurrent missing-key probes avoid duplicate requests. Keys
+    that `/flags` returned are remembered the same way, so later evaluations
+    request them directly instead of waiting on another evaluation's probe.
 
   ## Examples
 
@@ -429,9 +431,14 @@ defmodule PostHog.FeatureFlags do
          unresolved
        ) do
     absent = absent_definition_keys(requested_keys, loader_state.definitions)
-    probe_keys = absent |> MapSet.intersection(unresolved) |> MapSet.to_list()
+    missing = MapSet.intersection(absent, unresolved)
 
-    if probe_keys == [] or length(probe_keys) > @missing_probe_coordination_limit do
+    # Keys `/flags` already returned exist, so callers request them directly. Only
+    # keys whose existence is still unknown are coordinated.
+    {present, unknown} = Enum.split_with(missing, &MapSet.member?(loader_state.known_present, &1))
+
+    # Known-present keys always go with the request, so a clean omission can clear them.
+    if unknown == [] or length(unknown) > @missing_probe_coordination_limit do
       remote_snapshot(
         name,
         distinct_id,
@@ -439,22 +446,76 @@ defmodule PostHog.FeatureFlags do
         local,
         requested_keys,
         loader_state.generation,
-        []
+        present
       )
     else
-      __MODULE__.MissingProbeCoordinator.run(name, probe_keys, fn owned_probe_keys ->
-        evaluate_after_missing_probe_lock(
-          name,
-          distinct_id,
-          body,
-          requested_keys,
-          owned_probe_keys
-        )
-      end)
+      deadline = __MODULE__.MissingProbeCoordinator.deadline()
+      coordinate_unknown(name, distinct_id, body, requested_keys, unknown, {[], []}, deadline)
     end
   end
 
-  defp evaluate_after_missing_probe_lock(name, distinct_id, body, requested_keys, probe_keys) do
+  # Every round shares the call's original deadline. `coordinated` holds the keys
+  # this call already waited on, so a key is never coordinated twice.
+  defp coordinate_unknown(
+         name,
+         distinct_id,
+         body,
+         requested_keys,
+         unknown,
+         {coordinated, owned},
+         deadline
+       ) do
+    __MODULE__.MissingProbeCoordinator.run(
+      name,
+      unknown,
+      fn owned_probe_keys ->
+        owned = owned ++ owned_probe_keys
+        coordinated = coordinated ++ unknown
+
+        case newly_unknown(name, requested_keys, coordinated) do
+          [] ->
+            evaluate_after_missing_probe_lock(name, distinct_id, body, requested_keys, owned)
+
+          # Only a call that owns nothing can wait again, so two calls never wait on
+          # each other. Too many new keys fall back without coordinating, as in the
+          # first round.
+          more when owned == [] and length(more) <= @missing_probe_coordination_limit ->
+            coordinate_unknown(
+              name,
+              distinct_id,
+              body,
+              requested_keys,
+              more,
+              {coordinated, owned},
+              deadline
+            )
+
+          _more ->
+            evaluate_after_missing_probe_lock(name, distinct_id, body, requested_keys, owned)
+        end
+      end,
+      deadline
+    )
+  end
+
+  # Keys that became unknown while this call waited, for example after a refresh
+  # cleared their presence: not defined locally, present, missing, or coordinated.
+  defp newly_unknown(name, requested_keys, coordinated) do
+    state = local_evaluation_state(name, requested_keys)
+
+    if is_nil(state.definitions) do
+      []
+    else
+      requested_keys
+      |> absent_definition_keys(state.definitions)
+      |> MapSet.difference(state.known_present)
+      |> MapSet.difference(state.known_missing)
+      |> MapSet.difference(MapSet.new(coordinated))
+      |> MapSet.to_list()
+    end
+  end
+
+  defp evaluate_after_missing_probe_lock(name, distinct_id, body, requested_keys, owned_keys) do
     fresh_state = local_evaluation_state(name, requested_keys)
 
     if is_nil(fresh_state.definitions) do
@@ -467,9 +528,24 @@ defmodule PostHog.FeatureFlags do
         requested_keys,
         fresh_state,
         false,
-        probe_keys
+        omission_candidates(requested_keys, fresh_state, owned_keys)
       )
     end
+  end
+
+  # Read after waiting, because definitions and existence knowledge may have
+  # changed meanwhile. A clean omission can record absence for keys this call
+  # owned plus keys currently known present, but never for a key that now has a
+  # local definition or is already known missing.
+  defp omission_candidates(requested_keys, state, owned_keys) do
+    absent = absent_definition_keys(requested_keys, state.definitions)
+
+    owned_keys
+    |> MapSet.new()
+    |> MapSet.union(state.known_present)
+    |> MapSet.intersection(absent)
+    |> MapSet.difference(state.known_missing)
+    |> MapSet.to_list()
   end
 
   defp remote_loaded_snapshot(
@@ -651,10 +727,21 @@ defmodule PostHog.FeatureFlags do
          GenServer.whereis(PostHog.Registry.via(name, __MODULE__.DefinitionLoader)) do
       __MODULE__.DefinitionLoader.evaluation_state(name, keys)
     else
-      %{definitions: nil, generation: nil, known_missing: MapSet.new()}
+      %{
+        definitions: nil,
+        generation: nil,
+        known_missing: MapSet.new(),
+        known_present: MapSet.new()
+      }
     end
   catch
-    :exit, _reason -> %{definitions: nil, generation: nil, known_missing: MapSet.new()}
+    :exit, _reason ->
+      %{
+        definitions: nil,
+        generation: nil,
+        known_missing: MapSet.new(),
+        known_present: MapSet.new()
+      }
   end
 
   @doc """

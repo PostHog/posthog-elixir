@@ -63,9 +63,10 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
       state = cached(name)
 
       if state.generation == generation do
-        keys |> MapSet.new() |> MapSet.intersection(state.keys)
+        keys = MapSet.new(keys)
+        {MapSet.intersection(keys, state.keys), MapSet.intersection(keys, state.present)}
       else
-        MapSet.new()
+        {MapSet.new(), MapSet.new()}
       end
     end
 
@@ -100,6 +101,7 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
         |> Map.put(:generation, generation)
         |> update_retained_missing(requested, returned, clean?)
         |> record_returned(returned)
+        |> forget_returned(clean_omissions(requested, returned, clean?))
         |> publish()
 
       {:reply, :ok, state}
@@ -134,7 +136,7 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
       ArgumentError -> nil
     end
 
-    defp empty, do: %{generation: nil, keys: MapSet.new()}
+    defp empty, do: %{generation: nil, keys: MapSet.new(), present: MapSet.new()}
 
     defp empty_keys,
       do: %{
@@ -143,7 +145,8 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
         clock: 0,
         returned_at: %{},
         returned_order: [],
-        returned_floor: 0
+        returned_floor: 0,
+        present: MapSet.new()
       }
 
     # A key returned after this probe started may be a flag the probe's own
@@ -161,6 +164,17 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
       end
     end
 
+    defp clean_omissions(_requested, _returned, false), do: MapSet.new()
+
+    defp clean_omissions(requested, returned, true),
+      do: MapSet.difference(MapSet.new(requested), MapSet.new(returned))
+
+    # A trusted clean omission means the key is no longer confirmed present, even
+    # when the bounded missing-key store couldn't retain it. The return history is
+    # kept, so older omissions still can't record the key as missing.
+    defp forget_returned(state, omitted),
+      do: %{state | present: MapSet.difference(state.present, omitted)}
+
     defp record_returned(state, returned) do
       clock = state.clock + 1
       returned_at = Enum.reduce(returned, state.returned_at, &Map.put(&2, &1, clock))
@@ -175,18 +189,27 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
         |> Enum.max(fn -> state.returned_floor end)
         |> max(state.returned_floor)
 
+      present =
+        state.present
+        |> MapSet.union(returned_set)
+        |> MapSet.difference(MapSet.new(evicted))
+
       %{
         state
         | clock: clock,
           returned_at: Map.drop(returned_at, evicted),
           returned_order: order,
-          returned_floor: floor
+          returned_floor: floor,
+          present: present
       }
     end
 
+    # Keys `/flags` returned in this generation are confirmed present until a
+    # refresh, eviction from the bounded history, or a clean omission.
     defp publish(state) do
       registry = PostHog.Registry.registry_name(state.name)
-      cached = Map.take(state, [:generation, :keys])
+      cached = Map.take(state, [:generation, :keys, :present])
+
       Registry.update_value(registry, __MODULE__, fn _old -> cached end)
       state
     end
@@ -268,11 +291,13 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
   @doc false
   def evaluation_state(name, keys) do
     state = readable_evaluation_state(name)
+    {known_missing, known_present} = NegativeKnowledge.known(name, state.generation, keys)
 
     %{
       definitions: state.definitions,
       generation: state.generation,
-      known_missing: NegativeKnowledge.known(name, state.generation, keys)
+      known_missing: known_missing,
+      known_present: known_present
     }
   end
 
