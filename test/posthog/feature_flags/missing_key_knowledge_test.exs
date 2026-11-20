@@ -1289,4 +1289,89 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     assert {:ok, _snapshot} = Task.await(mixed)
     assert_receive :mixed_requested
   end
+
+  test "an older direct request's omission doesn't clear a newer return" do
+    owner = self()
+
+    stub(PostHog.API.Mock, :request, fn :stub_client, method, path, opts ->
+      case {method, path, opts[:json][:distinct_id]} do
+        {:get, "/flags/definitions", _id} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags", "older"} ->
+          send(owner, {:older, self()})
+          receive do: (:release_older -> :ok)
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+
+        {:post, "/flags", _id} ->
+          {:ok, %{status: 200, body: %{"flags" => %{"k" => %{"enabled" => true}}}}}
+      end
+    end)
+
+    name = __MODULE__.OlderDirectOmission
+    start_instance(name)
+    assert {:ok, _snapshot} = scoped(name, ["k"], "first")
+    sync_loader(name)
+    assert MapSet.member?(DefinitionLoader.evaluation_state(name, ["k"]).known_present, "k")
+
+    # Two direct requests for known-present "k" overlap. The newer one returns it.
+    older = Task.async(fn -> scoped(name, ["k"], "older") end)
+    assert_receive {:older, older_worker}
+    assert {:ok, _snapshot} = scoped(name, ["k"], "newer")
+
+    # The older request finishes last with a clean omission.
+    send(older_worker, :release_older)
+    assert {:ok, _snapshot} = Task.await(older)
+    sync_loader(name)
+
+    state = DefinitionLoader.evaluation_state(name, ["k"])
+    assert MapSet.member?(state.known_present, "k")
+    refute MapSet.member?(state.known_missing, "k")
+  end
+
+  test "a later coordination round respects the coordination limit" do
+    owner = self()
+    present = for index <- 1..1_000, do: "p-#{String.pad_leading(to_string(index), 4, "0")}"
+    missing = for index <- 1..1_000, do: "m-#{String.pad_leading(to_string(index), 4, "0")}"
+
+    stub(PostHog.API.Mock, :request, fn :stub_client, method, path, opts ->
+      case {method, path, opts[:json][:distinct_id]} do
+        {:get, "/flags/definitions", _id} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags", "b-owner"} ->
+          send(owner, {:b_owner, self()})
+          receive do: (:release_b -> :ok)
+          {:ok, %{status: 200, body: %{"flags" => %{}, "errorsWhileComputingFlags" => true}}}
+
+        {:post, "/flags", "mixed"} ->
+          send(owner, {:mixed, self()})
+          receive do: (:release_mixed -> :ok)
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    name = __MODULE__.LaterRoundLimit
+    start_instance(name)
+    %{generation: generation} = DefinitionLoader.evaluation_state(name, [])
+    record(name, generation, [], present)
+    record(name, generation, missing, [])
+
+    b_owner = Task.async(fn -> scoped(name, ["b"], "b-owner") end)
+    assert_receive {:b_owner, b_worker}
+    mixed = Task.async(fn -> scoped(name, ["b" | present ++ missing], "mixed") end)
+    eventually(fn -> waiting_on(name, "b") == 1 end)
+
+    # A refresh makes 2,000 keys unknown while the mixed call waits on "b".
+    DefinitionLoader.refresh(name)
+    send(b_worker, :release_b)
+    assert {:ok, _snapshot} = Task.await(b_owner)
+
+    # Too many new keys to coordinate, so the mixed call requests without claiming them.
+    assert_receive {:mixed, mixed_worker}, 1_000
+    coordinator = PostHog.Registry.via(name, FeatureFlags.MissingProbeCoordinator)
+    assert :sys.get_state(coordinator).owners == %{}
+    send(mixed_worker, :release_mixed)
+    assert {:ok, _snapshot} = Task.await(mixed)
+  end
 end

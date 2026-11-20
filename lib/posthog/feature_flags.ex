@@ -477,8 +477,9 @@ defmodule PostHog.FeatureFlags do
             evaluate_after_missing_probe_lock(name, distinct_id, body, requested_keys, owned)
 
           # Only a call that owns nothing can wait again, so two calls never wait on
-          # each other.
-          more when owned == [] ->
+          # each other. Too many new keys fall back without coordinating, as in the
+          # first round.
+          more when owned == [] and length(more) <= @missing_probe_coordination_limit ->
             coordinate_unknown(
               name,
               distinct_id,
