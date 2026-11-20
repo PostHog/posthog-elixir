@@ -4,6 +4,7 @@ defmodule PostHog.FeatureFlags do
   """
 
   @missing_probe_coordination_limit 1_000
+  @known_absent_keys_limit 1_000
   @no_local_results %{results: %{}, reasons: %{}}
 
   @doc """
@@ -12,6 +13,10 @@ defmodule PostHog.FeatureFlags do
   This function is a thin wrapper over a client call and is useful as a building
   block to build your own `check/3`. For example, this is a preferred
   way to access remote config payload.
+
+  The `:person_property_keys_known_absent` and
+  `:group_property_keys_known_absent` body keys are validated and normalized as
+  described in `evaluate_flags/2` before the request is sent.
 
   ## Examples
 
@@ -33,8 +38,10 @@ defmodule PostHog.FeatureFlags do
     config = PostHog.config(name)
 
     if Map.get(config, :enabled, true) do
-      body = body |> translate_disable_geoip() |> flags_request_defaults()
-      request_flags(config.api_client, body)
+      with {:ok, body} <- normalize_known_absent_keys(body) do
+        body = body |> translate_disable_geoip() |> flags_request_defaults()
+        request_flags(config.api_client, body)
+      end
     else
       empty_flags_response()
     end
@@ -255,6 +262,21 @@ defmodule PostHog.FeatureFlags do
   - `:person_properties`
   - `:group_properties`
   - `:device_id` - alternate bucketing identifier for device-bucketed flags
+  - `:person_property_keys_known_absent` - list of person property keys the
+    caller knows the person doesn't have
+  - `:group_property_keys_known_absent` - map of group type to a list of group
+    property keys the caller knows that group doesn't have
+
+  A key listed as known absent counts as absent during local evaluation, even
+  when `:person_properties` or `:group_properties` supplies a value for it. So
+  `is_not_set` and the negated operators (`is_not`, `not_icontains`,
+  `not_starts_with`, `not_ends_with`, `not_regex`) match it without a `/flags`
+  call, and every other operator doesn't match. Person keys starting with
+  `__posthog_person_metadata__` are ignored. Each list accepts strings or atoms
+  and holds at most 1000 keys, counting duplicates and counting each group type
+  separately. A longer list, or a value of the wrong type, returns
+  `{:error, %PostHog.Error{}}` without evaluating or sending a request. Empty
+  lists are not sent.
 
   The public `:disable_geoip` option is sent under the `/flags` wire key
   `geoip_disable`, defaulting to `false`. Omitted `:groups` and
@@ -298,12 +320,10 @@ defmodule PostHog.FeatureFlags do
           {:ok, __MODULE__.Evaluations.t()} | {:error, Exception.t()}
   def evaluate_flags(name \\ PostHog, distinct_id_or_body \\ nil) do
     case body_for_flags(name, distinct_id_or_body) do
-      {:ok, %{distinct_id: distinct_id, flag_keys: []} = body} ->
-        metadata = %{groups: evaluation_groups(body)}
-        {:ok, __MODULE__.Evaluations.from_results(name, distinct_id, %{}, metadata)}
-
-      {:ok, %{distinct_id: distinct_id} = body} ->
-        evaluate_snapshot(name, distinct_id, body)
+      {:ok, body} ->
+        with {:ok, body} <- normalize_known_absent_keys(body) do
+          evaluate_flags_body(name, body)
+        end
 
       {:error, _} ->
         # Standardize on returning an empty snapshot when distinct_id can't be
@@ -313,6 +333,14 @@ defmodule PostHog.FeatureFlags do
         {:ok, __MODULE__.Evaluations.empty(name)}
     end
   end
+
+  defp evaluate_flags_body(name, %{distinct_id: distinct_id, flag_keys: []} = body) do
+    metadata = %{groups: evaluation_groups(body)}
+    {:ok, __MODULE__.Evaluations.from_results(name, distinct_id, %{}, metadata)}
+  end
+
+  defp evaluate_flags_body(name, %{distinct_id: distinct_id} = body),
+    do: evaluate_snapshot(name, distinct_id, body)
 
   defp evaluate_snapshot(name, distinct_id, body) do
     only_local? = Map.get(body, :only_evaluate_locally, false) == true
@@ -742,6 +770,119 @@ defmodule PostHog.FeatureFlags do
 
   defp flags_request_defaults(body), do: body
 
+  # Drops nil and empty lists so only keys the caller listed reach `/flags`, and returns an
+  # error instead of truncating a list over the limit the flags service enforces.
+  defp normalize_known_absent_keys(body) when is_map(body) do
+    with {:ok, body} <-
+           normalize_known_absent_field(
+             body,
+             :person_property_keys_known_absent,
+             &normalize_known_absent_list(&1, "person_property_keys_known_absent")
+           ) do
+      normalize_known_absent_field(
+        body,
+        :group_property_keys_known_absent,
+        &normalize_known_absent_groups/1
+      )
+    end
+  end
+
+  defp normalize_known_absent_keys(body), do: {:ok, body}
+
+  # Local evaluation reads the atom key before the string key, so the same precedence picks
+  # the value here and only the validated atom key is kept.
+  defp normalize_known_absent_field(body, field, normalize) do
+    string_field = Atom.to_string(field)
+
+    if Map.has_key?(body, field) or Map.has_key?(body, string_field) do
+      value = Map.get(body, field, Map.get(body, string_field))
+      body = Map.drop(body, [field, string_field])
+
+      case normalize.(value) do
+        {:ok, nil} -> {:ok, body}
+        {:ok, normalized} -> {:ok, Map.put(body, field, normalized)}
+        {:error, _} = error -> error
+      end
+    else
+      {:ok, body}
+    end
+  end
+
+  defp normalize_known_absent_list(nil, _field), do: {:ok, nil}
+  defp normalize_known_absent_list([], _field), do: {:ok, nil}
+
+  defp normalize_known_absent_list(keys, field) when is_list(keys) do
+    cond do
+      not known_absent_key_list?(keys) ->
+        known_absent_error("#{field} must be a list of strings")
+
+      length(keys) > @known_absent_keys_limit ->
+        known_absent_error("#{field} accepts at most #{@known_absent_keys_limit} keys")
+
+      true ->
+        {:ok, Enum.map(keys, &to_string/1)}
+    end
+  end
+
+  defp normalize_known_absent_list(_keys, field),
+    do: known_absent_error("#{field} must be a list of strings")
+
+  # Also rejects improper lists, which `Enum` functions would raise on.
+  defp known_absent_key_list?([]), do: true
+
+  defp known_absent_key_list?([key | rest]),
+    do: known_absent_key?(key) and known_absent_key_list?(rest)
+
+  defp known_absent_key_list?(_improper_tail), do: false
+
+  defp known_absent_key?(key) when is_binary(key), do: String.valid?(key)
+  defp known_absent_key?(key), do: is_atom(key) and not is_nil(key)
+
+  defp normalize_known_absent_groups(nil), do: {:ok, nil}
+
+  defp normalize_known_absent_groups(groups) when is_map(groups) and not is_struct(groups) do
+    groups
+    |> Enum.reduce_while({:ok, %{}}, fn {group_type, keys}, {:ok, acc} ->
+      normalize_known_absent_group(group_type, keys, acc)
+    end)
+    |> case do
+      {:ok, normalized} ->
+        normalized =
+          for {group_type, keys} <- normalized, keys != nil, into: %{}, do: {group_type, keys}
+
+        if map_size(normalized) == 0, do: {:ok, nil}, else: {:ok, normalized}
+
+      error ->
+        error
+    end
+  end
+
+  defp normalize_known_absent_groups(_groups),
+    do: known_absent_error("group_property_keys_known_absent must be a map of lists of strings")
+
+  defp normalize_known_absent_group(group_type, keys, acc) do
+    if known_absent_key?(group_type) do
+      group_type = to_string(group_type)
+      field = "group_property_keys_known_absent[#{group_type}]"
+
+      case normalize_known_absent_list(keys, field) do
+        _result when is_map_key(acc, group_type) ->
+          {:halt, known_absent_error("#{field} is listed more than once")}
+
+        # Empty lists are kept until the end so duplicate group types are always caught.
+        {:ok, keys} ->
+          {:cont, {:ok, Map.put(acc, group_type, keys)}}
+
+        {:error, _} = error ->
+          {:halt, error}
+      end
+    else
+      {:halt, known_absent_error("group_property_keys_known_absent group types must be strings")}
+    end
+  end
+
+  defp known_absent_error(message), do: {:error, %PostHog.Error{message: message}}
+
   defp translate_disable_geoip(%{disable_geoip: disable_geoip} = body) do
     body
     |> Map.delete(:disable_geoip)
@@ -975,7 +1116,10 @@ defmodule PostHog.FeatureFlags do
   defp evaluate_flag(name, flag_name, distinct_id_or_body, opts) do
     send_event = Keyword.get(opts, :send_event, true)
 
-    case body_for_flags(name, distinct_id_or_body) do
+    case with(
+           {:ok, body} <- body_for_flags(name, distinct_id_or_body),
+           do: normalize_known_absent_keys(body)
+         ) do
       {:ok, %{distinct_id: distinct_id} = body} ->
         case evaluate_single_flag(name, flag_name, body) do
           {:ok, %__MODULE__.Result{} = result, response_body} ->
@@ -1355,7 +1499,9 @@ defmodule PostHog.FeatureFlags do
                :groups,
                :person_properties,
                :group_properties,
-               :device_id
+               :device_id,
+               :person_property_keys_known_absent,
+               :group_property_keys_known_absent
              ])
              |> Map.put(:distinct_id, distinct_id)}
 
