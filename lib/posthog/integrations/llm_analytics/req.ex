@@ -302,12 +302,13 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
   defp response_properties(%{
          "model" => model,
          "output" => output,
-         "usage" => %{"output_tokens" => output_tokens, "input_tokens" => input_tokens},
+         "usage" => %{"output_tokens" => output_tokens, "input_tokens" => input_tokens} = usage,
          "tools" => tools,
          "temperature" => temperature
        }) do
     model
     |> successful_response_properties(output, input_tokens, output_tokens)
+    |> put_openai_cache(usage["input_tokens_details"])
     |> Map.merge(%{"$ai_tools": tools, "$ai_temperature": temperature})
   end
 
@@ -315,9 +316,12 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
   defp response_properties(%{
          "model" => model,
          "choices" => output,
-         "usage" => %{"completion_tokens" => output_tokens, "prompt_tokens" => input_tokens}
+         "usage" =>
+           %{"completion_tokens" => output_tokens, "prompt_tokens" => input_tokens} = usage
        }) do
-    successful_response_properties(model, output, input_tokens, output_tokens)
+    model
+    |> successful_response_properties(output, input_tokens, output_tokens)
+    |> put_openai_cache(usage["prompt_tokens_details"])
   end
 
   # Gemini generateContent
@@ -350,9 +354,12 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
   defp response_properties(%{
          "model" => model,
          "content" => output,
-         "usage" => %{"output_tokens" => output_tokens, "input_tokens" => input_tokens}
+         "usage" => %{"output_tokens" => output_tokens, "input_tokens" => input_tokens} = usage
        }) do
-    successful_response_properties(model, output, input_tokens, output_tokens)
+    model
+    |> successful_response_properties(output, input_tokens, output_tokens)
+    |> put_cache_read(usage["cache_read_input_tokens"])
+    |> put_cache_creation(usage["cache_creation_input_tokens"])
   end
 
   defp response_properties(%{"error" => error}) do
@@ -363,6 +370,33 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
   end
 
   defp response_properties(_), do: %{}
+
+  # OpenAI-style usage counts cached tokens inside the input total. Flag it as
+  # non-exclusive so the backend does not infer Anthropic-style exclusive
+  # reporting from a claude model name served through OpenAI-compatible APIs.
+  defp put_openai_cache(properties, details) when is_map(details) do
+    properties
+    |> put_cache_read(details["cached_tokens"])
+    |> put_cache_creation(details["cache_write_tokens"])
+    |> then(fn props ->
+      if Map.has_key?(props, :"$ai_cache_read_input_tokens") or
+           Map.has_key?(props, :"$ai_cache_creation_input_tokens"),
+         do: Map.put(props, :"$ai_cache_reporting_exclusive", false),
+         else: props
+    end)
+  end
+
+  defp put_openai_cache(properties, _), do: properties
+
+  defp put_cache_read(properties, tokens) when is_integer(tokens) and tokens > 0,
+    do: Map.put(properties, :"$ai_cache_read_input_tokens", tokens)
+
+  defp put_cache_read(properties, _), do: properties
+
+  defp put_cache_creation(properties, tokens) when is_integer(tokens) and tokens > 0,
+    do: Map.put(properties, :"$ai_cache_creation_input_tokens", tokens)
+
+  defp put_cache_creation(properties, _), do: properties
 
   defp gemini_url_context?(candidates) when is_list(candidates) do
     Enum.any?(candidates, &(is_map(&1) and is_map(Map.get(&1, "urlContextMetadata"))))
