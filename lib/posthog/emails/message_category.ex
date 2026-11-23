@@ -2,11 +2,19 @@ defmodule PostHog.Emails.MessageCategory do
   @moduledoc """
   A message category that a send with `:template_key` defines in code.
 
-  PostHog finds the category by `:key` and creates it when the project has none with that key,
-  or restores a deleted one, so no category has to exist in PostHog first. `:name` and
-  `:description` apply only when the send creates the category: a send never renames a category
-  or changes its description, so change them later in PostHog. A category whose key exists must
-  keep its `:type`, or PostHog refuses the send with `category_mismatch`.
+  When code-send categories are enabled for the project and `:template_key` does not match an
+  existing saved template, PostHog finds the category by `:key` and creates it when the project
+  has none with that key, or restores a deleted one, so no category has to exist in PostHog
+  first. `:name` and `:description` apply only when the send creates the category: a send never
+  renames a category or changes its description, so change them later in PostHog. A category
+  whose key exists must keep its `:type`, or PostHog refuses the send with `category_mismatch`.
+
+  A matching saved template keeps its own category, including when it has none: passing a
+  `MessageCategory` for a `:template_key` that matches an uncategorized saved template returns
+  `category_mismatch` (omit `:category` or pass `PostHog.Emails.transactional_category/0`
+  instead). When code-send categories aren't enabled for the project yet, passing a
+  `MessageCategory` returns HTTP 400 `categories_not_enabled`, and an older PostHog server
+  rejects `:category` with HTTP 400.
 
   ## Fields
 

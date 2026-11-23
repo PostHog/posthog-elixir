@@ -76,17 +76,25 @@ defmodule PostHog.Emails do
 
   ## Message categories
 
-  Content from your code is transactional unless its `:category` says otherwise, or its
-  `:template_key` names a template in a category. To send marketing email, such as a
-  newsletter, define its category in code with a `PostHog.Emails.MessageCategory`. PostHog
-  creates the category on the first send with its key, honors the recipient's opt-outs and adds
-  unsubscribe headers, and the content must link to `{{ unsubscribe_url }}`:
+  Content from your code is transactional with no category unless its `:category` says otherwise;
+  a `:template_key` that names a template in a category files it under that (transactional)
+  category (when code-send categories are enabled for the project).
+
+  To send marketing email, such as a newsletter, define its category in code with a
+  `PostHog.Emails.MessageCategory`. When code-send categories are enabled for the project and
+  `:template_key` does not match an existing saved template, PostHog creates the category on the
+  first send with its key (or restores a deleted one), honors the recipient's opt-outs, and adds
+  unsubscribe headers. Marketing sends with `:html` must include a clickable
+  `<a href="{{ unsubscribe_url }}">` link (plain-text sends without `:html` need
+  `{{ unsubscribe_url }}` in `:text`), cannot have `:cc` or `:bcc` (`copies_not_allowed`), and
+  cannot carry `:attachments` (`workflow_can_wait`, because marketing sending limits can hold
+  delivery):
 
       PostHog.Emails.send(
         to: "user@example.com",
         template_key: "newsletter-2026-11",
         subject: "What's new",
-        html: rendered_html_with_unsubscribe_url,
+        html: ~s(<p>What's new.</p><p><a href="{{ unsubscribe_url }}">Unsubscribe</a></p>),
         category: %PostHog.Emails.MessageCategory{
           key: "newsletter",
           type: :marketing,
@@ -95,8 +103,17 @@ defmodule PostHog.Emails do
         distinct_id: "user_123"
       )
 
-  A template made in PostHog is transactional and sends in its own category. PostHog refuses a
-  send for a template in a marketing category with `marketing_template`. See `t:category/0`.
+  When code-send categories aren't enabled for the project yet, omitting `:category` sends as
+  transactional with no category, passing a `PostHog.Emails.MessageCategory` returns HTTP 400
+  `categories_not_enabled`, and an older PostHog server rejects `:category` with HTTP 400.
+
+  A matching saved template keeps its own category, including when it has none: passing a
+  `PostHog.Emails.MessageCategory` for a `:template_key` that matches an uncategorized saved
+  template returns `category_mismatch` (omit `:category` or pass `transactional_category/0`
+  instead). A template made in PostHog sends transactional email only: PostHog checks whether
+  the template is enabled for transactional sends first (`template_not_transactional`), and
+  refuses a template that was made transactional and is in a marketing category with
+  `marketing_template`. See `t:category/0`.
 
   ## Where requests go
 
@@ -171,19 +188,26 @@ defmodule PostHog.Emails do
     nothing.
   - `client_closed`: the PostHog instance stopped during a call, so the call made no further
     request, and a send sent no email.
-  - `marketing_template` (400): the template that `:template_id` or `:template_key` names is
-    in a marketing category. Templates made in PostHog are transactional.
+  - `marketing_template` (400): the template that `:template_id` or `:template_key` names was
+    made transactional and is in a marketing category. PostHog checks whether a saved template
+    is enabled for transactional sends first (`template_not_transactional`).
 
   A send with `:category` can also return:
 
+  - `categories_not_enabled` (400): code-send categories aren't enabled for the project yet. An
+    older PostHog server rejects `:category` with HTTP 400 too.
   - `category_mismatch` (400): the project has a category with that key and another `:type`,
-    or `:template_key` names a template in another category. `transactional_category/0` for a
-    template in a category is a mismatch too.
+    `:template_key` names a template in another category (including `transactional_category/0`
+    for a template in a category), or `:template_key` names an existing saved template with no
+    category and the send passes a `MessageCategory` (omit `:category` or pass
+    `transactional_category/0` instead).
   - `too_many_categories` (400): the send would create a category past the project's limit.
-  - `unsubscribe_link_required` (400): a marketing email from your code has no link whose
-    `href` is `{{ unsubscribe_url }}` in its `:html`, or no `{{ unsubscribe_url }}` in its
+  - `unsubscribe_link_required` (400): a marketing email from your code has no clickable
+    `<a href="{{ unsubscribe_url }}">` link in its `:html`, or no `{{ unsubscribe_url }}` in its
     `:text` when it has no `:html`.
   - `copies_not_allowed` (400): a marketing email from your code has cc or bcc recipients.
+  - `workflow_can_wait` (400): a marketing email from your code carries attachments (marketing
+    sending limits can hold delivery).
   - `recipient_opted_out` (422): the recipient opted out of the category or of all marketing.
 
   A send with files can also return:
@@ -311,9 +335,11 @@ defmodule PostHog.Emails do
   - `:capture_engagement` - deprecated: use `tracking: %{engagement: false}` instead. Whether
     PostHog captures the email's engagement events. It still works, but a send can't set both.
     Sent only when you set it.
-  - `:category` - the email's message category, a `t:category/0`. Without it, the email
-    follows the category of the template that `:template_key` names, or is transactional with
-    no category.
+  - `:category` - the email's message category, a `t:category/0`. When code-send categories are
+    enabled for the project, leaving it out follows the transactional category of the template
+    that `:template_key` names, or sends as transactional with no category; when disabled,
+    leaving it out sends as transactional with no category, a `MessageCategory` returns
+    `categories_not_enabled`, and an older server rejects `:category` with HTTP 400.
 
   An option set to `nil` counts as left out, and so does an empty `:reply_to`, `:cc`, `:bcc` or
   `:attachments` list. A PostHog version that doesn't take a field yet, such as `:attachments`,
@@ -346,20 +372,29 @@ defmodule PostHog.Emails do
   `t:PostHog.Emails.MessageCategory.t/0`.
 
   - `transactional_category/0`, `"transactional"`, sends a transactional email with no
-    category. Leaving `:category` out does the same, except when `:template_key` names a
-    template in a category: the email then follows that category, and PostHog refuses
-    `transactional_category/0` with `category_mismatch`.
-  - A `PostHog.Emails.MessageCategory` defines the category in code. PostHog creates it by key on
-    the first send, and uses its name and description only then: a send never renames a
-    category or changes its description. A `:transactional` category sends a transactional
-    email filed under it. A `:marketing` category sends a marketing email: PostHog refuses it
-    with `recipient_opted_out` when the recipient opted out of the category or of all
-    marketing. Its `:html` must link to `{{ unsubscribe_url }}` as an `href`, or its `:text`,
+    category. Leaving `:category` out does the same, except when code-send categories are
+    enabled for the project and `:template_key` names a template in a category: the email then
+    follows that transactional category, and PostHog refuses `transactional_category/0` with
+    `category_mismatch`.
+  - A `PostHog.Emails.MessageCategory` defines the category in code. When code-send categories
+    are enabled for the project and `:template_key` does not match an existing saved template,
+    PostHog creates it by key on the first send (or restores a deleted one), and uses its name
+    and description only then: a send never renames a category or changes its description. A
+    matching saved template keeps its own category, including when it has none (passing a
+    `MessageCategory` returns `category_mismatch`). When code-send categories are disabled for
+    the project, a `MessageCategory` returns `categories_not_enabled` (and an older server
+    rejects `:category` with HTTP 400). A `:transactional` category sends a transactional email
+    filed under it. A `:marketing` category sends a marketing email: PostHog refuses it with
+    `recipient_opted_out` when the recipient opted out of the category or of all marketing. Its
+    `:html` must include a clickable `<a href="{{ unsubscribe_url }}">` link, or its `:text`,
     when it has no `:html`, must contain `{{ unsubscribe_url }}`. PostHog replaces it with the
-    recipient's preferences link.
+    recipient's preferences link. Marketing code sends cannot have `:cc` or `:bcc`
+    (`copies_not_allowed`) and cannot carry `:attachments` (`workflow_can_wait`).
 
-  A send with `:template_id` takes no `:category`: a template made in PostHog is
-  transactional and sends in its own category.
+  A send with `:template_id` takes no `:category`: a template made in PostHog sends
+  transactional email only. PostHog checks transactional status first
+  (`template_not_transactional`), and refuses a template that was made transactional and is in a
+  marketing category with `marketing_template`.
   """
   @type category() :: String.t() | MessageCategory.t()
 
@@ -744,10 +779,12 @@ defmodule PostHog.Emails do
          description: description
        }),
        do:
-         is_binary(key) and type in [:marketing, :transactional] and is_binary(name) and
-           (is_nil(description) or is_binary(description))
+         valid_utf8?(key) and type in [:marketing, :transactional] and valid_utf8?(name) and
+           (is_nil(description) or valid_utf8?(description))
 
   defp valid_category?(_category), do: false
+
+  defp valid_utf8?(value), do: is_binary(value) and String.valid?(value)
 
   defp put_category(content, %{category: category}),
     do: Map.put(content, :category, category_body(category))
