@@ -992,13 +992,11 @@ defmodule PostHog.Emails do
   end
 
   defp named_host(rest) do
-    [authority | _rest] = String.split(rest, ["/", "?", "#"])
+    [authority | after_authority] = String.split(rest, ["/", "?", "#"], parts: 2)
 
-    cond do
-      String.contains?(authority, "@") -> authority |> String.split("@") |> List.last()
-      String.contains?(rest, "@") -> nil
-      true -> authority
-    end
+    if Enum.any?(after_authority, &String.contains?(&1, "@")),
+      do: nil,
+      else: authority |> String.split("@") |> List.last()
   end
 
   defp secret_key(name, operation) do

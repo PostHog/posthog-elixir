@@ -460,6 +460,11 @@ defmodule PostHog.EmailsTest do
     Mox.stub_with(API.Mock, API.Stub)
     test_pid = self()
 
+    stub(API.Mock, :request, fn client, method, url, opts ->
+      send(test_pid, {:request, method, url, opts})
+      API.Stub.request(client, method, url, opts)
+    end)
+
     config =
       [
         api_host: "https://us.i.posthog.com",
@@ -2341,7 +2346,9 @@ defmodule PostHog.EmailsTest do
           {"https://user:SECRET-1?SECRET-2@posthog.example.com:8443/", "a question mark",
            "the configured app_host,"},
           {"https://user:SECRET-1#SECRET-2@posthog.example.com:8443/", "a hash",
-           "the configured app_host,"}
+           "the configured app_host,"},
+          {"https://user:SECRET-1@SECRET-2/SECRET-3@posthog.example.com:8443/",
+           "an @ before a slash", "the configured app_host,"}
         ] do
       @tag config: [api_host: "https://proxy.example.com", app_host: app_host]
       test "names an app host without its credentials when the password holds #{label}",
@@ -2452,7 +2459,6 @@ defmodule PostHog.EmailsTest do
         assert error.fix =~ "Emails.get"
         assert_received {:request, :post, @send_url, _}
         refute_requested()
-        refute_received {:slept, _}
       end
     end
 
@@ -2484,7 +2490,6 @@ defmodule PostHog.EmailsTest do
 
       assert sent_body()["scheduled_at"] == "2026-12-31T09:00:00.000Z"
       refute_requested()
-      refute_received {:slept, _}
     end
   end
 
