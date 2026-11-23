@@ -2366,6 +2366,12 @@ defmodule PostHog.EmailsTest do
              "status" => "scheduled",
              "scheduled_at" => "2026-12-01T09:00:00.000001Z"
            }},
+          {"with the time less than a microsecond off",
+           %{
+             "message_id" => @message_id,
+             "status" => "scheduled",
+             "scheduled_at" => "2026-12-01T09:00:00.0000001Z"
+           }},
           {"with a time that is not a time",
            %{"message_id" => @message_id, "status" => "scheduled", "scheduled_at" => "soon"}},
           {"with the time in a malformed offset",
