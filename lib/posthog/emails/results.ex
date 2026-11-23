@@ -12,25 +12,33 @@ end
 
 defmodule PostHog.Emails.SendResult do
   @moduledoc """
-  The queued email. A result means PostHog queued the email, not that it was delivered.
+  The accepted email. A result means PostHog queued or scheduled the email, not that it was
+  delivered.
 
   ## Fields
 
-  - `:id` - the queued email's message ID. Read its status with `PostHog.Emails.get/2`.
+  - `:id` - the accepted email's message ID. Read its status with `PostHog.Emails.get/2`.
   - `:replayed` - `true` when PostHog had already accepted this idempotency key and returned the
     first send's result.
   - `:warnings` - the warnings PostHog returned with the email.
+  - `:status` - `"scheduled"` when the email waits for its `:scheduled_at`, `"queued"` when it
+    goes out now.
+  - `:scheduled_at` - when a scheduled email goes out, in UTC, to the millisecond. `nil` for an
+    email that goes out now, also when the `:scheduled_at` of the send had already passed when
+    PostHog accepted it.
   """
 
-  @typedoc "A queued email."
+  @typedoc "An accepted email."
   @type t() :: %__MODULE__{
           id: String.t(),
           replayed: boolean(),
-          warnings: [PostHog.Emails.Warning.t()]
+          warnings: [PostHog.Emails.Warning.t()],
+          status: String.t(),
+          scheduled_at: DateTime.t() | nil
         }
 
   @enforce_keys [:id]
-  defstruct [:id, replayed: false, warnings: []]
+  defstruct [:id, replayed: false, warnings: [], status: "queued", scheduled_at: nil]
 end
 
 defmodule PostHog.Emails.Status do
@@ -40,8 +48,10 @@ defmodule PostHog.Emails.Status do
   ## Fields
 
   - `:id` - the message ID that `send/2` returned.
-  - `:status` - one of `"queued"`, `"sent"`, `"failed"`, `"delivered"`, `"bounced"` or
-    `"complained"`. Later versions of PostHog can return values this list does not have yet.
+  - `:status` - one of `"scheduled"`, `"queued"`, `"sent"`, `"failed"`, `"delivered"`,
+    `"bounced"` or `"complained"`. Later versions of PostHog can return values this list does not
+    have yet.
+    - `"scheduled"`: the email waits for the `:scheduled_at` of its send.
     - `"queued"`: the email waits to go out.
     - `"sent"`: PostHog handed the email to the email provider.
     - `"failed"`: the email was not sent, and `:reason` says why.

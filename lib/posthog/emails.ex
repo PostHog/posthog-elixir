@@ -71,8 +71,42 @@ defmodule PostHog.Emails do
 
   ## What a result means
 
-  `{:ok, result}` means PostHog queued the email. Delivery happens later: read it with `get/2`,
-  or in the template's workflow in PostHog.
+  `{:ok, result}` means PostHog queued or scheduled the email, and its `:status` says which.
+  Delivery happens later: read it with `get/2`, or in the template's workflow in PostHog.
+
+  ## Scheduling
+
+  Pass `:scheduled_at` to send the email later, at most 7 days ahead, from either form:
+
+      PostHog.Emails.send(
+        to: "user@example.com",
+        template_id: "0190f6d2-7c1e-7b3a-9f5e-1c2d3e4f5a6b",
+        distinct_id: "user_123",
+        scheduled_at: DateTime.add(DateTime.utc_now(), 1, :day)
+      )
+
+  `:scheduled_at` is a `DateTime`, or an ISO 8601 string with a UTC offset, such as
+  `"2026-12-01T09:00:00+02:00"`. A `NaiveDateTime` or a string without an offset returns
+  `invalid_scheduled_at` before any request, because the email could go out at the wrong time.
+  The SDK rounds the time up to the next millisecond, so the email never goes out early, and
+  sends that time on every retry.
+
+  The result's `:status` is `"scheduled"` and its `:scheduled_at` is the time PostHog
+  confirmed. A time that has already passed sends the email now: the result's `:status` is
+  `"queued"` and its `:scheduled_at` is `nil`. When PostHog accepts the email without confirming
+  the time, the send returns `schedule_not_confirmed` with the email's `:message_id`. Read its
+  status with `get/2` before you send it again. `get/2` reads `"scheduled"` until the email goes
+  out, and works for 30 days after the send, not after the scheduled time.
+
+  Only PostHog Cloud schedules emails. A send with `:scheduled_at` to any other app host, such
+  as a reverse proxy, a custom domain or a self-hosted PostHog, returns
+  `scheduling_requires_cloud` before any request: a PostHog that doesn't schedule emails would
+  send it at once.
+
+  Compute the time once and pass the same time on your own retries: the idempotency key covers
+  it, so the same key with another time returns `idempotency_key_reused`. To stop scheduled emails
+  before they go out, disable the email's workflow in PostHog until they reach a final status.
+  That refuses every new send of it meanwhile.
 
   ## Where requests go
 
@@ -139,6 +173,9 @@ defmodule PostHog.Emails do
 
   - `missing_secret_key`: the config has no `:secret_key`.
   - `missing_app_host`: the `:api_host` is not PostHog Cloud. Set `:app_host`.
+  - `scheduling_requires_cloud`: a send with `:scheduled_at` to a host that is not PostHog Cloud.
+  - `schedule_not_confirmed`: PostHog accepted a send with `:scheduled_at` without confirming its
+    time. The error's `:message_id` names the email.
   - `authentication_failed` (401) or `permission_denied` (403): the key is wrong, or it lacks
     `transactional_email:write`.
   - `not_found` (404): the template ID is wrong, or transactional email is not enabled for the
@@ -196,7 +233,7 @@ defmodule PostHog.Emails do
   @max_storage_answer_bytes 16_384
   @log_metadata [posthog_skip_capture: true]
 
-  @shared_fields [:to, :distinct_id, :idempotency_key, :max_retries]
+  @shared_fields [:to, :distinct_id, :idempotency_key, :max_retries, :scheduled_at]
   @template_fields @shared_fields ++ [:template_id, :template_data]
   @code_fields @shared_fields ++
                  [
@@ -229,6 +266,8 @@ defmodule PostHog.Emails do
     `idempotency_key_reused`.
   - `:max_retries` - overrides the config's `:email_request_max_retries` for this send. `0`
     turns retries off.
+  - `:scheduled_at` - when to send the email, at most 7 days ahead, on PostHog Cloud only: a
+    `DateTime` or an ISO 8601 string with a UTC offset. See "Scheduling" in `PostHog.Emails`.
 
   A template made in PostHog takes:
 
@@ -282,6 +321,7 @@ defmodule PostHog.Emails do
           | {:distinct_id, String.t() | nil}
           | {:idempotency_key, String.t() | nil}
           | {:max_retries, non_neg_integer() | nil}
+          | {:scheduled_at, DateTime.t() | String.t() | nil}
           | {:template_id, String.t()}
           | {:template_data, map() | nil}
           | {:template_key, String.t()}
@@ -321,9 +361,10 @@ defmodule PostHog.Emails do
             }
 
   @doc """
-  Queues one email, from a template made in PostHog or from content your code rendered.
+  Queues or schedules one email, from a template made in PostHog or from content your code
+  rendered.
 
-  Returns `{:ok, %PostHog.Emails.SendResult{}}` once PostHog queued the email, or
+  Returns `{:ok, %PostHog.Emails.SendResult{}}` once PostHog accepted the email, or
   `{:error, %PostHog.Emails.Error{}}`. See `t:send_option/0` for the options. `name` is the
   PostHog instance to send through, `PostHog` by default.
 
@@ -348,6 +389,7 @@ defmodule PostHog.Emails do
   def send(name \\ PostHog, options) do
     with {:ok, prepared} <- prepare_send(options),
          {:ok, connection} <- connect(name, :send),
+         :ok <- check_schedulable(connection, prepared),
          :ok <- upload(connection, prepared),
          {:ok, result} <- deliver(connection, prepared) do
       log_warnings(result)
@@ -396,7 +438,7 @@ defmodule PostHog.Emails do
     with_retries(connection, prepared.max_retries || connection.max_retries, fn ->
       connection
       |> request(:post, @send_path, headers, prepared.body)
-      |> parse_send_reply()
+      |> parse_send_reply(prepared.scheduled_at)
     end)
   end
 
@@ -494,10 +536,20 @@ defmodule PostHog.Emails do
          {:ok, files} <- attachments(options),
          {:ok, idempotency_key} <- idempotency_key(options),
          {:ok, max_retries} <- max_retries(options),
+         {:ok, scheduled_at} <- scheduled_at(options),
          {:ok, body} <-
-           encode(put_if_any(content, :attachments, Enum.map(files, & &1.reference)), options) do
+           content
+           |> put_if_any(:attachments, Enum.map(files, & &1.reference))
+           |> put_scheduled_at(scheduled_at)
+           |> encode(options) do
       {:ok,
-       %{body: body, files: files, idempotency_key: idempotency_key, max_retries: max_retries}}
+       %{
+         body: body,
+         files: files,
+         idempotency_key: idempotency_key,
+         max_retries: max_retries,
+         scheduled_at: scheduled_at
+       }}
     end
   end
 
@@ -735,6 +787,57 @@ defmodule PostHog.Emails do
 
   defp max_retries(_options), do: {:ok, nil}
 
+  defp scheduled_at(%{scheduled_at: %DateTime{} = at}),
+    do: ceil_to_millisecond(DateTime.to_unix(at, :microsecond), false)
+
+  defp scheduled_at(%{scheduled_at: at}) when is_binary(at) do
+    case DateTime.from_iso8601(at) do
+      {:ok, parsed, _offset} ->
+        ceil_to_millisecond(DateTime.to_unix(parsed, :microsecond), below_microsecond?(at))
+
+      {:error, _reason} ->
+        invalid_scheduled_at()
+    end
+  end
+
+  defp scheduled_at(%{scheduled_at: _at}), do: invalid_scheduled_at()
+  defp scheduled_at(_options), do: {:ok, nil}
+
+  defp invalid_scheduled_at,
+    do:
+      invalid(
+        "invalid_scheduled_at",
+        "scheduled_at must be a DateTime or an ISO 8601 string with a UTC offset, such as \"2026-12-01T09:00:00Z\" or \"2026-12-01T09:00:00+02:00\", so the email can't go out at the wrong time.",
+        "scheduled_at"
+      )
+
+  # DateTime keeps microseconds and drops finer digits, which would make the email go out early.
+  defp below_microsecond?(at) do
+    case Regex.run(~r/:\d{2}[.,]\d{6}(\d+)/, at) do
+      [_match, digits] -> String.trim(digits, "0") != ""
+      nil -> false
+    end
+  end
+
+  defp ceil_to_millisecond(microseconds, below_microsecond?) do
+    milliseconds = Integer.floor_div(microseconds, 1000)
+
+    milliseconds =
+      if Integer.mod(microseconds, 1000) > 0 or below_microsecond?,
+        do: milliseconds + 1,
+        else: milliseconds
+
+    case DateTime.from_unix(milliseconds, :millisecond) do
+      {:ok, at} -> {:ok, at}
+      {:error, _reason} -> invalid_scheduled_at()
+    end
+  end
+
+  defp put_scheduled_at(content, nil), do: content
+
+  defp put_scheduled_at(content, scheduled_at),
+    do: Map.put(content, :scheduled_at, DateTime.to_iso8601(scheduled_at))
+
   defp encode(content, options) do
     case Jason.encode(content) do
       {:ok, body} ->
@@ -845,6 +948,23 @@ defmodule PostHog.Emails do
         end
     end
   end
+
+  # A PostHog that doesn't schedule emails, such as an older self-hosted one, would drop
+  # scheduled_at and send at once, and no answer can take the email back.
+  defp check_schedulable(%{app_host: app_host}, %{scheduled_at: %DateTime{}})
+       when app_host not in [@us_app_host, @eu_app_host] do
+    {:error,
+     Error.new(
+       "scheduling_requires_cloud",
+       "Scheduled sends work only on PostHog Cloud (#{@us_app_host} or #{@eu_app_host}), and this client sends email to #{app_host}, so no email was sent.",
+       field: "scheduled_at",
+       why: "A PostHog that doesn't schedule emails would send this one at once.",
+       fix:
+         "Send without scheduled_at, or set app_host to PostHog Cloud's app host. A reverse proxy or custom domain can't schedule emails yet."
+     )}
+  end
+
+  defp check_schedulable(_connection, _prepared), do: :ok
 
   defp secret_key(name, operation) do
     case PostHog.Registry.secret_key(name) do
@@ -1094,23 +1214,64 @@ defmodule PostHog.Emails do
 
   # Replies
 
-  defp parse_send_reply({:ok, status, fields, _retry_after}) when status in 200..299 do
+  defp parse_send_reply({:ok, status, fields, _retry_after}, scheduled_at)
+       when status in 200..299 do
     case text(fields["message_id"]) do
       nil ->
         {:error,
          Error.new("api_error", "PostHog answered without a message ID.", status_code: status)}
 
       id ->
-        {:ok,
-         %SendResult{
-           id: id,
-           replayed: fields["replayed"] == true,
-           warnings: warnings(fields["warnings"])
-         }}
+        %SendResult{
+          id: id,
+          replayed: fields["replayed"] == true,
+          warnings: warnings(fields["warnings"])
+        }
+        |> confirm_schedule(fields, scheduled_at, status)
     end
   end
 
-  defp parse_send_reply(reply), do: reply_error(reply)
+  defp parse_send_reply(reply, _scheduled_at), do: reply_error(reply)
+
+  # An accepted email is never retried, so an answer that doesn't confirm the time is an error
+  # that names the email, never a send without it.
+  defp confirm_schedule(result, _fields, nil, _status), do: {:ok, result}
+
+  defp confirm_schedule(result, fields, scheduled_at, status) do
+    cond do
+      fields["status"] == "scheduled" and same_instant?(fields["scheduled_at"], scheduled_at) ->
+        {:ok, %{result | status: "scheduled", scheduled_at: scheduled_at}}
+
+      # The time had passed when PostHog accepted the email, so it goes out now.
+      fields["status"] == "queued" and Map.has_key?(fields, "scheduled_at") and
+          is_nil(fields["scheduled_at"]) ->
+        {:ok, result}
+
+      true ->
+        {:error, schedule_not_confirmed(result.id, status)}
+    end
+  end
+
+  defp same_instant?(answer, scheduled_at) when is_binary(answer) do
+    case DateTime.from_iso8601(answer) do
+      {:ok, at, _offset} -> DateTime.compare(at, scheduled_at) == :eq
+      {:error, _reason} -> false
+    end
+  end
+
+  defp same_instant?(_answer, _scheduled_at), do: false
+
+  defp schedule_not_confirmed(message_id, status) do
+    Error.new(
+      "schedule_not_confirmed",
+      "PostHog accepted email #{message_id} without confirming its scheduled_at, so it may go out at another time.",
+      status_code: status,
+      field: "scheduled_at",
+      message_id: message_id,
+      fix:
+        "Read the email's status with PostHog.Emails.get/2 before you send it again: a send with another idempotency_key sends a second email."
+    )
+  end
 
   defp parse_uploads_reply({:ok, status, fields, _retry_after}, files) when status in 200..299 do
     case Attachments.uploads(fields, files) do
