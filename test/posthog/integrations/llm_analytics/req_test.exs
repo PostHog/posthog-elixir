@@ -1201,5 +1201,89 @@ defmodule PostHog.Integrations.LLMAnalytics.ReqTest do
       assert properties[:"$ai_cache_read_input_tokens"] == 64
       assert properties[:"$ai_cache_reporting_exclusive"] == false
     end
+
+    test "omits $ai_cache_reporting_exclusive when cache tokens exceed input tokens", %{req: req} do
+      Req.Test.expect(@mock_module, fn conn ->
+        Req.Test.json(conn, %{
+          "choices" => [],
+          "model" => "xiaomi/mimo-v2.5",
+          "usage" => %{
+            "completion_tokens" => 9,
+            "prompt_tokens" => 149,
+            "prompt_tokens_details" => %{"cached_tokens" => 23_104}
+          }
+        })
+      end)
+
+      Req.post!(req, url: "https://openrouter.ai/api/v1/chat/completions", json: %{messages: []})
+
+      assert [%{properties: properties}] = all_captured(@supervisor_name)
+      assert properties[:"$ai_input_tokens"] == 149
+      assert properties[:"$ai_cache_read_input_tokens"] == 23_104
+      refute Map.has_key?(properties, :"$ai_cache_reporting_exclusive")
+    end
+
+    test "preserves caller-supplied $ai_cache_reporting_exclusive from span", %{req: req} do
+      Req.Test.expect(@mock_module, fn conn ->
+        Req.Test.json(conn, %{
+          "choices" => [],
+          "model" => "custom-model",
+          "usage" => %{
+            "completion_tokens" => 9,
+            "prompt_tokens" => 100,
+            "prompt_tokens_details" => %{"cached_tokens" => 64}
+          }
+        })
+      end)
+
+      LLMAnalytics.start_span(@supervisor_name, %{"$ai_cache_reporting_exclusive": true})
+      Req.post!(req, url: "https://openrouter.ai/api/v1/chat/completions", json: %{messages: []})
+
+      assert [%{properties: properties}] = all_captured(@supervisor_name)
+      assert properties[:"$ai_cache_reporting_exclusive"] == true
+    end
+
+    test "preserves caller-supplied $ai_cache_reporting_exclusive from context", %{req: req} do
+      Req.Test.expect(@mock_module, fn conn ->
+        Req.Test.json(conn, %{
+          "choices" => [],
+          "model" => "custom-model",
+          "usage" => %{
+            "completion_tokens" => 9,
+            "prompt_tokens" => 100,
+            "prompt_tokens_details" => %{"cached_tokens" => 64}
+          }
+        })
+      end)
+
+      PostHog.set_context(@supervisor_name, %{"$ai_cache_reporting_exclusive": true})
+      Req.post!(req, url: "https://openrouter.ai/api/v1/chat/completions", json: %{messages: []})
+
+      assert [%{properties: properties}] = all_captured(@supervisor_name)
+      assert properties[:"$ai_cache_reporting_exclusive"] == true
+    end
+
+    test "preserves caller-supplied string-key $ai_cache_reporting_exclusive from span", %{
+      req: req
+    } do
+      Req.Test.expect(@mock_module, fn conn ->
+        Req.Test.json(conn, %{
+          "choices" => [],
+          "model" => "custom-model",
+          "usage" => %{
+            "completion_tokens" => 9,
+            "prompt_tokens" => 100,
+            "prompt_tokens_details" => %{"cached_tokens" => 64}
+          }
+        })
+      end)
+
+      LLMAnalytics.start_span(@supervisor_name, %{"$ai_cache_reporting_exclusive" => true})
+      Req.post!(req, url: "https://openrouter.ai/api/v1/chat/completions", json: %{messages: []})
+
+      assert [%{properties: properties}] = all_captured(@supervisor_name)
+      assert properties["$ai_cache_reporting_exclusive"] == true
+      refute Map.has_key?(properties, :"$ai_cache_reporting_exclusive")
+    end
   end
 end

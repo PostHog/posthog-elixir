@@ -163,15 +163,28 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
   end
 
   defp capture_generation({request, response_or_exception}) do
+    supervisor = request.options[:posthog_supervisor] || PostHog
     properties = Req.Request.get_private(request, @properties_key, %{})
+    span = LLMAnalytics.pop_span(supervisor)
+    context = PostHog.get_event_context(supervisor, "$ai_generation")
 
-    LLMAnalytics.capture_current_span(
-      request.options[:posthog_supervisor] || PostHog,
-      "$ai_generation",
-      properties
-    )
+    # A caller-supplied `$ai_cache_reporting_exclusive` (span or context) wins
+    # over the value inferred from the response.
+    properties =
+      if has_cache_exclusive_override?(span) or has_cache_exclusive_override?(context) do
+        Map.delete(properties, :"$ai_cache_reporting_exclusive")
+      else
+        properties
+      end
+
+    PostHog.capture(supervisor, "$ai_generation", Map.merge(span, properties))
 
     {request, response_or_exception}
+  end
+
+  defp has_cache_exclusive_override?(map) do
+    Map.has_key?(map, :"$ai_cache_reporting_exclusive") or
+      Map.has_key?(map, "$ai_cache_reporting_exclusive")
   end
 
   defp request_url_properties(
@@ -379,10 +392,17 @@ defmodule PostHog.Integrations.LLMAnalytics.Req do
     |> put_cache_read(details["cached_tokens"])
     |> put_cache_creation(details["cache_write_tokens"])
     |> then(fn props ->
-      if Map.has_key?(props, :"$ai_cache_read_input_tokens") or
-           Map.has_key?(props, :"$ai_cache_creation_input_tokens"),
-         do: Map.put(props, :"$ai_cache_reporting_exclusive", false),
-         else: props
+      cache_total =
+        Map.get(props, :"$ai_cache_read_input_tokens", 0) +
+          Map.get(props, :"$ai_cache_creation_input_tokens", 0)
+
+      # Only flag inclusive reporting when input tokens can actually contain
+      # the cache tokens; otherwise let the backend infer exclusivity.
+      input_tokens = Map.get(props, :"$ai_input_tokens")
+
+      if cache_total > 0 and is_integer(input_tokens) and input_tokens >= cache_total,
+        do: Map.put(props, :"$ai_cache_reporting_exclusive", false),
+        else: props
     end)
   end
 
