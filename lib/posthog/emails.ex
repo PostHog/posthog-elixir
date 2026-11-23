@@ -85,9 +85,11 @@ defmodule PostHog.Emails do
         scheduled_at: DateTime.add(DateTime.utc_now(), 1, :day)
       )
 
-  `:scheduled_at` is a `DateTime`, or an ISO 8601 string with a UTC offset, such as
-  `"2026-12-01T09:00:00+02:00"`. A `NaiveDateTime` or a string without an offset returns
-  `invalid_scheduled_at` before any request, because the email could go out at the wrong time.
+  `:scheduled_at` is a `DateTime`, or an ISO 8601 string in the form PostHog takes:
+  `YYYY-MM-DDThh:mm`, optional seconds and their fraction, and a UTC offset, such as
+  `"2026-12-01T09:00:00+02:00"` or `"2026-12-01T07:00Z"`. A `NaiveDateTime`, a string without an
+  offset, or any other form returns `invalid_scheduled_at` before any request, because the email
+  could go out at the wrong time.
   The SDK rounds a time finer than a millisecond up to the next millisecond, so the email never
   goes out early, and sends that time on every retry.
 
@@ -234,6 +236,7 @@ defmodule PostHog.Emails do
   @log_metadata [posthog_skip_capture: true]
 
   @shared_fields [:to, :distinct_id, :idempotency_key, :max_retries, :scheduled_at]
+  @scheduled_at_shape ~r/\A(?<minute>\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(?<seconds>:\d{2}(?<fraction>\.\d+)?)?(?<offset>Z|[+-]\d{2}:[0-5]\d)\z/
   @template_fields @shared_fields ++ [:template_id, :template_data]
   @code_fields @shared_fields ++
                  [
@@ -791,12 +794,14 @@ defmodule PostHog.Emails do
     do: ceil_to_millisecond(DateTime.to_unix(at, :microsecond), false)
 
   defp scheduled_at(%{scheduled_at: at}) when is_binary(at) do
-    case DateTime.from_iso8601(at) do
-      {:ok, parsed, _offset} ->
-        ceil_to_millisecond(DateTime.to_unix(parsed, :microsecond), digits_past_microseconds?(at))
-
-      {:error, _reason} ->
-        invalid_scheduled_at()
+    with %{} = parts <- Regex.named_captures(@scheduled_at_shape, at),
+         {:ok, parsed, _offset} <- DateTime.from_iso8601(with_seconds(parts)) do
+      ceil_to_millisecond(
+        DateTime.to_unix(parsed, :microsecond),
+        digits_past_microseconds?(parts)
+      )
+    else
+      _invalid -> invalid_scheduled_at()
     end
   end
 
@@ -807,16 +812,18 @@ defmodule PostHog.Emails do
     do:
       invalid(
         "invalid_scheduled_at",
-        "scheduled_at must be a DateTime or an ISO 8601 string with a UTC offset, such as \"2026-12-01T09:00:00Z\" or \"2026-12-01T09:00:00+02:00\", so the email can't go out at the wrong time.",
+        "scheduled_at must be a DateTime or an ISO 8601 string with a UTC offset, such as \"2026-12-01T09:00:00Z\" or \"2026-12-01T09:00:00+02:00\", so the email can't go out at the wrong time. Seconds and their fraction are optional.",
         "scheduled_at"
       )
 
-  defp digits_past_microseconds?(at) do
-    case Regex.run(~r/:\d{2}[.,]\d{6}(\d+)/, at) do
-      [_match, digits] -> String.trim(digits, "0") != ""
-      nil -> false
-    end
-  end
+  defp with_seconds(%{"minute" => minute, "seconds" => "", "offset" => offset}),
+    do: minute <> ":00" <> offset
+
+  defp with_seconds(%{"minute" => minute, "seconds" => seconds, "offset" => offset}),
+    do: minute <> seconds <> offset
+
+  defp digits_past_microseconds?(%{"fraction" => fraction}),
+    do: fraction |> String.slice(7..-1//1) |> String.trim("0") != ""
 
   defp ceil_to_millisecond(microseconds, digits_past_microseconds?) do
     milliseconds = Integer.floor_div(microseconds, 1000)
@@ -953,7 +960,7 @@ defmodule PostHog.Emails do
     {:error,
      Error.new(
        "scheduling_requires_cloud",
-       "Scheduled sends work only on PostHog Cloud (#{@us_app_host} or #{@eu_app_host}), and this client sends email to #{app_host}, so no email was sent.",
+       "Scheduled sends work only on PostHog Cloud (#{@us_app_host} or #{@eu_app_host}), and this client sends email to #{origin(app_host)}, so no email was sent.",
        field: "scheduled_at",
        why: "A PostHog that doesn't schedule emails would send this one at once.",
        fix:
@@ -962,6 +969,12 @@ defmodule PostHog.Emails do
   end
 
   defp check_schedulable(_connection, _prepared), do: :ok
+
+  defp origin(url) do
+    uri = URI.parse(url)
+    port = if uri.port == URI.default_port(uri.scheme), do: "", else: ":#{uri.port}"
+    "#{uri.scheme}://#{uri.host}#{port}"
+  end
 
   defp secret_key(name, operation) do
     case PostHog.Registry.secret_key(name) do

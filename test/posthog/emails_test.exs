@@ -2160,7 +2160,9 @@ defmodule PostHog.EmailsTest do
           {"2026-12-01T09:00:00.1230000001Z", "2026-12-01T09:00:00.124Z"},
           {"2026-12-01T09:00:00.123000000Z", "2026-12-01T09:00:00.123Z"},
           {"2026-12-01T09:00:00Z", "2026-12-01T09:00:00.000Z"},
-          {"2026-12-31T23:59:59.9999-01:00", "2027-01-01T01:00:00.000Z"}
+          {"2026-12-31T23:59:59.9999-01:00", "2027-01-01T01:00:00.000Z"},
+          {"2026-11-24T09:00Z", "2026-11-24T09:00:00.000Z"},
+          {"2026-11-24T10:30+01:30", "2026-11-24T09:00:00.000Z"}
         ] do
       test "sends #{given} as #{sent}", %{name: name} do
         expect_reply(scheduled(unquote(sent)))
@@ -2199,6 +2201,11 @@ defmodule PostHog.EmailsTest do
           {"a NaiveDateTime", quote(do: ~N[2026-12-01 09:00:00])},
           {"a string without an offset", "2026-12-01T09:00:00"},
           {"a string that is not a time", "tomorrow"},
+          {"an offset with a malformed minute", "2026-12-01T09:00:00-05:-5"},
+          {"an offset past 59 minutes", "2026-12-01T09:00:00+01:60"},
+          {"the basic ISO 8601 form", "20261201T090000+0200"},
+          {"a space for the T", "2026-12-01 09:00:00Z"},
+          {"a lowercase z", "2026-12-01T09:00:00z"},
           {"a Unix time", 1_796_115_600},
           {"a Date", quote(do: ~D[2026-12-01])},
           {"a DateTime past the last time Unix time can hold",
@@ -2266,6 +2273,8 @@ defmodule PostHog.EmailsTest do
     for {label, config} <- [
           {"a self-hosted app host",
            [api_host: "https://proxy.example.com", app_host: "https://posthog.example.com"]},
+          {"an app host with a port",
+           [api_host: "https://proxy.example.com", app_host: "https://posthog.example.com:8443"]},
           {"a plain-HTTP app host", [app_host: "http://localhost:8010"]},
           {"a proxy in front of PostHog Cloud",
            [api_host: "https://proxy.example.com", app_host: "https://ph.example.com"]}
@@ -2291,6 +2300,20 @@ defmodule PostHog.EmailsTest do
 
         refute_requested()
       end
+    end
+
+    @tag config: [
+           api_host: "https://proxy.example.com",
+           app_host: "https://user:proxy-secret@posthog.example.com:8443/"
+         ]
+    test "names an app host without the credentials in its URL", %{name: name} do
+      assert {:error, %Error{code: "scheduling_requires_cloud"} = error} =
+               Emails.send(name, @template_send ++ [scheduled_at: "2026-12-01T09:00:00Z"])
+
+      assert error.message =~ "https://posthog.example.com:8443,"
+      refute inspect(error) =~ "proxy-secret"
+      refute inspect(error) =~ "user:"
+      refute_requested()
     end
 
     @tag config: [api_host: "https://proxy.example.com", app_host: "https://posthog.example.com"]
@@ -2362,6 +2385,8 @@ defmodule PostHog.EmailsTest do
 
         assert error.message =~ @message_id
         assert error.fix =~ "Emails.get"
+        assert_received {:request, :post, @send_url, _}
+        refute_requested()
         refute_received {:slept, _}
       end
     end
@@ -2370,18 +2395,23 @@ defmodule PostHog.EmailsTest do
       expect_reply(
         refused(400, %{
           "type" => "validation_error",
-          "code" => "invalid_input",
-          "detail" => "scheduled_at must be at most 7 days ahead.",
-          "attr" => "scheduled_at"
+          "code" => "scheduled_too_far",
+          "detail" =>
+            "`scheduled_at` is more than 7 days away, so PostHog didn't send the email.",
+          "attr" => "scheduled_at",
+          "why" => "PostHog holds a scheduled email for at most 7 days after the request.",
+          "fix" => "Pick a time within 7 days, or send the email closer to the time."
         })
       )
 
       assert {:error,
               %Error{
-                code: "invalid_input",
+                code: "scheduled_too_far",
                 field: "scheduled_at",
                 status_code: 400,
                 name: :validation_error,
+                why: "PostHog holds a scheduled email for at most 7 days after the request.",
+                fix: "Pick a time within 7 days, or send the email closer to the time.",
                 message_id: nil
               }} = Emails.send(name, @code_form ++ [scheduled_at: "2026-12-31T09:00:00Z"])
 
