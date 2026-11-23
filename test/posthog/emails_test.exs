@@ -2305,19 +2305,26 @@ defmodule PostHog.EmailsTest do
       end
     end
 
-    @tag config: [
-           api_host: "https://proxy.example.com",
-           app_host: "https://user:proxy-secret@vault@posthog.example.com:8443/"
-         ]
-    test "names an app host without the credentials in its URL", %{name: name} do
-      assert {:error, %Error{code: "scheduling_requires_cloud"} = error} =
-               Emails.send(name, @template_send ++ [scheduled_at: "2026-12-01T09:00:00Z"])
+    for {password, label} <- [
+          {"SECRET-1@SECRET-2", "an @"},
+          {"SECRET-1/SECRET-2", "a slash"},
+          {"SECRET-1?SECRET-2", "a question mark"},
+          {"SECRET-1#SECRET-2", "a hash"}
+        ] do
+      @tag config: [
+             api_host: "https://proxy.example.com",
+             app_host: "https://user:#{password}@posthog.example.com:8443/"
+           ]
+      test "names an app host without its credentials when the password holds #{label}",
+           %{name: name} do
+        assert {:error, %Error{code: "scheduling_requires_cloud"} = error} =
+                 Emails.send(name, @template_send ++ [scheduled_at: "2026-12-01T09:00:00Z"])
 
-      assert error.message =~ "https://posthog.example.com:8443,"
-      refute inspect(error) =~ "proxy-secret"
-      refute inspect(error) =~ "vault"
-      refute inspect(error) =~ "user:"
-      refute_requested()
+        assert error.message =~ "https://posthog.example.com:8443,"
+        refute inspect(error) =~ "SECRET"
+        refute inspect(error) =~ "user"
+        refute_requested()
+      end
     end
 
     @tag config: [api_host: "https://proxy.example.com", app_host: "https://posthog.example.com"]

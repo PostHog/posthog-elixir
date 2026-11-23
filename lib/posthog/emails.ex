@@ -236,6 +236,7 @@ defmodule PostHog.Emails do
   @log_metadata [posthog_skip_capture: true]
 
   @shared_fields [:to, :distinct_id, :idempotency_key, :max_retries, :scheduled_at]
+  @host_shape ~r/\A(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::\d+)?\z/
   @scheduled_at_shape ~r/\A(?<minute>\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(?<seconds>:\d{2}(?<fraction>\.\d+)?)?(?<offset>Z|[+-]\d{2}:[0-5]\d)\z/
   @template_fields @shared_fields ++ [:template_id, :template_data]
   @code_fields @shared_fields ++
@@ -981,9 +982,13 @@ defmodule PostHog.Emails do
   defp check_schedulable(_connection, _prepared), do: :ok
 
   defp origin(url) do
-    case Regex.run(~r{\A([^:/?#]+://)(?:[^/?#]*@)?([^/?#]*)}, url) do
-      [_match, scheme, authority] -> scheme <> authority
-      nil -> "the configured app_host"
+    with [_match, scheme, rest] <- Regex.run(~r{\A([A-Za-z][A-Za-z0-9+.-]*://)(.*)\z}s, url),
+         authority =
+           rest |> String.split("@") |> List.last() |> String.split(["/", "?", "#"]) |> hd(),
+         true <- Regex.match?(@host_shape, authority) do
+      scheme <> authority
+    else
+      _unnamed -> "the configured app_host"
     end
   end
 
