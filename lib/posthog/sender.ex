@@ -116,6 +116,12 @@ defmodule PostHog.Sender do
 
   def handle_info({:timeout, _ref, :batch_time_reached}, state), do: {:noreply, state}
 
+  # Exits from the parent are handled by GenServer itself. Since we trap exits, links to
+  # other processes arrive here and we mirror the default non-trapping behaviour, which
+  # still runs terminate/2 to flush queued events.
+  def handle_info({:EXIT, _pid, :normal}, state), do: {:noreply, state}
+  def handle_info({:EXIT, _pid, reason}, state), do: {:stop, reason, state}
+
   @impl GenServer
   def handle_continue(:send_batch, state) do
     # Before we initiate an HTTP request that might block the process
