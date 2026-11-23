@@ -2162,7 +2162,8 @@ defmodule PostHog.EmailsTest do
           {"2026-12-01T09:00:00Z", "2026-12-01T09:00:00.000Z"},
           {"2026-12-31T23:59:59.9999-01:00", "2027-01-01T01:00:00.000Z"},
           {"2026-11-24T09:00Z", "2026-11-24T09:00:00.000Z"},
-          {"2026-11-24T10:30+01:30", "2026-11-24T09:00:00.000Z"}
+          {"2026-11-24T10:30+01:30", "2026-11-24T09:00:00.000Z"},
+          {"2026-11-24T09:00:00-00:00", "2026-11-24T09:00:00.000Z"}
         ] do
       test "sends #{given} as #{sent}", %{name: name} do
         expect_reply(scheduled(unquote(sent)))
@@ -2275,6 +2276,8 @@ defmodule PostHog.EmailsTest do
            [api_host: "https://proxy.example.com", app_host: "https://posthog.example.com"]},
           {"an app host with a port",
            [api_host: "https://proxy.example.com", app_host: "https://posthog.example.com:8443"]},
+          {"PostHog Cloud with its default port", [app_host: "https://us.posthog.com:443"]},
+          {"an IPv6 app host", [app_host: "http://[::1]:8010"]},
           {"a plain-HTTP app host", [app_host: "http://localhost:8010"]},
           {"a proxy in front of PostHog Cloud",
            [api_host: "https://proxy.example.com", app_host: "https://ph.example.com"]}
@@ -2304,7 +2307,7 @@ defmodule PostHog.EmailsTest do
 
     @tag config: [
            api_host: "https://proxy.example.com",
-           app_host: "https://user:proxy-secret@posthog.example.com:8443/"
+           app_host: "https://user:proxy-secret@vault@posthog.example.com:8443/"
          ]
     test "names an app host without the credentials in its URL", %{name: name} do
       assert {:error, %Error{code: "scheduling_requires_cloud"} = error} =
@@ -2312,6 +2315,7 @@ defmodule PostHog.EmailsTest do
 
       assert error.message =~ "https://posthog.example.com:8443,"
       refute inspect(error) =~ "proxy-secret"
+      refute inspect(error) =~ "vault"
       refute inspect(error) =~ "user:"
       refute_requested()
     end
@@ -2357,6 +2361,12 @@ defmodule PostHog.EmailsTest do
            }},
           {"with a time that is not a time",
            %{"message_id" => @message_id, "status" => "scheduled", "scheduled_at" => "soon"}},
+          {"with the time in a malformed offset",
+           %{
+             "message_id" => @message_id,
+             "status" => "scheduled",
+             "scheduled_at" => "2026-12-01T04:05:00-05:-5"
+           }},
           {"scheduled without a time",
            %{"message_id" => @message_id, "status" => "scheduled", "scheduled_at" => nil}},
           {"queued with a time",

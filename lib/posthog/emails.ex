@@ -794,14 +794,12 @@ defmodule PostHog.Emails do
     do: ceil_to_millisecond(DateTime.to_unix(at, :microsecond), false)
 
   defp scheduled_at(%{scheduled_at: at}) when is_binary(at) do
-    with %{} = parts <- Regex.named_captures(@scheduled_at_shape, at),
-         {:ok, parsed, _offset} <- DateTime.from_iso8601(with_seconds(parts)) do
-      ceil_to_millisecond(
-        DateTime.to_unix(parsed, :microsecond),
-        digits_past_microseconds?(parts)
-      )
-    else
-      _invalid -> invalid_scheduled_at()
+    case parse_time(at) do
+      {:ok, microseconds, digits_past_microseconds?} ->
+        ceil_to_millisecond(microseconds, digits_past_microseconds?)
+
+      :error ->
+        invalid_scheduled_at()
     end
   end
 
@@ -816,11 +814,23 @@ defmodule PostHog.Emails do
         "scheduled_at"
       )
 
-  defp with_seconds(%{"minute" => minute, "seconds" => "", "offset" => offset}),
-    do: minute <> ":00" <> offset
+  defp parse_time(text) do
+    with %{} = parts <- Regex.named_captures(@scheduled_at_shape, text),
+         {:ok, parsed, _offset} <- DateTime.from_iso8601(extended(parts)) do
+      {:ok, DateTime.to_unix(parsed, :microsecond), digits_past_microseconds?(parts)}
+    else
+      _invalid -> :error
+    end
+  end
 
-  defp with_seconds(%{"minute" => minute, "seconds" => seconds, "offset" => offset}),
-    do: minute <> seconds <> offset
+  defp extended(%{"minute" => minute, "seconds" => seconds, "offset" => offset}),
+    do: minute <> with_seconds(seconds) <> utc_offset(offset)
+
+  defp with_seconds(""), do: ":00"
+  defp with_seconds(seconds), do: seconds
+
+  defp utc_offset("-00:00"), do: "Z"
+  defp utc_offset(offset), do: offset
 
   defp digits_past_microseconds?(%{"fraction" => fraction}),
     do: fraction |> String.slice(7..-1//1) |> String.trim("0") != ""
@@ -971,9 +981,10 @@ defmodule PostHog.Emails do
   defp check_schedulable(_connection, _prepared), do: :ok
 
   defp origin(url) do
-    uri = URI.parse(url)
-    port = if uri.port == URI.default_port(uri.scheme), do: "", else: ":#{uri.port}"
-    "#{uri.scheme}://#{uri.host}#{port}"
+    case Regex.run(~r{\A([^:/?#]+://)(?:[^/?#]*@)?([^/?#]*)}, url) do
+      [_match, scheme, authority] -> scheme <> authority
+      nil -> "the configured app_host"
+    end
   end
 
   defp secret_key(name, operation) do
@@ -1265,9 +1276,9 @@ defmodule PostHog.Emails do
     do: fields["status"] == "queued" and Map.fetch(fields, "scheduled_at") == {:ok, nil}
 
   defp same_instant?(answer, scheduled_at) when is_binary(answer) do
-    case DateTime.from_iso8601(answer) do
-      {:ok, at, _offset} -> DateTime.compare(at, scheduled_at) == :eq
-      {:error, _reason} -> false
+    case parse_time(answer) do
+      {:ok, microseconds, false} -> microseconds == DateTime.to_unix(scheduled_at, :microsecond)
+      _other -> false
     end
   end
 
