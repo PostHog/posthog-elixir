@@ -87,8 +87,9 @@ defmodule PostHog.Emails do
   unsubscribe headers. Marketing sends with `:html` must include a clickable
   `<a href="{{ unsubscribe_url }}">` link (plain-text sends without `:html` need
   `{{ unsubscribe_url }}` in `:text`), cannot have `:cc` or `:bcc` (`copies_not_allowed`), and
-  cannot carry `:attachments` (`workflow_can_wait`, because marketing sending limits can hold
-  delivery):
+  cannot carry `:attachments` (`workflow_can_wait` on a verified sender, or
+  `sandbox_fields_unsupported` on the PostHog test sender, because marketing sending limits can
+  hold delivery):
 
       PostHog.Emails.send(
         to: "user@example.com",
@@ -104,16 +105,20 @@ defmodule PostHog.Emails do
       )
 
   When code-send categories aren't enabled for the project yet, omitting `:category` sends as
-  transactional with no category, passing a `PostHog.Emails.MessageCategory` returns HTTP 400
-  `categories_not_enabled`, and an older PostHog server rejects `:category` with HTTP 400.
+  transactional with no category (even if `:template_key` matches a categorized template),
+  explicit `transactional_category/0` still returns HTTP 400 `category_mismatch` when
+  `:template_key` names a template in a category, passing a `PostHog.Emails.MessageCategory`
+  returns HTTP 400 `categories_not_enabled`, and an older PostHog server rejects `:category` with
+  HTTP 400.
 
   A matching saved template keeps its own category, including when it has none: passing a
   `PostHog.Emails.MessageCategory` for a `:template_key` that matches an uncategorized saved
-  template returns `category_mismatch` (omit `:category` or pass `transactional_category/0`
-  instead). A template made in PostHog sends transactional email only: PostHog checks whether
-  the template is enabled for transactional sends first (`template_not_transactional`), and
-  refuses a template that was made transactional and is in a marketing category with
-  `marketing_template`. See `t:category/0`.
+  template returns `category_mismatch` (for marketing emails, use a different `:template_key`;
+  omit `:category` or pass `transactional_category/0` only for transactional emails). A template
+  made in PostHog sends transactional email only: PostHog checks whether the template is enabled
+  for transactional sends first (`template_not_transactional`), and refuses a template that was
+  made transactional and is in a marketing category with `marketing_template`. See
+  `t:category/0`.
 
   ## Where requests go
 
@@ -198,16 +203,18 @@ defmodule PostHog.Emails do
     older PostHog server rejects `:category` with HTTP 400 too.
   - `category_mismatch` (400): the project has a category with that key and another `:type`,
     `:template_key` names a template in another category (including `transactional_category/0`
-    for a template in a category), or `:template_key` names an existing saved template with no
-    category and the send passes a `MessageCategory` (omit `:category` or pass
-    `transactional_category/0` instead).
+    for a template in a category, even when code-send categories are disabled for the project),
+    or `:template_key` names an existing saved template with no category and the send passes a
+    `MessageCategory` (for marketing emails, use a different `:template_key`; omit `:category`
+    or pass `transactional_category/0` only for transactional emails).
   - `too_many_categories` (400): the send would create a category past the project's limit.
   - `unsubscribe_link_required` (400): a marketing email from your code has no clickable
     `<a href="{{ unsubscribe_url }}">` link in its `:html`, or no `{{ unsubscribe_url }}` in its
     `:text` when it has no `:html`.
   - `copies_not_allowed` (400): a marketing email from your code has cc or bcc recipients.
-  - `workflow_can_wait` (400): a marketing email from your code carries attachments (marketing
-    sending limits can hold delivery).
+  - `workflow_can_wait` (400, on a verified sender) or `sandbox_fields_unsupported` (400, on the
+    PostHog test sender): a marketing email from your code carries attachments (marketing sending
+    limits can hold delivery).
   - `recipient_opted_out` (422): the recipient opted out of the category or of all marketing.
 
   A send with files can also return:
@@ -338,8 +345,10 @@ defmodule PostHog.Emails do
   - `:category` - the email's message category, a `t:category/0`. When code-send categories are
     enabled for the project, leaving it out follows the transactional category of the template
     that `:template_key` names, or sends as transactional with no category; when disabled,
-    leaving it out sends as transactional with no category, a `MessageCategory` returns
-    `categories_not_enabled`, and an older server rejects `:category` with HTTP 400.
+    leaving it out sends as transactional with no category, explicit `transactional_category/0`
+    still returns HTTP 400 `category_mismatch` when `:template_key` names a categorized template,
+    a `MessageCategory` returns `categories_not_enabled`, and an older server rejects `:category`
+    with HTTP 400.
 
   An option set to `nil` counts as left out, and so does an empty `:reply_to`, `:cc`, `:bcc` or
   `:attachments` list. A PostHog version that doesn't take a field yet, such as `:attachments`,
@@ -372,24 +381,28 @@ defmodule PostHog.Emails do
   `t:PostHog.Emails.MessageCategory.t/0`.
 
   - `transactional_category/0`, `"transactional"`, sends a transactional email with no
-    category. Leaving `:category` out does the same, except when code-send categories are
-    enabled for the project and `:template_key` names a template in a category: the email then
-    follows that transactional category, and PostHog refuses `transactional_category/0` with
-    `category_mismatch`.
+    category. PostHog refuses explicit `transactional_category/0` with HTTP 400
+    `category_mismatch` whenever `:template_key` names a template in a category, even when
+    code-send categories are disabled for the project. Leaving `:category` out follows that
+    transactional category when code-send categories are enabled for the project, and sends as
+    transactional with no category when code-send categories are disabled or no template matches.
   - A `PostHog.Emails.MessageCategory` defines the category in code. When code-send categories
     are enabled for the project and `:template_key` does not match an existing saved template,
     PostHog creates it by key on the first send (or restores a deleted one), and uses its name
     and description only then: a send never renames a category or changes its description. A
-    matching saved template keeps its own category, including when it has none (passing a
-    `MessageCategory` returns `category_mismatch`). When code-send categories are disabled for
-    the project, a `MessageCategory` returns `categories_not_enabled` (and an older server
-    rejects `:category` with HTTP 400). A `:transactional` category sends a transactional email
-    filed under it. A `:marketing` category sends a marketing email: PostHog refuses it with
-    `recipient_opted_out` when the recipient opted out of the category or of all marketing. Its
-    `:html` must include a clickable `<a href="{{ unsubscribe_url }}">` link, or its `:text`,
-    when it has no `:html`, must contain `{{ unsubscribe_url }}`. PostHog replaces it with the
-    recipient's preferences link. Marketing code sends cannot have `:cc` or `:bcc`
-    (`copies_not_allowed`) and cannot carry `:attachments` (`workflow_can_wait`).
+    matching saved template keeps its own category, including when it has none: passing a
+    `MessageCategory` returns `category_mismatch` (for marketing emails, use a different
+    `:template_key`; omit `:category` or pass `transactional_category/0` only for transactional
+    emails). When code-send categories are disabled for the project, a `MessageCategory` returns
+    `categories_not_enabled` (and an older server rejects `:category` with HTTP 400). A
+    `:transactional` category sends a transactional email filed under it. A `:marketing` category
+    sends a marketing email: PostHog refuses it with `recipient_opted_out` when the recipient
+    opted out of the category or of all marketing. Its `:html` must include a clickable
+    `<a href="{{ unsubscribe_url }}">` link, or its `:text`, when it has no `:html`, must contain
+    `{{ unsubscribe_url }}`. PostHog replaces it with the recipient's preferences link. Marketing
+    code sends cannot have `:cc` or `:bcc` (`copies_not_allowed`) and cannot carry `:attachments`
+    (`workflow_can_wait` on a verified sender, or `sandbox_fields_unsupported` on the PostHog
+    test sender, because marketing sending limits can hold delivery).
 
   A send with `:template_id` takes no `:category`: a template made in PostHog sends
   transactional email only. PostHog checks transactional status first

@@ -24,7 +24,7 @@ defmodule PostHog.EmailsTest.FakeSendEndpoint do
   @category_keys ~w(key type name description)
   @message_id "01a18356-c56c-0001-e494-7666bc915188"
   @html_comment_pattern ~r/<!--.*?-->/s
-  @clickable_unsubscribe_pattern ~r/<a\b[^>]*\bhref\s*=\s*(?:"\s*\{\{\s*unsubscribe_url\s*\}\}(?:#[^"]*)?\s*"|'\s*\{\{\s*unsubscribe_url\s*\}\}(?:#[^']*)?\s*')/is
+  @clickable_unsubscribe_pattern ~r/<(?i:a)(?:\s+[^>]*?)?\s+(?i:href)\s*=\s*(?:"\s*\{\{\s*unsubscribe_url\s*\}\}(?:\?[^"#]*)?(?:#[^"]*)?\s*"|'\s*\{\{\s*unsubscribe_url\s*\}\}(?:\?[^'#]*)?(?:#[^']*)?\s*')[^>]*>/
   @unsubscribe_placeholder_pattern ~r/\{\{\s*unsubscribe_url\s*\}\}/
 
   def start(req_test_name, categories \\ %{}, templates \\ %{}) do
@@ -2484,6 +2484,9 @@ defmodule PostHog.EmailsTest do
                  "description" => "Monthly product news"
                }
              }
+
+      assert [%{"html" => ~s(<a href="{{ unsubscribe_url }}">Unsubscribe</a>)}] =
+               FakeSendEndpoint.requests(store)
     end
 
     test "an empty description is sent as empty while a nil description is omitted", %{name: name} do
@@ -2528,6 +2531,11 @@ defmodule PostHog.EmailsTest do
                  "description" => "Monthly product news"
                }
              }
+
+      assert [
+               %{"html" => ~s(<a href="{{ unsubscribe_url }}">Unsubscribe</a>)},
+               %{"html" => ~s(<a href="{{ unsubscribe_url }}">Unsubscribe</a>)}
+             ] = FakeSendEndpoint.requests(store)
     end
 
     test "a category the server refuses comes back as a validation_error, not retried", %{
@@ -2551,6 +2559,9 @@ defmodule PostHog.EmailsTest do
 
       assert FakeSendEndpoint.sends(store) == 2
       assert FakeSendEndpoint.categories(store)["receipts"]["type"] == "transactional"
+
+      assert [_first, %{"html" => ~s(<a href="{{ unsubscribe_url }}">Unsubscribe</a>)}] =
+               FakeSendEndpoint.requests(store)
     end
 
     test "the transactional shorthand sends without defining a category", %{name: name} do

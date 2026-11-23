@@ -11,10 +11,10 @@ defmodule PostHog.Emails.MessageCategory do
 
   A matching saved template keeps its own category, including when it has none: passing a
   `MessageCategory` for a `:template_key` that matches an uncategorized saved template returns
-  `category_mismatch` (omit `:category` or pass `PostHog.Emails.transactional_category/0`
-  instead). When code-send categories aren't enabled for the project yet, passing a
-  `MessageCategory` returns HTTP 400 `categories_not_enabled`, and an older PostHog server
-  rejects `:category` with HTTP 400.
+  `category_mismatch` (for marketing emails, use a different `:template_key`; omit `:category` or
+  pass `PostHog.Emails.transactional_category/0` only for transactional emails). When code-send
+  categories aren't enabled for the project yet, passing a `MessageCategory` returns HTTP 400
+  `categories_not_enabled`, and an older PostHog server rejects `:category` with HTTP 400.
 
   ## Fields
 
