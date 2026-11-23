@@ -78,7 +78,13 @@ defmodule SdkComplianceAdapter.Router do
       json_response(conn, 400, %{success: false, error: "Missing distinct_id or event"})
     else
       # Use the SDK's public API as-is
-      PostHog.bare_capture(SdkComplianceAdapter.PostHog, event, distinct_id, properties)
+      Process.put({__MODULE__, :timestamp_override}, params["timestamp"])
+
+      try do
+        PostHog.bare_capture(SdkComplianceAdapter.PostHog, event, distinct_id, properties)
+      after
+        Process.delete({__MODULE__, :timestamp_override})
+      end
 
       # Track captured event
       SdkComplianceAdapter.State.increment_events_captured()
@@ -187,6 +193,16 @@ defmodule SdkComplianceAdapter.Router do
     |> send_resp(status, JSON.encode!(data))
   end
 
+  # before_send runs synchronously in the capturing process. Pass the raw
+  # override through that public hook; timestamp normalization stays SDK-owned.
+  @doc false
+  def timestamp_override(event) do
+    case Process.get({__MODULE__, :timestamp_override}) do
+      nil -> event
+      timestamp -> Map.put(event, :timestamp, timestamp)
+    end
+  end
+
   defp build_config(params) do
     api_key = params["api_key"]
     host = params["host"]
@@ -216,7 +232,8 @@ defmodule SdkComplianceAdapter.Router do
       api_key: config.api_key,
       api_host: config.api_host,
       api_client_module: config.api_client_module,
-      supervisor_name: config.supervisor_name
+      supervisor_name: config.supervisor_name,
+      before_send: &__MODULE__.timestamp_override/1
     ]
 
     # Validate and start PostHog supervisor

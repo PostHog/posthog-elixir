@@ -247,6 +247,9 @@ defmodule PostHog.FeatureFlags.Evaluations do
   Returns the configured payload for the flag, or `nil` for unknown flags or
   flags without a payload.
 
+  A remote config flag with an encrypted payload is not available here. Read it
+  with `PostHog.FeatureFlags.get_remote_config_payload/2`.
+
   Does **not** record access for `only_accessed/1` or fire a
   `$feature_flag_called` event.
   """

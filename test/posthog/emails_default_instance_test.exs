@@ -23,14 +23,14 @@ defmodule PostHog.EmailsDefaultInstanceTest do
 
   test "send/1 and get/1 use the PostHog instance" do
     expect(PostHog.API.Mock, :request, fn _client, :post, url, opts ->
-      assert url == "https://us.posthog.com/api/projects/@current/messaging/send/email/"
+      assert url == "https://us.posthog.com/api/messaging/send/email/"
       assert {"authorization", "Bearer phs_secret_key"} in opts[:headers]
       {:ok, %{status: 202, headers: %{}, body: %{"message_id" => @message_id}}}
     end)
 
     expect(PostHog.API.Mock, :request, fn _client, :get, url, _opts ->
       assert url ==
-               "https://us.posthog.com/api/projects/@current/messaging/emails/#{@message_id}/"
+               "https://us.posthog.com/api/messaging/emails/#{@message_id}/"
 
       {:ok,
        %{

@@ -1,5 +1,8 @@
 defmodule PostHog.API do
   @moduledoc false
+
+  alias PostHog.Config.Secret
+
   def batch(%__MODULE__.Client{} = client, batch) do
     client.module.request(client.client, :post, "/batch", json: %{batch: batch})
   end
@@ -30,5 +33,33 @@ defmodule PostHog.API do
       params: %{token: project_api_key, send_cohorts: true},
       headers: headers
     )
+  end
+
+  def remote_config_payload(
+        %__MODULE__.Client{} = client,
+        project_api_key,
+        %Secret{} = secret_key,
+        flag_key
+      ) do
+    path =
+      "/api/projects/@current/feature_flags/" <>
+        URI.encode(flag_key, &URI.char_unreserved?/1) <> "/remote_config"
+
+    opts = [
+      params: %{token: project_api_key},
+      headers: [{"authorization", "Bearer #{Secret.reveal(secret_key)}"}],
+      retry: false
+    ]
+
+    # Req would otherwise decode JSON bodies, hiding whether the body was valid JSON.
+    # A custom client returns a decoded body, so only the default client is asked for raw bytes.
+    {opts, body_format} =
+      if client.module == __MODULE__.Client,
+        do: {Keyword.put(opts, :decode_body, false), :raw},
+        else: {opts, :decoded}
+
+    with {:ok, response} <- client.module.request(client.client, :get, path, opts) do
+      {:ok, response, body_format}
+    end
   end
 end

@@ -1,5 +1,59 @@
 # posthog
 
+## 2.23.4 — 2026-11-20
+
+### Patch changes
+
+- [d837a95](https://github.com/posthog/posthog-elixir/commit/d837a95f08ac5dce8bebc00da3130af20563e1d4) `evaluate_flags` remembers flag keys that `/flags` returned but local definitions don't have yet, until the next definitions refresh. Later evaluations request those keys directly instead of waiting on another evaluation's in-flight request. — Thanks @marandaneto!
+
+## 2.23.3 — 2026-11-20
+
+### Patch changes
+
+- [c6d3504](https://github.com/posthog/posthog-elixir/commit/c6d350483f54cc5cc3484f5058559f01290d7916) Count Gemini URL context `toolUsePromptTokenCount` as input tokens in captured LLM generations (it was added to output tokens); Google Search retrieval is not billed as input and stays out of the totals. — Thanks @pcbeingused333 for your first contribution 🎉!
+
+## 2.23.2 — 2026-11-18
+
+### Patch changes
+
+- [8516142](https://github.com/posthog/posthog-elixir/commit/8516142f50f5166383ea6da4edc1d67f59fece15) `PostHog.Emails` now sends emails, uploads attachments and reads email status through `/api/messaging/`, which takes the project from the project secret API key, instead of `/api/projects/@current/messaging/`. Needs PostHog Cloud, or a self-hosted PostHog from 2026-11-18 or later. Older self-hosted versions answer these calls with a 404. — Thanks @rafaeelaudibert!
+
+## 2.23.1 — 2026-11-18
+
+### Patch changes
+
+- [c82105e](https://github.com/posthog/posthog-elixir/commit/c82105ecca5889a7f71d476e80772d31a292d691) Coordinate concurrent `evaluate_flags` probes for flags missing from local definitions within each node instead of across the cluster, and cap how long overlapping evaluations wait so a slow `/flags` request no longer queues every other evaluation. — Thanks @marandaneto!
+
+## 2.23.0 — 2026-11-18
+
+### Minor changes
+
+- [5ed434f](https://github.com/posthog/posthog-elixir/commit/5ed434f0e084a0dfffa1ae55dac971b9e366d8d8) `PostHog.FeatureFlags.get_remote_config_payload/2` reads the payload of a remote config feature flag by its key, with no distinct ID. It needs the `secret_key` option. It returns `{:ok, payload}`, or `{:error, exception}` on a failure. — Thanks @ioannisj!
+
+## 2.22.2 — 2026-11-18
+
+### Patch changes
+
+- [e94faf5](https://github.com/posthog/posthog-elixir/commit/e94faf5908db5460d2132296a12fe08bbae6dd7c) Normalize event timestamp overrides from before_send to UTC without losing fractional precision, and send explicit defaults in feature flag requests. — Thanks @marandaneto!
+
+## 2.22.1 — 2026-11-13
+
+### Patch changes
+
+- [e0b9bb6](https://github.com/posthog/posthog-elixir/commit/e0b9bb6e38f5c3c91c1b1815396b2f7f8fd0bb79) Treat failed remote feature flag records as no result, omit their values and payloads, and report evaluation_failed on direct reads. — Thanks @marandaneto!
+
+## 2.22.0 — 2026-11-13
+
+### Minor changes
+
+- [eef3c7f](https://github.com/posthog/posthog-elixir/commit/eef3c7fbbef8ec2b1eee100cba23e294d4ab3084) `PostHog.Emails.send/2` takes `cc`, `bcc` and `attachments` on a send with `template_key`. `cc` and `bcc` are one address or a list. Each attachment is a map with `filename`, `content` (the file's raw bytes) and optionally `content_type` and `content_id`. An email carries at most 10 files and 40 MB after Base64 encoding, about 29 MB of files. The SDK hashes each file, uploads the files PostHog doesn't have yet straight to PostHog's file storage, over https and without the secret key, and then sends the email with references to them. Plain-HTTP uploads are allowed only when `app_host` is plain HTTP, as in local development. If an upload fails, it sends nothing and returns `attachment_upload_failed`. An empty `reply_to`, `cc`, `bcc` or `attachments` list is now left out of the request. — Thanks @Silthus!
+
+## 2.21.0 — 2026-11-12
+
+### Minor changes
+
+- [c16b737](https://github.com/posthog/posthog-elixir/commit/c16b73734c02045bea3e4f9e6833dbd6b2bd26e8) `PostHog.Emails.send/2` takes `:sensitive` and `:tracking` on a send with `template_key`. Pass `sensitive: true` when the email carries login links, reset tokens or codes: PostHog then keeps its links unchanged unless `:tracking` turns clicks on, leaves its subject off engagement events, and keeps its content out of logs. Left out, the email takes the setting of the template made in PostHog whose key matches `template_key`, and is sensitive when no template matches. `:tracking` chooses what PostHog tracks for the email. Left out, PostHog counts opens and captures engagement events, and tracks clicks only when the email isn't sensitive. `true` turns on opens, clicks and engagement events, and `false` turns them all off. A map such as `%{clicks: true}` sets `:opens`, `:clicks` and `:engagement` one by one. `:capture_engagement` is deprecated in favor of `tracking: %{engagement: false}`; it still works, but a send can't set both. The client now sends it only when you set it; PostHog already reads a missing value as on. The SDK sends `:sensitive` and `:tracking` only when you set them, and PostHog's API support for them is rolling out. — Thanks @Silthus!
+
 ## 2.20.1 — 2026-11-06
 
 ### Patch changes

@@ -848,6 +848,59 @@ defmodule PostHog.Integrations.LLMAnalytics.ReqTest do
            ] = all_captured(@supervisor_name)
   end
 
+  for {name, extra, input_tokens, output_tokens} <- [
+        {"URL context", %{"urlContextMetadata" => %{"urlMetadata" => []}}, 90, 25},
+        {"Google Search", %{"groundingMetadata" => %{"webSearchQueries" => ["q"]}}, 12, 25}
+      ] do
+    test "captures Gemini toolUsePromptTokenCount for #{name}", %{req: req} do
+      extra = unquote(Macro.escape(extra))
+
+      Req.Test.expect(@mock_module, fn conn ->
+        Req.Test.json(conn, %{
+          "candidates" => [
+            Map.merge(
+              %{
+                "content" => %{"parts" => [%{"text" => "ok"}], "role" => "model"},
+                "finishReason" => "STOP",
+                "index" => 0
+              },
+              extra
+            )
+          ],
+          "modelVersion" => "gemini-2.5-flash",
+          "usageMetadata" => %{
+            "candidatesTokenCount" => 25,
+            "promptTokenCount" => 12,
+            "toolUsePromptTokenCount" => 78,
+            "totalTokenCount" => 115
+          }
+        })
+      end)
+
+      assert %{status: 200} =
+               Req.post!(req,
+                 url:
+                   "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                 path_params: [model: "gemini-2.5-flash"],
+                 path_params_style: :curly,
+                 json: %{contents: %{parts: [%{text: "hi"}]}}
+               )
+
+      expected_input = unquote(input_tokens)
+      expected_output = unquote(output_tokens)
+
+      assert [
+               %{
+                 event: "$ai_generation",
+                 properties: %{
+                   "$ai_input_tokens": ^expected_input,
+                   "$ai_output_tokens": ^expected_output
+                 }
+               }
+             ] = all_captured(@supervisor_name)
+    end
+  end
+
   test "captures Anthropic create message properties", %{req: req} do
     Req.Test.expect(@mock_module, fn conn ->
       Req.Test.json(conn, %{

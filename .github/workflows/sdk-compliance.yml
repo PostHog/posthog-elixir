@@ -29,9 +29,9 @@ jobs:
 
   compliance:
     name: PostHog SDK compliance tests
-    uses: PostHog/posthog-sdk-test-harness/.github/workflows/test-sdk-action.yml@17d861f8e230fe943934d70e3eebf5cff6bf3aa4
+    uses: PostHog/posthog-sdk-test-harness/.github/workflows/test-sdk-action.yml@dde638562d33572b5c8ac3a2eafc98b92ffa2261
     with:
       adapter-dockerfile: "sdk_compliance_adapter/Dockerfile"
       adapter-context: "."
-      test-harness-version: "1.0.0"
+      test-harness-version: "1.32.0"
       report-name: "sdk-compliance-elixir-v0-gzip"

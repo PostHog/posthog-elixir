@@ -790,6 +790,76 @@ defmodule PostHog.FeatureFlags.LocalEvaluationIntegrationTest do
     refute Map.has_key?(PostHog.get_context(name), "$feature/checkout")
   end
 
+  test "failed fallback preserves successful local values and payloads" do
+    variant =
+      flag("variant", [], %{
+        "filters" => %{
+          "groups" => [%{"properties" => [], "rollout_percentage" => 100, "variant" => "blue"}],
+          "multivariate" => %{"variants" => [%{"key" => "blue", "rollout_percentage" => 100}]},
+          "payloads" => %{"blue" => ~s({"copy":"local"})}
+        }
+      })
+
+    disabled = flag("disabled", [], %{"active" => false})
+    checkout = flag("checkout", [], %{"ensure_experience_continuity" => true})
+
+    expect(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+      {:ok,
+       %{
+         status: 200,
+         body: envelope([flag("enabled"), disabled, variant, checkout]),
+         headers: %{}
+       }}
+    end)
+
+    name = __MODULE__.FailedFallback
+    start_instance(name)
+
+    for error_bit <- [nil, false, true],
+        metadata <- [%{"payload" => ~s({"copy":"remote"})}, "bad"] do
+      remote_flags =
+        Map.new(["enabled", "disabled", "variant", "checkout"], fn key ->
+          {key,
+           %{
+             "enabled" => false,
+             "variant" => "placeholder",
+             "failed" => true,
+             "metadata" => metadata
+           }}
+        end)
+
+      body = %{"flags" => remote_flags}
+
+      body =
+        if is_nil(error_bit),
+          do: body,
+          else: Map.put(body, "errorsWhileComputingFlags", error_bit)
+
+      expect(PostHog.API.Mock, :request, 2, fn :stub_client, :post, "/flags", _opts ->
+        {:ok, %{status: 200, body: body}}
+      end)
+
+      assert {:ok, snapshot} = FeatureFlags.evaluate_flags(name, "user")
+      assert Result.value(snapshot.flags["enabled"]) == true
+      assert Result.value(snapshot.flags["disabled"]) == false
+      assert Result.value(snapshot.flags["variant"]) == "blue"
+      assert snapshot.flags["variant"].payload == %{"copy" => "local"}
+      refute Map.has_key?(snapshot.flags, "checkout")
+      refute Map.has_key?(Evaluations.event_properties(snapshot), "$feature/checkout")
+      refute snapshot.flags["enabled"].errors_while_computing
+
+      distinct_id = "user-#{inspect(error_bit)}-#{inspect(metadata)}"
+      assert {:ok, nil} = FeatureFlags.get_feature_flag_result(name, "checkout", distinct_id)
+      event = Enum.find(PostHog.Test.all_captured(name), &(&1.distinct_id == distinct_id))
+      assert event.properties[:"$feature_flag_response"] == nil
+      assert event.properties[:"$feature_flag_error"] =~ "evaluation_failed"
+      refute event.properties[:"$feature_flag_error"] =~ "flag_missing"
+
+      assert event.properties[:"$feature_flag_error"] =~ "errors_while_computing_flags" ==
+               (error_bit == true)
+    end
+  end
+
   test "a flag the remote fallback returns, even as failed, is not unresolved" do
     checkout = flag("checkout", [], %{"ensure_experience_continuity" => true})
 
@@ -804,8 +874,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluationIntegrationTest do
 
     for {response, values, expected_unresolved} <- [
           {%{"flags" => %{"checkout" => %{"enabled" => true}}}, %{"checkout" => true}, %{}},
-          {%{"flags" => %{"checkout" => failed}, "errorsWhileComputingFlags" => true},
-           %{"checkout" => false}, %{}},
+          {%{"flags" => %{"checkout" => failed}, "errorsWhileComputingFlags" => true}, %{}, %{}},
           {%{"flags" => %{}}, %{}, unresolved},
           {:unavailable, %{}, unresolved}
         ] do

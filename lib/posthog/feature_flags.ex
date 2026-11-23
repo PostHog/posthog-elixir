@@ -33,7 +33,8 @@ defmodule PostHog.FeatureFlags do
     config = PostHog.config(name)
 
     if Map.get(config, :enabled, true) do
-      request_flags(config.api_client, translate_disable_geoip(body))
+      body = body |> translate_disable_geoip() |> flags_request_defaults()
+      request_flags(config.api_client, body)
     else
       empty_flags_response()
     end
@@ -99,6 +100,127 @@ defmodule PostHog.FeatureFlags do
     end
   end
 
+  @doc """
+  Reads the payload of a remote config feature flag by its key, with no distinct ID.
+
+  Use it for a remote config flag, and always when the payload is encrypted:
+  flag evaluation does not return such a flag, so
+  `PostHog.FeatureFlags.Evaluations.get_flag_payload/2` cannot read it. Needs
+  `secret_key`. A personal API key (`phx_`) returns an encrypted payload
+  decrypted. A project secret API key (`phs_`) returns it redacted.
+
+  Calls PostHog's authenticated remote config endpoint for the project. Each call makes one request. The SDK does not cache the payload and does not
+  retry the request. It does not send a `$feature_flag_called` event.
+
+  PostHog stores the payload as a JSON string. The SDK decodes a string payload
+  once more. If the string is not valid JSON, it returns the string unchanged.
+
+  Returns `{:ok, nil}` when the flag has no payload, which PostHog answers with
+  an empty response body. Returns `{:ok, nil}`, without a request, when the
+  instance is disabled or has no `api_key`. Returns `{:error, %PostHog.Error{}}` when `secret_key` is not
+  set or when `flag_key` is empty, `.`, or `..`. Returns
+  `{:error, %PostHog.UnexpectedResponseError{}}` when PostHog answers with a
+  status other than 2xx or with a response body that is not JSON, and
+  `{:error, exception}` when the request fails. A custom `api_client_module`
+  decodes the response body itself, so the SDK cannot detect a body that is not
+  JSON there.
+
+  ## Examples
+
+      {:ok, config} = PostHog.FeatureFlags.get_remote_config_payload("landing-page-config")
+
+  Through a named PostHog instance:
+
+      PostHog.FeatureFlags.get_remote_config_payload(MyPostHog, "landing-page-config")
+  """
+  @spec get_remote_config_payload(PostHog.supervisor_name(), String.t()) ::
+          {:ok, term()} | {:error, Exception.t()}
+  def get_remote_config_payload(name \\ PostHog, flag_key) when is_binary(flag_key) do
+    case PostHog.config(name) do
+      %{enabled: true, api_client: %PostHog.API.Client{} = client, api_key: api_key} ->
+        with {:ok, secret_key} <- fetch_secret_key(name),
+             :ok <- validate_flag_key(flag_key) do
+          request_remote_config_payload(client, api_key, secret_key, flag_key)
+        end
+
+      _disabled ->
+        {:ok, nil}
+    end
+  end
+
+  defp fetch_secret_key(name) do
+    case PostHog.Registry.secret_key(name) do
+      %PostHog.Config.Secret{} = secret_key ->
+        {:ok, secret_key}
+
+      nil ->
+        {:error,
+         %PostHog.Error{message: "get_remote_config_payload requires the secret_key option"}}
+    end
+  end
+
+  defp validate_flag_key(flag_key) when flag_key in ["", ".", ".."] do
+    {:error,
+     %PostHog.Error{
+       message:
+         "get_remote_config_payload requires a flag key that is not empty, \".\", or \"..\""
+     }}
+  end
+
+  defp validate_flag_key(_flag_key), do: :ok
+
+  defp request_remote_config_payload(client, api_key, secret_key, flag_key) do
+    case PostHog.API.remote_config_payload(client, api_key, secret_key, flag_key) do
+      {:ok, %{status: status, body: body}, body_format} when status in 200..299 ->
+        decode_remote_config_body(body_format, status, body)
+
+      {:ok, %{status: status, body: body}, body_format} ->
+        body = if body_format == :raw, do: normalize_payload(body), else: body
+
+        {:error,
+         %PostHog.UnexpectedResponseError{
+           response: %{status: status, body: body},
+           message: "Unexpected response status from the remote config endpoint"
+         }}
+
+      {:error, _} = error ->
+        error
+    end
+  rescue
+    # Finch raises, rather than returns, when no pooled connection frees up in time.
+    exception in RuntimeError ->
+      if String.starts_with?(exception.message, "Finch was unable to provide a connection"),
+        do: {:error, exception},
+        else: reraise(exception, __STACKTRACE__)
+  end
+
+  # A `:raw` body is the response bytes, which hold the stored payload as a JSON string.
+  # A `:decoded` body is that stored payload already.
+  defp decode_remote_config_body(body_format, status, body) when is_binary(body) do
+    cond do
+      String.trim(body) == "" ->
+        {:ok, nil}
+
+      body_format == :decoded ->
+        {:ok, normalize_payload(body)}
+
+      true ->
+        case Jason.decode(body) do
+          {:ok, decoded} ->
+            {:ok, normalize_payload(decoded)}
+
+          {:error, _} ->
+            {:error,
+             %PostHog.UnexpectedResponseError{
+               response: %{status: status, body: body},
+               message: "Expected a JSON response body"
+             }}
+        end
+    end
+  end
+
+  defp decode_remote_config_body(_body_format, _status, body), do: {:ok, body}
+
   @doc false
   def evaluate_flags(nil), do: evaluate_flags(PostHog, nil)
 
@@ -135,7 +257,8 @@ defmodule PostHog.FeatureFlags do
   - `:device_id` - alternate bucketing identifier for device-bucketed flags
 
   The public `:disable_geoip` option is sent under the `/flags` wire key
-  `geoip_disable`.
+  `geoip_disable`, defaulting to `false`. Omitted `:groups` and
+  `:group_properties` are sent as empty objects.
 
   Plus these snapshot-specific options:
 
@@ -150,7 +273,9 @@ defmodule PostHog.FeatureFlags do
     `PostHog.FeatureFlags.Evaluations.only/2` which filters an already-fetched
     snapshot in memory. Clean remote omissions for explicitly requested keys
     are retained in a bounded per-instance set until definitions refresh, so
-    repeated and concurrent missing-key probes avoid duplicate requests.
+    repeated and concurrent missing-key probes avoid duplicate requests. Keys
+    that `/flags` returned are remembered the same way, so later evaluations
+    request them directly instead of waiting on another evaluation's probe.
 
   ## Examples
 
@@ -306,9 +431,14 @@ defmodule PostHog.FeatureFlags do
          unresolved
        ) do
     absent = absent_definition_keys(requested_keys, loader_state.definitions)
-    probe_keys = absent |> MapSet.intersection(unresolved) |> MapSet.to_list()
+    missing = MapSet.intersection(absent, unresolved)
 
-    if probe_keys == [] or length(probe_keys) > @missing_probe_coordination_limit do
+    # Keys `/flags` already returned exist, so callers request them directly. Only
+    # keys whose existence is still unknown are coordinated.
+    {present, unknown} = Enum.split_with(missing, &MapSet.member?(loader_state.known_present, &1))
+
+    # Known-present keys always go with the request, so a clean omission can clear them.
+    if unknown == [] or length(unknown) > @missing_probe_coordination_limit do
       remote_snapshot(
         name,
         distinct_id,
@@ -316,16 +446,76 @@ defmodule PostHog.FeatureFlags do
         local,
         requested_keys,
         loader_state.generation,
-        []
+        present
       )
     else
-      with_missing_probe_locks(name, probe_keys, fn ->
-        evaluate_after_missing_probe_lock(name, distinct_id, body, requested_keys, probe_keys)
-      end)
+      deadline = __MODULE__.MissingProbeCoordinator.deadline()
+      coordinate_unknown(name, distinct_id, body, requested_keys, unknown, {[], []}, deadline)
     end
   end
 
-  defp evaluate_after_missing_probe_lock(name, distinct_id, body, requested_keys, probe_keys) do
+  # Every round shares the call's original deadline. `coordinated` holds the keys
+  # this call already waited on, so a key is never coordinated twice.
+  defp coordinate_unknown(
+         name,
+         distinct_id,
+         body,
+         requested_keys,
+         unknown,
+         {coordinated, owned},
+         deadline
+       ) do
+    __MODULE__.MissingProbeCoordinator.run(
+      name,
+      unknown,
+      fn owned_probe_keys ->
+        owned = owned ++ owned_probe_keys
+        coordinated = coordinated ++ unknown
+
+        case newly_unknown(name, requested_keys, coordinated) do
+          [] ->
+            evaluate_after_missing_probe_lock(name, distinct_id, body, requested_keys, owned)
+
+          # Only a call that owns nothing can wait again, so two calls never wait on
+          # each other. Too many new keys fall back without coordinating, as in the
+          # first round.
+          more when owned == [] and length(more) <= @missing_probe_coordination_limit ->
+            coordinate_unknown(
+              name,
+              distinct_id,
+              body,
+              requested_keys,
+              more,
+              {coordinated, owned},
+              deadline
+            )
+
+          _more ->
+            evaluate_after_missing_probe_lock(name, distinct_id, body, requested_keys, owned)
+        end
+      end,
+      deadline
+    )
+  end
+
+  # Keys that became unknown while this call waited, for example after a refresh
+  # cleared their presence: not defined locally, present, missing, or coordinated.
+  defp newly_unknown(name, requested_keys, coordinated) do
+    state = local_evaluation_state(name, requested_keys)
+
+    if is_nil(state.definitions) do
+      []
+    else
+      requested_keys
+      |> absent_definition_keys(state.definitions)
+      |> MapSet.difference(state.known_present)
+      |> MapSet.difference(state.known_missing)
+      |> MapSet.difference(MapSet.new(coordinated))
+      |> MapSet.to_list()
+    end
+  end
+
+  defp evaluate_after_missing_probe_lock(name, distinct_id, body, requested_keys, owned_keys) do
     fresh_state = local_evaluation_state(name, requested_keys)
 
     if is_nil(fresh_state.definitions) do
@@ -338,9 +528,24 @@ defmodule PostHog.FeatureFlags do
         requested_keys,
         fresh_state,
         false,
-        probe_keys
+        omission_candidates(requested_keys, fresh_state, owned_keys)
       )
     end
+  end
+
+  # Read after waiting, because definitions and existence knowledge may have
+  # changed meanwhile. A clean omission can record absence for keys this call
+  # owned plus keys currently known present, but never for a key that now has a
+  # local definition or is already known missing.
+  defp omission_candidates(requested_keys, state, owned_keys) do
+    absent = absent_definition_keys(requested_keys, state.definitions)
+
+    owned_keys
+    |> MapSet.new()
+    |> MapSet.union(state.known_present)
+    |> MapSet.intersection(absent)
+    |> MapSet.difference(state.known_missing)
+    |> MapSet.to_list()
   end
 
   defp remote_loaded_snapshot(
@@ -397,6 +602,8 @@ defmodule PostHog.FeatureFlags do
       |> Map.delete(:only_evaluate_locally)
       |> translate_flag_keys()
 
+    started = probe_started(name, generation, negative_candidates)
+
     case flags(name, remote_body) do
       {:ok, %{body: %{"flags" => remote_flags} = response_body}} when is_map(remote_flags) ->
         scoped_remote_flags = maybe_scope_remote_results(remote_flags, requested_keys)
@@ -407,19 +614,21 @@ defmodule PostHog.FeatureFlags do
           generation,
           negative_candidates,
           Map.keys(scoped_remote_flags),
-          clean_remote_response?(response_body) and not malformed?
+          clean_remote_response?(response_body) and not malformed?,
+          started
         )
 
         merged = Map.merge(remote_results, local.results)
+        failed_keys = for {key, %{"failed" => true}} <- scoped_remote_flags, do: key
 
         if malformed? and map_size(merged) == 0 do
           remote_failure_result(name, distinct_id, local, body, invalid_flags_response())
         else
-          # A returned record, including one with `failed: true`, resolves the flag.
+          # Preserve snapshot unresolved classification without serving failed values.
           metadata =
             Map.merge(response_body, %{
               groups: evaluation_groups(body),
-              unresolved_flags: Map.drop(local.reasons, Map.keys(merged))
+              unresolved_flags: Map.drop(local.reasons, Map.keys(merged) ++ failed_keys)
             })
 
           {:ok, __MODULE__.Evaluations.from_results(name, distinct_id, merged, metadata)}
@@ -450,6 +659,7 @@ defmodule PostHog.FeatureFlags do
       {key, flag_data}, {results, malformed?} ->
         case build_result_safely(key, flag_data, response_body) do
           {:ok, result} -> {Map.put(results, key, result), malformed?}
+          :failed -> {results, malformed?}
           :error -> {results, true}
         end
 
@@ -457,6 +667,9 @@ defmodule PostHog.FeatureFlags do
         {results, true}
     end)
   end
+
+  defp build_result_safely(key, %{"failed" => true}, _response_body) when is_binary(key),
+    do: :failed
 
   defp build_result_safely(key, flag_data, response_body)
        when is_binary(key) and is_map(flag_data) do
@@ -480,15 +693,25 @@ defmodule PostHog.FeatureFlags do
       Map.get(body, "quotaLimited") in [nil, false, []]
   end
 
-  defp update_negative_knowledge(_name, nil, _requested, _returned, _clean?), do: :ok
+  defp probe_started(_name, nil, _candidates), do: nil
+  defp probe_started(_name, _generation, []), do: nil
 
-  defp update_negative_knowledge(name, generation, requested, returned, clean?) do
+  defp probe_started(name, _generation, _candidates) do
+    __MODULE__.DefinitionLoader.probe_started(name)
+  catch
+    :exit, _reason -> nil
+  end
+
+  defp update_negative_knowledge(_name, nil, _requested, _returned, _clean?, _started), do: :ok
+
+  defp update_negative_knowledge(name, generation, requested, returned, clean?, started) do
     __MODULE__.DefinitionLoader.update_negative_knowledge(
       name,
       generation,
       requested,
       returned,
-      clean?
+      clean? and (started != nil or requested == []),
+      started
     )
   catch
     :exit, _reason -> :ok
@@ -504,28 +727,21 @@ defmodule PostHog.FeatureFlags do
          GenServer.whereis(PostHog.Registry.via(name, __MODULE__.DefinitionLoader)) do
       __MODULE__.DefinitionLoader.evaluation_state(name, keys)
     else
-      %{definitions: nil, generation: nil, known_missing: MapSet.new()}
+      %{
+        definitions: nil,
+        generation: nil,
+        known_missing: MapSet.new(),
+        known_present: MapSet.new()
+      }
     end
   catch
-    :exit, _reason -> %{definitions: nil, generation: nil, known_missing: MapSet.new()}
-  end
-
-  defp with_missing_probe_locks(name, keys, callback) do
-    keys
-    |> Enum.uniq()
-    |> Enum.sort()
-    |> acquire_missing_probe_locks(name, callback)
-  end
-
-  defp acquire_missing_probe_locks([], _name, callback), do: callback.()
-
-  defp acquire_missing_probe_locks([key | rest], name, callback) do
-    lock = {{__MODULE__, :missing_probe, name, key}, self()}
-
-    # The lock intentionally spans the remote probe. Overlapping evaluations must
-    # wait for its existence result before deciding whether another fallback is
-    # needed; sorted keys keep multi-key probes from deadlocking each other.
-    :global.trans(lock, fn -> acquire_missing_probe_locks(rest, name, callback) end)
+    :exit, _reason ->
+      %{
+        definitions: nil,
+        generation: nil,
+        known_missing: MapSet.new(),
+        known_present: MapSet.new()
+      }
   end
 
   @doc """
@@ -596,6 +812,22 @@ defmodule PostHog.FeatureFlags do
   end
 
   defp translate_flag_keys(body), do: body
+
+  defp flags_request_defaults(body) when is_map(body) do
+    defaults = [
+      {:groups, %{}, ["groups", :"$groups", "$groups"]},
+      {:group_properties, %{}, ["group_properties", :"$group_properties", "$group_properties"]},
+      {:geoip_disable, false, ["geoip_disable"]}
+    ]
+
+    Enum.reduce(defaults, body, fn {key, default, aliases}, body ->
+      if Enum.any?(aliases, &Map.has_key?(body, &1)),
+        do: body,
+        else: Map.put_new(body, key, default)
+    end)
+  end
+
+  defp flags_request_defaults(body), do: body
 
   defp translate_disable_geoip(%{disable_geoip: disable_geoip} = body) do
     body
@@ -845,6 +1077,15 @@ defmodule PostHog.FeatureFlags do
             {:ok, result, response_body}
 
           {:ok, nil, response_body} ->
+            maybe_log_failed_flag_usage(
+              send_event,
+              name,
+              distinct_id,
+              flag_name,
+              response_body,
+              evaluation_groups(body)
+            )
+
             {:ok, nil, response_body}
 
           {:error, reason} ->
@@ -895,9 +1136,35 @@ defmodule PostHog.FeatureFlags do
   defp single_remote_result(flag_name, flag_data, response_body) do
     case build_result_safely(flag_name, flag_data, response_body) do
       {:ok, result} -> {:ok, result, response_body}
+      :failed -> {:ok, nil, response_body}
       :error -> {:ok, nil, response_body}
     end
   end
+
+  defp maybe_log_failed_flag_usage(
+         true,
+         name,
+         distinct_id,
+         key,
+         %{"flags" => flags} = response_body,
+         groups
+       )
+       when is_map(flags) do
+    case Map.get(flags, key) do
+      %{"failed" => true} = flag_data ->
+        metadata = Map.get(flag_data, "metadata")
+        flag_data = if is_map(metadata), do: flag_data, else: Map.delete(flag_data, "metadata")
+        result = build_result(key, flag_data, response_body)
+        diagnostic = %{result | enabled: false, variant: nil, payload: nil}
+        log_feature_flag_usage(name, distinct_id, diagnostic, ["evaluation_failed"], groups)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp maybe_log_failed_flag_usage(_send_event, _name, _distinct_id, _key, _body, _groups),
+    do: :ok
 
   defp maybe_log_feature_flag_usage(send_event, name, distinct_id, flag_result, groups) do
     if send_event do
@@ -1050,10 +1317,13 @@ defmodule PostHog.FeatureFlags do
         groups
       )
       when is_list(extra_errors) and is_map(groups) do
-    flag_missing? =
-      Enum.any?(extra_errors, &(&1 in ["flag_missing", "local_evaluation_inconclusive"]))
+    value_unavailable? =
+      Enum.any?(
+        extra_errors,
+        &(&1 in ["flag_missing", "local_evaluation_inconclusive", "evaluation_failed"])
+      )
 
-    value = if flag_missing?, do: nil, else: __MODULE__.Result.value(result)
+    value = if value_unavailable?, do: nil, else: __MODULE__.Result.value(result)
     errors = build_error_codes(result, extra_errors)
 
     properties =
@@ -1078,7 +1348,7 @@ defmodule PostHog.FeatureFlags do
       capture_called_event(name, distinct_id, result, properties)
     end
 
-    if flag_missing? do
+    if value_unavailable? do
       :ok
     else
       PostHog.set_context(name, %{"$feature/#{result.key}" => value})

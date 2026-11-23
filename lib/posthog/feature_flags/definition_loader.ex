@@ -45,52 +45,74 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
     def reset(name, generation),
       do: GenServer.call(via(name), {:reset, generation}, :infinity)
 
-    def update(name, generation, requested, returned, clean?),
+    def update(name, generation, requested, returned, clean?, started \\ nil),
       do:
         GenServer.call(
           via(name),
-          {:update, generation, requested, returned, clean?},
+          {:update, generation, requested, returned, clean?, started},
           :infinity
         )
+
+    @doc """
+    Returns a marker for a probe that is about to start. An update carrying it
+    can't retain a key that another response returned after the marker.
+    """
+    def probe_started(name), do: GenServer.call(via(name), :probe_started, :infinity)
 
     def known(name, generation, keys) do
       state = cached(name)
 
       if state.generation == generation do
-        keys |> MapSet.new() |> MapSet.intersection(state.keys)
+        keys = MapSet.new(keys)
+        {MapSet.intersection(keys, state.keys), MapSet.intersection(keys, state.present)}
       else
-        MapSet.new()
+        {MapSet.new(), MapSet.new()}
       end
     end
 
     @impl GenServer
     def init(name) do
-      state = %{name: name, generation: current_generation(name), keys: MapSet.new(), order: []}
+      state =
+        %{name: name, generation: current_generation(name), instance: make_ref()}
+        |> Map.merge(empty_keys())
+
       {:ok, publish(state)}
     end
 
     @impl GenServer
     def handle_call({:reset, generation}, _from, state) do
-      state = %{state | generation: generation, keys: MapSet.new(), order: []}
+      state = state |> Map.merge(empty_keys()) |> Map.put(:generation, generation)
       {:reply, :ok, publish(state)}
     end
 
+    def handle_call(:probe_started, _from, state) do
+      {:reply, {state.generation, state.instance, state.clock}, state}
+    end
+
     def handle_call(
-          {:update, generation, requested, returned, clean?},
+          {:update, generation, requested, returned, clean?, started},
           _from,
           %{generation: generation} = state
         ) do
+      requested = Enum.reject(requested, &returned_since?(state, &1, started))
+
       state =
         state
         |> Map.put(:generation, generation)
         |> update_retained_missing(requested, returned, clean?)
+        |> record_returned(returned)
+        |> forget_returned(clean_omissions(requested, returned, clean?))
         |> publish()
 
       {:reply, :ok, state}
     end
 
-    def handle_call({:update, _generation, _requested, _returned, _clean?}, _from, state),
-      do: {:reply, :ok, state}
+    def handle_call(
+          {:update, _generation, _requested, _returned, _clean?, _started},
+          _from,
+          state
+        ),
+        do: {:reply, :ok, state}
 
     defp cached(name) do
       registry = PostHog.Registry.registry_name(name)
@@ -114,11 +136,80 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
       ArgumentError -> nil
     end
 
-    defp empty, do: %{generation: nil, keys: MapSet.new()}
+    defp empty, do: %{generation: nil, keys: MapSet.new(), present: MapSet.new()}
 
+    defp empty_keys,
+      do: %{
+        keys: MapSet.new(),
+        order: [],
+        clock: 0,
+        returned_at: %{},
+        returned_order: [],
+        returned_floor: 0,
+        present: MapSet.new()
+      }
+
+    # A key returned after this probe started may be a flag the probe's own
+    # omission predates. When the bounded history no longer covers the probe's
+    # start, the probe's omissions are not trusted.
+    defp returned_since?(_state, _key, nil), do: false
+
+    # A restart resets the clock, so a marker from an earlier instance can't be compared.
+    defp returned_since?(state, key, {generation, instance, started}) do
+      cond do
+        generation != state.generation -> true
+        instance != state.instance -> true
+        state.returned_floor > started -> true
+        true -> Map.get(state.returned_at, key, -1) > started
+      end
+    end
+
+    defp clean_omissions(_requested, _returned, false), do: MapSet.new()
+
+    defp clean_omissions(requested, returned, true),
+      do: MapSet.difference(MapSet.new(requested), MapSet.new(returned))
+
+    # A trusted clean omission means the key is no longer confirmed present, even
+    # when the bounded missing-key store couldn't retain it. The return history is
+    # kept, so older omissions still can't record the key as missing.
+    defp forget_returned(state, omitted),
+      do: %{state | present: MapSet.difference(state.present, omitted)}
+
+    defp record_returned(state, returned) do
+      clock = state.clock + 1
+      returned_at = Enum.reduce(returned, state.returned_at, &Map.put(&2, &1, clock))
+      returned_set = MapSet.new(returned)
+      order = Enum.reject(state.returned_order, &MapSet.member?(returned_set, &1))
+      order = order ++ (returned_set |> MapSet.to_list() |> Enum.sort())
+      {evicted, order} = Enum.split(order, max(length(order) - @capacity, 0))
+
+      floor =
+        evicted
+        |> Enum.map(&Map.fetch!(returned_at, &1))
+        |> Enum.max(fn -> state.returned_floor end)
+        |> max(state.returned_floor)
+
+      present =
+        state.present
+        |> MapSet.union(returned_set)
+        |> MapSet.difference(MapSet.new(evicted))
+
+      %{
+        state
+        | clock: clock,
+          returned_at: Map.drop(returned_at, evicted),
+          returned_order: order,
+          returned_floor: floor,
+          present: present
+      }
+    end
+
+    # Keys `/flags` returned in this generation are confirmed present until a
+    # refresh, eviction from the bounded history, or a clean omission.
     defp publish(state) do
       registry = PostHog.Registry.registry_name(state.name)
-      cached = Map.take(state, [:generation, :keys])
+      cached = Map.take(state, [:generation, :keys, :present])
+
       Registry.update_value(registry, __MODULE__, fn _old -> cached end)
       state
     end
@@ -200,18 +291,30 @@ defmodule PostHog.FeatureFlags.DefinitionLoader do
   @doc false
   def evaluation_state(name, keys) do
     state = readable_evaluation_state(name)
+    {known_missing, known_present} = NegativeKnowledge.known(name, state.generation, keys)
 
     %{
       definitions: state.definitions,
       generation: state.generation,
-      known_missing: NegativeKnowledge.known(name, state.generation, keys)
+      known_missing: known_missing,
+      known_present: known_present
     }
   end
 
   @doc false
-  def update_negative_knowledge(name, generation, requested_keys, returned_keys, clean?) do
-    NegativeKnowledge.update(name, generation, requested_keys, returned_keys, clean?)
+  def update_negative_knowledge(
+        name,
+        generation,
+        requested_keys,
+        returned_keys,
+        clean?,
+        started \\ nil
+      ) do
+    NegativeKnowledge.update(name, generation, requested_keys, returned_keys, clean?, started)
   end
+
+  @doc false
+  def probe_started(name), do: NegativeKnowledge.probe_started(name)
 
   defp readable_evaluation_state(name) do
     state = cached_evaluation_state(name)
