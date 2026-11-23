@@ -510,6 +510,15 @@ defmodule PostHog.EmailsTest do
 
   defp refute_requested, do: refute_received({:request, _, _, _})
 
+  defp record_any_further_request do
+    test_pid = self()
+
+    stub(API.Mock, :request, fn _client, method, url, opts ->
+      send(test_pid, {:request, method, url, opts})
+      accepted()
+    end)
+  end
+
   describe "send/2 with a template made in PostHog" do
     test "posts the flat template body to the app host", %{name: name} do
       expect_reply(accepted())
@@ -2175,6 +2184,25 @@ defmodule PostHog.EmailsTest do
       end
     end
 
+    for answer <- [
+          "2026-12-01T09:00:00.000Z",
+          "2026-12-01T09:00Z",
+          "2026-12-01T10:30+01:30",
+          "2026-12-01T04:00:00.000000-05:00",
+          "2026-12-01T09:00:00-00:00"
+        ] do
+      test "takes #{answer} as confirming 09:00 UTC", %{name: name} do
+        expect_reply(scheduled(unquote(answer)))
+
+        assert {:ok,
+                %Emails.SendResult{
+                  status: "scheduled",
+                  scheduled_at: ~U[2026-12-01 09:00:00.000Z]
+                }} =
+                 Emails.send(name, @template_send ++ [scheduled_at: "2026-12-01T09:00:00Z"])
+      end
+    end
+
     test "takes a DateTime in a zone other than UTC", %{name: name} do
       expect_reply(scheduled("2026-12-01T08:00:00.000Z"))
 
@@ -2305,26 +2333,39 @@ defmodule PostHog.EmailsTest do
       end
     end
 
-    for {password, label} <- [
-          {"SECRET-1@SECRET-2", "an @"},
-          {"SECRET-1/SECRET-2", "a slash"},
-          {"SECRET-1?SECRET-2", "a question mark"},
-          {"SECRET-1#SECRET-2", "a hash"}
+    for {app_host, label, named} <- [
+          {"https://user:SECRET-1@SECRET-2@posthog.example.com:8443/", "an @",
+           "https://posthog.example.com:8443,"},
+          {"https://user:SECRET-1/SECRET-2@posthog.example.com:8443/", "a slash",
+           "the configured app_host,"},
+          {"https://user:SECRET-1?SECRET-2@posthog.example.com:8443/", "a question mark",
+           "the configured app_host,"},
+          {"https://user:SECRET-1#SECRET-2@posthog.example.com:8443/", "a hash",
+           "the configured app_host,"}
         ] do
-      @tag config: [
-             api_host: "https://proxy.example.com",
-             app_host: "https://user:#{password}@posthog.example.com:8443/"
-           ]
+      @tag config: [api_host: "https://proxy.example.com", app_host: app_host]
       test "names an app host without its credentials when the password holds #{label}",
            %{name: name} do
         assert {:error, %Error{code: "scheduling_requires_cloud"} = error} =
                  Emails.send(name, @template_send ++ [scheduled_at: "2026-12-01T09:00:00Z"])
 
-        assert error.message =~ "https://posthog.example.com:8443,"
+        assert error.message =~ unquote(named)
         refute inspect(error) =~ "SECRET"
         refute inspect(error) =~ "user"
         refute_requested()
       end
+    end
+
+    @tag config: [
+           api_host: "https://proxy.example.com",
+           app_host: "https://proxy.example.com/tenant@staging"
+         ]
+    test "names no host it can't tell from a path", %{name: name} do
+      assert {:error, %Error{code: "scheduling_requires_cloud"} = error} =
+               Emails.send(name, @template_send ++ [scheduled_at: "2026-12-01T09:00:00Z"])
+
+      assert error.message =~ "the configured app_host,"
+      refute error.message =~ "https://staging"
     end
 
     @tag config: [api_host: "https://proxy.example.com", app_host: "https://posthog.example.com"]
@@ -2395,6 +2436,7 @@ defmodule PostHog.EmailsTest do
         ] do
       test "an acceptance #{label} is an unconfirmed schedule, not retried", %{name: name} do
         expect_reply(accepted(unquote(Macro.escape(reply))))
+        record_any_further_request()
 
         assert {:error,
                 %Error{
@@ -2426,6 +2468,8 @@ defmodule PostHog.EmailsTest do
           "fix" => "Pick a time within 7 days, or send the email closer to the time."
         })
       )
+
+      record_any_further_request()
 
       assert {:error,
               %Error{

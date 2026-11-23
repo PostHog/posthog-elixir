@@ -983,12 +983,21 @@ defmodule PostHog.Emails do
 
   defp origin(url) do
     with [_match, scheme, rest] <- Regex.run(~r{\A([A-Za-z][A-Za-z0-9+.-]*://)(.*)\z}s, url),
-         authority =
-           rest |> String.split("@") |> List.last() |> String.split(["/", "?", "#"]) |> hd(),
-         true <- Regex.match?(@host_shape, authority) do
-      scheme <> authority
+         host when is_binary(host) <- named_host(rest),
+         true <- Regex.match?(@host_shape, host) do
+      scheme <> host
     else
       _unnamed -> "the configured app_host"
+    end
+  end
+
+  defp named_host(rest) do
+    [authority | _rest] = String.split(rest, ["/", "?", "#"])
+
+    cond do
+      String.contains?(authority, "@") -> authority |> String.split("@") |> List.last()
+      String.contains?(rest, "@") -> nil
+      true -> authority
     end
   end
 
