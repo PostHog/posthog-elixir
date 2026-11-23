@@ -88,8 +88,8 @@ defmodule PostHog.Emails do
   `:scheduled_at` is a `DateTime`, or an ISO 8601 string with a UTC offset, such as
   `"2026-12-01T09:00:00+02:00"`. A `NaiveDateTime` or a string without an offset returns
   `invalid_scheduled_at` before any request, because the email could go out at the wrong time.
-  The SDK rounds the time up to the next millisecond, so the email never goes out early, and
-  sends that time on every retry.
+  The SDK rounds a time finer than a millisecond up to the next millisecond, so the email never
+  goes out early, and sends that time on every retry.
 
   The result's `:status` is `"scheduled"` and its `:scheduled_at` is the time PostHog
   confirmed. A time that has already passed sends the email now: the result's `:status` is
@@ -793,7 +793,7 @@ defmodule PostHog.Emails do
   defp scheduled_at(%{scheduled_at: at}) when is_binary(at) do
     case DateTime.from_iso8601(at) do
       {:ok, parsed, _offset} ->
-        ceil_to_millisecond(DateTime.to_unix(parsed, :microsecond), below_microsecond?(at))
+        ceil_to_millisecond(DateTime.to_unix(parsed, :microsecond), digits_past_microseconds?(at))
 
       {:error, _reason} ->
         invalid_scheduled_at()
@@ -811,19 +811,18 @@ defmodule PostHog.Emails do
         "scheduled_at"
       )
 
-  # DateTime keeps microseconds and drops finer digits, which would make the email go out early.
-  defp below_microsecond?(at) do
+  defp digits_past_microseconds?(at) do
     case Regex.run(~r/:\d{2}[.,]\d{6}(\d+)/, at) do
       [_match, digits] -> String.trim(digits, "0") != ""
       nil -> false
     end
   end
 
-  defp ceil_to_millisecond(microseconds, below_microsecond?) do
+  defp ceil_to_millisecond(microseconds, digits_past_microseconds?) do
     milliseconds = Integer.floor_div(microseconds, 1000)
 
     milliseconds =
-      if Integer.mod(microseconds, 1000) > 0 or below_microsecond?,
+      if Integer.mod(microseconds, 1000) > 0 or digits_past_microseconds?,
         do: milliseconds + 1,
         else: milliseconds
 
@@ -949,8 +948,6 @@ defmodule PostHog.Emails do
     end
   end
 
-  # A PostHog that doesn't schedule emails, such as an older self-hosted one, would drop
-  # scheduled_at and send at once, and no answer can take the email back.
   defp check_schedulable(%{app_host: app_host}, %{scheduled_at: %DateTime{}})
        when app_host not in [@us_app_host, @eu_app_host] do
     {:error,
@@ -1233,24 +1230,26 @@ defmodule PostHog.Emails do
 
   defp parse_send_reply(reply, _scheduled_at), do: reply_error(reply)
 
-  # An accepted email is never retried, so an answer that doesn't confirm the time is an error
-  # that names the email, never a send without it.
   defp confirm_schedule(result, _fields, nil, _status), do: {:ok, result}
 
   defp confirm_schedule(result, fields, scheduled_at, status) do
     cond do
-      fields["status"] == "scheduled" and same_instant?(fields["scheduled_at"], scheduled_at) ->
+      confirms?(fields, scheduled_at) ->
         {:ok, %{result | status: "scheduled", scheduled_at: scheduled_at}}
 
-      # The time had passed when PostHog accepted the email, so it goes out now.
-      fields["status"] == "queued" and Map.has_key?(fields, "scheduled_at") and
-          is_nil(fields["scheduled_at"]) ->
+      sent_now_as_time_passed?(fields) ->
         {:ok, result}
 
       true ->
         {:error, schedule_not_confirmed(result.id, status)}
     end
   end
+
+  defp confirms?(fields, scheduled_at),
+    do: fields["status"] == "scheduled" and same_instant?(fields["scheduled_at"], scheduled_at)
+
+  defp sent_now_as_time_passed?(fields),
+    do: fields["status"] == "queued" and Map.fetch(fields, "scheduled_at") == {:ok, nil}
 
   defp same_instant?(answer, scheduled_at) when is_binary(answer) do
     case DateTime.from_iso8601(answer) do
