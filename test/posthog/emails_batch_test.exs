@@ -459,16 +459,18 @@ defmodule PostHog.EmailsBatchTest do
   end
 
   describe "batch/2 recipient results" do
-    test "the answer to a retry after a lost answer decides each result", %{name: name} do
+    test "a refusal of the retry after a lost answer leaves the email unconfirmed", %{name: name} do
       answers([lost(), ok([queued("m0", true), refused("m1", "recipient_suppressed")])])
 
-      assert {:ok, %Emails.BatchResult{results: [first, second]}} = batch(name, recipients(2))
+      assert {:ok, %Emails.BatchResult{results: [first, second] = results}} =
+               batch(name, recipients(2))
 
       assert [{:post, _, attempt}, {:post, _, retry}] = requested()
       assert attempt[:body] == retry[:body]
       assert {first.status, first.message_id, first.replayed} == {"queued", "m0", true}
-      assert {second.status, second.message_id} == {"failed", "m1"}
+      assert {second.status, second.message_id} == {"unconfirmed", "m1"}
       assert %Error{code: "recipient_suppressed"} = second.error
+      assert_resend_with_same_key(results)
     end
 
     test "a refusal without an earlier lost answer is failed", %{name: name} do
@@ -555,18 +557,28 @@ defmodule PostHog.EmailsBatchTest do
       assert_resend_with_same_key(results)
     end
 
-    for {status, code, result} <- [
-          {429, "throttled", "failed"},
-          {409, "idempotency_key_in_flight", "unconfirmed"}
+    for {label, status, code, earlier} <- [
+          {"a 429", 429, "throttled", [:lost]},
+          {"a 409 in flight", 409, "idempotency_key_in_flight", [:lost]},
+          {"a 400", 400, "invalid_form", [:lost]},
+          {"a 429 after a 503", 429, "throttled", [:lost, 503]}
         ] do
-      test "#{code} after a lost answer makes the recipients #{result}", %{name: name} do
-        answers([lost(), whole_call(unquote(status), unquote(code))])
+      test "#{label} to a retry after a lost answer leaves the recipients unconfirmed",
+           %{name: name} do
+        earlier =
+          Enum.map(unquote(earlier), fn
+            :lost -> lost()
+            503 -> whole_call(503, "delivery_unavailable")
+          end)
+
+        answers(earlier ++ [whole_call(unquote(status), unquote(code))])
 
         assert {:error, %BatchError{code: unquote(code), results: [first, _second] = results}} =
-                 batch(name, recipients(2), max_retries: 1)
+                 batch(name, recipients(2), max_retries: length(earlier))
 
-        assert statuses(results) == [unquote(result), unquote(result)]
+        assert statuses(results) == ["unconfirmed", "unconfirmed"]
         assert %Error{code: unquote(code), status_code: unquote(status)} = first.error
+        assert_resend_with_same_key(results)
       end
     end
 

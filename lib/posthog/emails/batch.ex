@@ -228,7 +228,8 @@ defmodule PostHog.Emails.Batch do
       body: IO.iodata_to_binary([head, Enum.map_join(members, ",", & &1.wire), "]}"]),
       results: %{},
       warnings: [],
-      max_retries: max_retries
+      max_retries: max_retries,
+      lost?: false
     }
   end
 
@@ -245,6 +246,11 @@ defmodule PostHog.Emails.Batch do
   end
 
   defp attempt(run, attempt, connection, headers) do
+    run = %{
+      run
+      | lost?: run.lost? or Enum.any?(Map.values(run.results), &(&1.status == "unconfirmed"))
+    }
+
     reply = Emails.request(connection, :post, @batch_path, headers, run.body)
     answer(run, attempt, reply)
   rescue
@@ -370,6 +376,9 @@ defmodule PostHog.Emails.Batch do
 
   defp all(run, status, error),
     do: Enum.reduce(Map.keys(run.members), run, &set(&2, &1, status, error: error))
+
+  defp set(run, index, "failed", fields) when run.lost?,
+    do: set(run, index, "unconfirmed", fields)
 
   defp set(run, index, "unconfirmed", fields),
     do: put_result(run, index, "unconfirmed", Keyword.update!(fields, :error, &resend_same_key/1))

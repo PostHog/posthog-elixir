@@ -92,7 +92,7 @@ defmodule PostHog.Emails.BatchEmailResult do
       whether it went out.
     - `"failed"`: PostHog didn't queue the email, and `:error` says why.
     - `"unconfirmed"`: the SDK can't tell whether PostHog queued the email, such as after a lost
-      answer. It may still go out. Send it again, unchanged, with the same `:idempotency_key`
+      answer, even when PostHog refused the retry. It may still go out. Send it again, unchanged, with the same `:idempotency_key`
       within 24 hours of the key's first use, so it goes out once; its error's `:fix` says the
       same.
   - `:message_id` - the email's message ID, when PostHog named it in its answer.
@@ -100,7 +100,7 @@ defmodule PostHog.Emails.BatchEmailResult do
     no new email was sent.
   - `:error` - a `PostHog.Emails.Error` that says why the email is not `"queued"`. For an
     `"unconfirmed"` email, its `:code` is `"delivery_unavailable"` after a lost answer, or the
-    code PostHog answered, such as `"idempotency_key_in_flight"`.
+    code PostHog answered last, such as `"idempotency_key_in_flight"`.
   """
 
   @typedoc "What happened to one recipient of a batch."
