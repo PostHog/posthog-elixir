@@ -923,7 +923,7 @@ defmodule PostHog.FeatureFlags do
   defp known_absent_key_list?(_improper_tail), do: false
 
   defp known_absent_key?(key) when is_binary(key), do: String.valid?(key)
-  defp known_absent_key?(key), do: is_atom(key) and not is_nil(key)
+  defp known_absent_key?(key), do: is_atom(key) and not is_nil(key) and not is_boolean(key)
 
   defp normalize_known_absent_groups(nil), do: {:ok, nil}
 

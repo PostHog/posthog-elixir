@@ -281,7 +281,12 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   defp mark_known_absent_groups(group_properties, _known_absent), do: group_properties
 
   defp known_absent_keys(keys) when is_list(keys),
-    do: for(key <- keys, is_binary(key) or (is_atom(key) and key != nil), do: to_string(key))
+    do:
+      for(
+        key <- keys,
+        is_binary(key) or (is_atom(key) and not is_nil(key) and not is_boolean(key)),
+        do: to_string(key)
+      )
 
   defp known_absent_keys(_keys), do: []
 

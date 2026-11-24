@@ -750,6 +750,11 @@ defmodule PostHog.FeatureFlags.KnownAbsentPropertyKeysTest do
       for extra <- [
             %{person_property_keys_known_absent: "plan"},
             %{person_property_keys_known_absent: [1]},
+            %{person_property_keys_known_absent: [true]},
+            %{person_property_keys_known_absent: [false]},
+            %{group_property_keys_known_absent: %{organization: [true]}},
+            %{group_property_keys_known_absent: %{true => ["tier"]}},
+            %{group_property_keys_known_absent: %{false => ["tier"]}},
             %{group_property_keys_known_absent: ["tier"]},
             %{group_property_keys_known_absent: %{organization: "tier"}},
             %{person_property_keys_known_absent: ["plan" | :improper]},
