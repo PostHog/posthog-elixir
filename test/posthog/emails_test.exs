@@ -2447,6 +2447,33 @@ defmodule PostHog.EmailsTest do
                Emails.send(name, @code_form ++ [scheduled_at: "2026-11-24T12:01:05Z"])
     end
 
+    test "keeps the first attempt's clock reading for its retries", %{name: name, clock: clock} do
+      test_pid = self()
+
+      expect(API.Mock, :request, fn _client, method, url, opts ->
+        send(test_pid, {:request, method, url, opts})
+        Agent.update(clock, &DateTime.add(&1, 10, :second))
+        refused(503, %{"code" => "service_unavailable"})
+      end)
+
+      expect_reply(
+        accepted(%{"message_id" => @message_id, "status" => "queued", "scheduled_at" => nil})
+      )
+
+      assert {:error, %Error{code: "schedule_not_confirmed", message_id: @message_id}} =
+               Emails.send(name, @code_form ++ [scheduled_at: "2026-11-24T12:01:05Z"])
+
+      assert_received {:slept, _ms}
+    end
+
+    test "refuses a queued answer without the scheduled_at key, also inside 60 seconds",
+         %{name: name} do
+      expect_reply(accepted(%{"message_id" => @message_id, "status" => "queued"}))
+
+      assert {:error, %Error{code: "schedule_not_confirmed", message_id: @message_id}} =
+               Emails.send(name, @code_form ++ [scheduled_at: "2026-11-24T12:00:30Z"])
+    end
+
     test "returns a replayed schedule", %{name: name} do
       expect_reply(scheduled("2026-12-01T09:00:00.000Z", %{"replayed" => true}))
 
