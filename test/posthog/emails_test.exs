@@ -1866,7 +1866,10 @@ defmodule PostHog.EmailsTest do
       name: name,
       monotonic: monotonic
     } do
+      test_pid = self()
+
       expect(API.Mock, :request, 6, fn _client, _method, _url, _opts ->
+        send(test_pid, {:request_at, Agent.get(monotonic, & &1)})
         Agent.update(monotonic, &(&1 + 600_000))
         refused(503, %{"code" => "service_unavailable"})
       end)
@@ -1878,6 +1881,14 @@ defmodule PostHog.EmailsTest do
                  max_retries: 100
                )
 
+      request_times =
+        for _attempt <- 1..6 do
+          assert_received {:request_at, at}
+          at
+        end
+
+      refute_received {:request_at, _at}
+      assert List.last(request_times) < 3_600_000
       assert Agent.get(monotonic, & &1) in 3_600_000..3_700_000
     end
 
@@ -2056,7 +2067,8 @@ defmodule PostHog.EmailsTest do
         assert {:error, %Error{code: "client_closed"}} =
                  Emails.send(name, to: "user@example.com", template_id: @template_id)
 
-        assert_received {:slept, _}
+        assert_received {:request, :post, _url, _opts}
+        refute_received {:request, _method, _url, _opts}
       end
     end
 

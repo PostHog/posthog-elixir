@@ -131,8 +131,8 @@ defmodule PostHog.Emails do
   A batch that PostHog refuses as a whole, such as a rate limit past its retries, returns
   `{:error, %PostHog.Emails.BatchError{}}`, whose `:results` hold every recipient. The last answer
   decides each result: after a lost answer, a 5xx or `idempotency_key_in_flight` past its retries,
-  the recipients are `"unconfirmed"`. PostHog answers 413 `too_large` when the request is too
-  large, such as shared `:template_data` copied to every recipient: split the recipients into
+  the recipients are `"unconfirmed"`. PostHog answers 413 `content_too_large` when the request is
+  too large, such as shared `:template_data` copied to every recipient: split the recipients into
   smaller batches. The code `batch_unavailable` (409) means the project can't send batches yet,
   and a 404 that the template doesn't exist or batch sends are off for the project: send each
   email the batch didn't queue with `send/2` and its recipient's `:idempotency_key`. A batch takes
@@ -552,9 +552,9 @@ defmodule PostHog.Emails do
   A batch that PostHog refuses as a whole returns `{:error, %PostHog.Emails.BatchError{}}`, whose
   `:results` hold every recipient. Its `:code` is `batch_unavailable` when the project can't send
   batches yet: send each email the batch didn't queue with `send/2` and its recipient's
-  `:idempotency_key`. It is `too_large` (413) when the request is too large for PostHog: split
-  the recipients into smaller batches. `client_closed` means the PostHog instance stopped during
-  the batch, so the SDK sent no further request. A request already in flight when it stops
+  `:idempotency_key`. It is `content_too_large` (413) when the request is too large for PostHog:
+  split the recipients into smaller batches. `client_closed` means the PostHog instance stopped
+  during the batch, so the SDK sent no further request. A request already in flight when it stops
   returns its own outcome, such as `network_error` with its recipients `"unconfirmed"`.
 
   Only a failure before the batch is sent returns `{:error, %PostHog.Emails.Error{}}`: an option

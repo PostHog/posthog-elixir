@@ -302,32 +302,32 @@ defmodule PostHog.Emails.Batch do
   defp request_fields(fields, status) do
     fields = Map.reject(fields, fn {_key, value} -> is_nil(value) end)
 
-    fields =
-      if status == 404,
-        do:
-          Map.merge(
-            %{
-              "code" => "not_found",
-              "detail" => "PostHog found no batch send for this request, so no email was sent.",
-              "why" =>
-                "The template doesn't exist, or batch sends are off for this project or this PostHog version.",
-              "fix" => "Check template_id, or #{@send_each}"
-            },
-            fields
-          ),
-        else: fields
+    fields = Map.merge(defaults(status), fields)
 
-    cond do
-      fields["code"] == "batch_unavailable" ->
-        Map.put(fields, "fix", "Until batch sends are on for the project, #{@send_each}")
-
-      status == 413 ->
-        Map.put(fields, "fix", "Split the recipients into smaller batches and send each one.")
-
-      true ->
-        fields
-    end
+    if fields["code"] == "batch_unavailable",
+      do: Map.put(fields, "fix", "Until batch sends are on for the project, #{@send_each}"),
+      else: fields
   end
+
+  defp defaults(404) do
+    %{
+      "code" => "not_found",
+      "detail" => "PostHog found no batch send for this request, so no email was sent.",
+      "why" =>
+        "The template doesn't exist, or batch sends are off for this project or this PostHog version.",
+      "fix" => "Check template_id, or #{@send_each}"
+    }
+  end
+
+  defp defaults(413) do
+    %{
+      "code" => "content_too_large",
+      "detail" => "The batch is larger than PostHog takes in one request, so no email was sent.",
+      "fix" => "Split the recipients into smaller batches, or send less template_data."
+    }
+  end
+
+  defp defaults(_status), do: %{}
 
   defp settle(run, index, slot) do
     slot = if is_map(slot), do: slot, else: %{}

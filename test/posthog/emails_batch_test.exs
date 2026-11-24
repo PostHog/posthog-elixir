@@ -405,15 +405,28 @@ defmodule PostHog.EmailsBatchTest do
       assert requested() == []
     end
 
-    test "a 413 comes back as the error, with a fix to split the recipients", %{name: name} do
-      answers([whole_call(413, "too_large")])
+    for {label, body, fix} <- [
+          {"with PostHog's fix",
+           %{
+             "type" => "invalid_request",
+             "code" => "content_too_large",
+             "detail" => "The batch is larger than PostHog can send at once.",
+             "fix" => "Split the recipients into smaller batches."
+           }, "Split the recipients into smaller batches."},
+          {"without a body", nil,
+           "Split the recipients into smaller batches, or send less template_data."}
+        ] do
+      test "a 413 #{label} comes back as the error, with a fix to split the batch", %{name: name} do
+        answers([{:ok, %{status: 413, headers: %{}, body: unquote(Macro.escape(body))}}])
 
-      assert {:error, %BatchError{code: "too_large", status_code: 413, results: results} = error} =
-               batch(name, recipients(2))
+        assert {:error,
+                %BatchError{code: "content_too_large", status_code: 413, results: results} = error} =
+                 batch(name, recipients(2))
 
-      assert error.fix =~ "smaller batches"
-      assert length(requested()) == 1
-      assert statuses(results) == ["failed", "failed"]
+        assert error.fix == unquote(fix)
+        assert length(requested()) == 1
+        assert statuses(results) == ["failed", "failed"]
+      end
     end
 
     @tag config: [email_request_timeout_ms: 50]
