@@ -118,6 +118,9 @@ defmodule PostHog.EmailsTest.FakePostHog do
   """
   def fail_next(fake, route, reply), do: script(fake, route, {:reply, reply})
 
+  @doc "Adds `fields` to the send route's answer when it accepts its next email."
+  def confirm_next(fake, fields), do: script(fake, :send, {:confirm, fields})
+
   @doc "Makes the route take `ms` longer to answer its next request."
   def delay_next(fake, route, ms), do: script(fake, route, {:delay, ms})
 
@@ -205,13 +208,16 @@ defmodule PostHog.EmailsTest.FakePostHog do
       {{:reply, {status, reply}}, _test} ->
         json(conn, status, reply)
 
+      {{:confirm, fields}, _test} ->
+        answer(conn, route, request, fake, fields)
+
       {step, test} ->
         run_step(step, route, test)
-        answer(conn, route, request, fake)
+        answer(conn, route, request, fake, %{})
     end
   end
 
-  defp answer(conn, route, request, fake) do
+  defp answer(conn, route, request, fake, answer) do
     cond do
       Plug.Conn.get_req_header(conn, "authorization") != ["Bearer #{@secret_key}"] ->
         json(conn, 401, refusal("authentication_failed", "Invalid secret API key.", nil))
@@ -220,7 +226,7 @@ defmodule PostHog.EmailsTest.FakePostHog do
         sign_uploads(conn, request, fake)
 
       true ->
-        accept(conn, request, fake)
+        accept(conn, request, fake, answer)
     end
   end
 
@@ -248,7 +254,7 @@ defmodule PostHog.EmailsTest.FakePostHog do
     end
   end
 
-  defp accept(conn, email, fake) do
+  defp accept(conn, email, fake, answer) do
     files = files(fake)
 
     missing =
@@ -275,15 +281,10 @@ defmodule PostHog.EmailsTest.FakePostHog do
           "attr" => nil
         })
       else
-        json(conn, 202, schedule_answer(email, record_message(fake, email)))
+        json(conn, 202, Map.put(answer, "message_id", record_message(fake, email)))
       end
     end
   end
-
-  defp schedule_answer(%{"scheduled_at" => at}, id) when is_binary(at),
-    do: %{"message_id" => id, "status" => "scheduled", "scheduled_at" => at}
-
-  defp schedule_answer(_email, id), do: %{"message_id" => id}
 
   # PostHog's estimate of the sent message: each file and body as folded Base64, 64 KiB for
   # headers and MIME boundaries, and the subject as 75 bytes per 42 started. Without a text body,
@@ -938,6 +939,11 @@ defmodule PostHog.EmailsTest do
     end
 
     test "uploads the files, then schedules the email that names them", %{name: name, fake: fake} do
+      FakePostHog.confirm_next(fake, %{
+        "status" => "scheduled",
+        "scheduled_at" => "2026-12-01T09:00:00.000Z"
+      })
+
       assert {:ok,
               %Emails.SendResult{
                 id: id,
@@ -2285,6 +2291,7 @@ defmodule PostHog.EmailsTest do
           {"year zero, which PostHog refuses, also when its offset carries it into year one",
            "0000-12-31T23:30:00-01:00"},
           {"a DateTime in year zero", quote(do: %{~U[2026-12-01 09:00:00Z] | year: 0})},
+          {"a string whose offset carries it back into year zero", "0001-01-01T00:30:00+01:00"},
           {"a DateTime past the last time Unix time can hold",
            quote(do: %{~U[2026-12-01 09:00:00Z] | year: 9_999_999})}
         ] do
@@ -2487,19 +2494,24 @@ defmodule PostHog.EmailsTest do
                Emails.send(name, @code_form ++ [scheduled_at: "2026-11-24T12:01:05Z"])
     end
 
-    for {status, code, label, outcome} <- [
-          {503, "service_unavailable",
-           "keeps the first clock reading after a 503, which PostHog may have taken", :error},
-          {429, "rate_limited", "reads the clock again after a 429, which PostHog refused", :ok}
+    for {label, refusals, outcome} <- [
+          {"keeps the first clock reading after a 503, which PostHog may have taken",
+           [{503, "service_unavailable"}], :error},
+          {"reads the clock again after a 429, which PostHog refused", [{429, "rate_limited"}],
+           :ok},
+          {"keeps the first clock reading through a 429 that follows a 503",
+           [{503, "service_unavailable"}, {429, "rate_limited"}], :error}
         ] do
       test "#{label}", %{name: name, clock: clock} do
         test_pid = self()
 
-        expect(API.Mock, :request, fn _client, method, url, opts ->
-          send(test_pid, {:request, method, url, opts})
-          Agent.update(clock, &DateTime.add(&1, 10, :second))
-          refused(unquote(status), %{"code" => unquote(code)})
-        end)
+        for {status, code} <- unquote(refusals) do
+          expect(API.Mock, :request, fn _client, method, url, opts ->
+            send(test_pid, {:request, method, url, opts})
+            Agent.update(clock, &DateTime.add(&1, 10, :second))
+            refused(status, %{"code" => code})
+          end)
+        end
 
         expect_reply(
           accepted(%{"message_id" => @message_id, "status" => "queued", "scheduled_at" => nil})
