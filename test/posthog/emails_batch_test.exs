@@ -73,7 +73,8 @@ defmodule PostHog.EmailsBatchTest do
 
   defp assert_resend_with_same_key(results) do
     for %{status: "unconfirmed", error: error} <- results do
-      assert error.fix =~ "same idempotency_key"
+      assert error.fix =~
+               "unchanged, with the same idempotency_key within 24 hours of the key's first use"
     end
   end
 
@@ -621,6 +622,18 @@ defmodule PostHog.EmailsBatchTest do
 
       assert %Error{code: "delivery_unavailable"} = result.error
       assert %Error{code: "service_unavailable", status_code: 503} = result.later_error
+    end
+
+    test "an answer without a result per recipient after a lost answer is the later one", %{
+      name: name
+    } do
+      answers([lost(), ok([])])
+
+      assert {:error, %BatchError{code: "api_error", results: [result]}} =
+               batch(name, recipients(1), max_retries: 1)
+
+      assert %Error{code: "delivery_unavailable"} = result.error
+      assert %Error{code: "api_error", status_code: 200} = result.later_error
     end
 
     for {label, code} <- [{"without a body", nil}, {"coded api_error", "api_error"}] do

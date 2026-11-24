@@ -125,8 +125,8 @@ defmodule PostHog.Emails do
   - `"queued"`: PostHog accepted the email.
   - `"failed"`: PostHog refused it, and `:error` says why, such as a suppressed address.
   - `"unconfirmed"`: the SDK can't tell whether PostHog accepted it, such as after a lost
-    answer, so it may still go out. Send it again with the same `:idempotency_key` within 24
-    hours, so it goes out once.
+    answer, so it may still go out. Send it again, unchanged, with the same `:idempotency_key`
+    within 24 hours of the key's first use, so it goes out once.
   - `"not_attempted"`: an earlier request of the batch failed, or the PostHog instance stopped,
     so the SDK sent nothing for it.
 
@@ -435,8 +435,7 @@ defmodule PostHog.Emails do
     call, so pass keys you store when a batch may be cut off and run again: a rerun within 24
     hours replays the emails that went out instead of sending them twice. A single send and a
     batch recipient with the same key and the same email replay each other. Never reuse a key
-    for another email: PostHog replays the earlier email with that key instead of sending this
-    one.
+    for another email: PostHog refuses it with `idempotency_key_reused`.
   - `:template_data` - only with `:template_id`: values for this recipient, merged over the
     batch's `:template_data`. A top-level key set here replaces the same key there.
   """
@@ -550,8 +549,9 @@ defmodule PostHog.Emails do
 
   Returns `{:ok, %PostHog.Emails.BatchResult{}}` with a result per recipient, in the order of
   `:recipients`. Check each result's `:status`: `"queued"`, `"failed"` or `"unconfirmed"`. An
-  `"unconfirmed"` email may still go out: send it again with the same `:idempotency_key` within
-  24 hours, so it goes out once. Its error's `:fix` says the same.
+  `"unconfirmed"` email may still go out: send it again, unchanged, with the same
+  `:idempotency_key` within 24 hours of the key's first use, so it goes out once. Its error's
+  `:fix` says the same.
 
   A request that fails as a whole stops the batch and returns
   `{:error, %PostHog.Emails.BatchError{}}`, whose `:results` hold every recipient, those not sent

@@ -309,12 +309,14 @@ defmodule PostHog.Emails.Batch do
         {:ok, add_warnings(run, Emails.warnings(fields["warnings"]))}
 
       _slots ->
-        {:error,
-         Error.new(
-           "api_error",
-           "PostHog answered the batch without a result for each recipient.",
-           status_code: status
-         ), lost(run, chunk)}
+        error =
+          Error.new(
+            "api_error",
+            "PostHog answered the batch without a result for each recipient.",
+            status_code: status
+          )
+
+        {:error, error, lost(run, chunk, unconfirmed(), error)}
     end
   end
 
@@ -443,7 +445,7 @@ defmodule PostHog.Emails.Batch do
   defp unconfirmed do
     Error.new(
       "delivery_unavailable",
-      "PostHog didn't confirm this email, so it may still go out. Send it again with the same idempotency_key within 24 hours, so it goes out once.",
+      "PostHog didn't confirm this email, so it may still go out.",
       name: :service_unavailable
     )
   end
@@ -481,7 +483,7 @@ defmodule PostHog.Emails.Batch do
     do: %{
       error
       | fix:
-          "Send this email again with the same idempotency_key within 24 hours, so it goes out once."
+          "Send this email again, unchanged, with the same idempotency_key within 24 hours of the key's first use, so it goes out once."
     }
 
   defp put_result(run, index, status, fields) do
