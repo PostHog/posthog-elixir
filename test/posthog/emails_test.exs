@@ -465,6 +465,8 @@ defmodule PostHog.EmailsTest do
       API.Stub.request(client, method, url, opts)
     end)
 
+    clock = start_supervised!({Agent, fn -> context[:now] || ~U[2026-11-24 12:00:00.000000Z] end})
+
     config =
       [
         api_host: "https://us.i.posthog.com",
@@ -476,7 +478,7 @@ defmodule PostHog.EmailsTest do
       ]
       |> Keyword.merge(context[:config] || [])
       |> PostHog.Config.validate!()
-      |> Map.put(:email_now, fn -> context[:now] || ~U[2026-11-24 12:00:00.000000Z] end)
+      |> Map.put(:email_now, fn -> Agent.get(clock, & &1) end)
       |> Map.put(:email_sleep, fn ms ->
         send(test_pid, {:slept, ms})
         if context[:stop_instance_on_sleep], do: stop_supervised!(context.test)
@@ -487,7 +489,7 @@ defmodule PostHog.EmailsTest do
       )
 
     start_link_supervised!({PostHog.Supervisor, config})
-    %{name: context.test}
+    %{name: context.test, clock: clock}
   end
 
   defp expect_reply(times \\ 1, reply) do
@@ -2429,6 +2431,20 @@ defmodule PostHog.EmailsTest do
 
       assert_received {:request, :post, @send_url, _}
       refute_requested()
+    end
+
+    test "reads the clock before the request, so a slow answer can't turn early into on time",
+         %{name: name, clock: clock} do
+      test_pid = self()
+
+      expect(API.Mock, :request, fn _client, method, url, opts ->
+        send(test_pid, {:request, method, url, opts})
+        Agent.update(clock, &DateTime.add(&1, 10, :second))
+        accepted(%{"message_id" => @message_id, "status" => "queued", "scheduled_at" => nil})
+      end)
+
+      assert {:error, %Error{code: "schedule_not_confirmed", message_id: @message_id}} =
+               Emails.send(name, @code_form ++ [scheduled_at: "2026-11-24T12:01:05Z"])
     end
 
     test "returns a replayed schedule", %{name: name} do
