@@ -2072,9 +2072,30 @@ defmodule PostHog.EmailsTest do
       test "sends no retry after the instance stops#{label}", %{name: name} do
         expect_reply(refused(429, %{"code" => "throttled"}))
 
-        assert {:error, %Error{code: "client_closed"}} =
+        assert {:error, %Error{code: "client_closed"} = error} =
                  Emails.send(name, to: "user@example.com", template_id: @template_id)
 
+        assert error.message =~ "no email was sent"
+        assert_received {:request, :post, _url, _opts}
+        refute_received {:request, _method, _url, _opts}
+      end
+    end
+
+    for {label, reply} <- [
+          {"a 503",
+           Macro.escape({:ok, %{status: 503, headers: %{}, body: %{"code" => "api_error"}}})},
+          {"a lost answer", Macro.escape({:error, %Req.TransportError{reason: :timeout}})}
+        ] do
+      @tag stop_instance_on_sleep: true
+      test "a stop after #{label} says the email may still go out", %{name: name} do
+        expect_reply(unquote(reply))
+
+        assert {:error, %Error{code: "client_closed"} = error} =
+                 Emails.send(name, to: "user@example.com", template_id: @template_id)
+
+        refute error.message =~ "no email was sent"
+        assert error.message =~ "may still go out"
+        assert error.fix =~ "same idempotency_key"
         assert_received {:request, :post, _url, _opts}
         refute_received {:request, _method, _url, _opts}
       end
