@@ -14,6 +14,7 @@ defmodule PostHog.Emails.Batch do
   @recipient_fields [:to, :distinct_id, :idempotency_key, :template_data]
   @per_recipient_fields [:to, :distinct_id, :idempotency_key]
   @excluded_fields [:scheduled_at, :cc, :bcc, :attachments]
+  @resend_same_key "Send this email again, unchanged, with the same idempotency_key within 24 hours of the key's first use, so it goes out once."
   @send_each "send each email the batch didn't queue with PostHog.Emails.send/2 and its recipient's idempotency_key."
 
   @spec batch(PostHog.supervisor_name(), [Emails.batch_option()] | map()) ::
@@ -250,7 +251,7 @@ defmodule PostHog.Emails.Batch do
       %{
         error
         | message:
-            "The PostHog instance #{inspect(connection.name)} stopped during the call, so the SDK sent no retry. PostHog may have queued some of the emails, and each result says which."
+            "The PostHog instance #{inspect(connection.name)} stopped during the call, so the SDK sent no further request. PostHog may have queued some of the emails, and each result says which."
       }
     else
       error
@@ -341,7 +342,7 @@ defmodule PostHog.Emails.Batch do
   defp defaults(404) do
     %{
       "code" => "not_found",
-      "detail" => "PostHog found no batch send for this request, so no email was sent.",
+      "detail" => "PostHog found no batch send for this request.",
       "why" =>
         "The template doesn't exist, or batch sends are off for this project or this PostHog version.",
       "fix" => "Check template_id, or #{@send_each}"
@@ -402,11 +403,14 @@ defmodule PostHog.Emails.Batch do
   end
 
   defp refused_after_loss(error) do
-    resend_same_key(%{
+    then_fix = if error.fix, do: " If PostHog refuses it again: #{error.fix}", else: ""
+
+    %{
       error
       | message:
-          "PostHog refused a retry: #{error.message} Its answer to an earlier try was lost, so the email may still go out."
-    })
+          "PostHog refused a retry: #{error.message} Its answer to an earlier try was lost, so the email may still go out.",
+        fix: @resend_same_key <> then_fix
+    }
   end
 
   defp unconfirmed do
@@ -425,12 +429,11 @@ defmodule PostHog.Emails.Batch do
 
   defp set(run, index, status, fields), do: put_result(run, index, status, fields)
 
-  defp resend_same_key(error),
-    do: %{
-      error
-      | fix:
-          "Send this email again, unchanged, with the same idempotency_key within 24 hours of the key's first use, so it goes out once."
-    }
+  defp resend_same_key(error) do
+    if String.starts_with?(error.fix || "", @resend_same_key),
+      do: error,
+      else: %{error | fix: @resend_same_key}
+  end
 
   defp put_result(run, index, status, fields) do
     member = run.members[index]

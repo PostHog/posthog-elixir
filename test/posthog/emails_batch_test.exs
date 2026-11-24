@@ -508,19 +508,27 @@ defmodule PostHog.EmailsBatchTest do
   end
 
   describe "batch/2 recipient results" do
-    test "a refusal of the retry after a lost answer leaves the email unconfirmed", %{name: name} do
-      answers([lost(), ok([queued("m0", true), refused("m1", "recipient_suppressed")])])
+    for {label, earlier} <- [
+          {"a lost answer", quote(do: lost())},
+          {"a 503", quote(do: whole_call(503, "delivery_unavailable"))}
+        ] do
+      test "a refusal of the retry after #{label} leaves the email unconfirmed", %{name: name} do
+        answers([
+          unquote(earlier),
+          ok([queued("m0", true), refused("m1", "recipient_suppressed")])
+        ])
 
-      assert {:ok, %Emails.BatchResult{results: [first, second] = results}} =
-               batch(name, recipients(2))
+        assert {:ok, %Emails.BatchResult{results: [first, second] = results}} =
+                 batch(name, recipients(2))
 
-      assert [{:post, _, attempt}, {:post, _, retry}] = requested()
-      assert attempt[:body] == retry[:body]
-      assert {first.status, first.message_id, first.replayed} == {"queued", "m0", true}
-      assert {second.status, second.message_id} == {"unconfirmed", "m1"}
-      assert %Error{code: "recipient_suppressed"} = second.error
-      assert second.error.message =~ "may still go out"
-      assert_resend_with_same_key(results)
+        assert [{:post, _, attempt}, {:post, _, retry}] = requested()
+        assert attempt[:body] == retry[:body]
+        assert {first.status, first.message_id, first.replayed} == {"queued", "m0", true}
+        assert {second.status, second.message_id} == {"unconfirmed", "m1"}
+        assert %Error{code: "recipient_suppressed"} = second.error
+        assert second.error.message =~ "may still go out"
+        assert_resend_with_same_key(results)
+      end
     end
 
     test "a refusal without an earlier lost answer is failed", %{name: name} do
@@ -607,12 +615,14 @@ defmodule PostHog.EmailsBatchTest do
       assert_resend_with_same_key(results)
     end
 
-    for {label, status, code, earlier} <- [
-          {"a 429", 429, "throttled", [:lost]},
-          {"a 409 in flight", 409, "idempotency_key_in_flight", [:lost]},
-          {"a 400", 400, "invalid_form", [:lost]},
-          {"a 413 without a body", 413, nil, [:lost]},
-          {"a 429 after a 503", 429, "throttled", [:lost, 503]}
+    for {label, status, code, earlier, then_fix} <- [
+          {"a 429", 429, "throttled", [:lost], nil},
+          {"a 409 in flight", 409, "idempotency_key_in_flight", [:lost], nil},
+          {"a 400", 400, "invalid_form", [:lost], nil},
+          {"a 413 without a body", 413, nil, [:lost], "Split the recipients"},
+          {"a 404 without a body", 404, nil, [:lost], "PostHog.Emails.send/2"},
+          {"a 409 batch_unavailable", 409, "batch_unavailable", [:lost], "PostHog.Emails.send/2"},
+          {"a 429 after a 503", 429, "throttled", [:lost, 503], nil}
         ] do
       test "#{label} to a retry after a lost answer leaves the recipients unconfirmed",
            %{name: name} do
@@ -627,7 +637,7 @@ defmodule PostHog.EmailsBatchTest do
         assert {:error, %BatchError{results: [first, _second] = results} = error} =
                  batch(name, recipients(2), max_retries: length(earlier))
 
-        code = unquote(code) || "content_too_large"
+        code = unquote(code) || %{413 => "content_too_large", 404 => "not_found"}[unquote(status)]
         assert {error.code, error.status_code} == {code, unquote(status)}
         assert statuses(results) == ["unconfirmed", "unconfirmed"]
         assert %Error{code: ^code, status_code: unquote(status)} = first.error
@@ -640,6 +650,11 @@ defmodule PostHog.EmailsBatchTest do
         end
 
         if code != "idempotency_key_in_flight", do: assert(error.fix == first.error.fix)
+
+        if unquote(then_fix) do
+          assert error.fix =~ "If PostHog refuses it again: "
+          assert error.fix =~ unquote(then_fix)
+        end
 
         assert_resend_with_same_key(results)
       end
@@ -773,7 +788,7 @@ defmodule PostHog.EmailsBatchTest do
       assert {:error, %BatchError{code: "client_closed", results: results} = error} =
                Task.await(sending)
 
-      assert error.message =~ "sent no retry"
+      assert error.message =~ "sent no further request"
       refute error.message =~ "wasn't sent"
       assert length(requested()) == 1
       assert statuses(results) == ["unconfirmed", "unconfirmed"]
@@ -803,7 +818,7 @@ defmodule PostHog.EmailsBatchTest do
         assert {:error, %BatchError{code: "client_closed", results: results} = error} =
                  batch(name, recipients(2))
 
-        assert error.message =~ "sent no retry"
+        assert error.message =~ "sent no further request"
         refute error.message =~ "wasn't sent"
         assert length(requested()) == 1
         assert statuses(results) == ["unconfirmed", "unconfirmed"]
