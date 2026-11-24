@@ -95,16 +95,12 @@ defmodule PostHog.Emails.BatchEmailResult do
       answer. It may still go out. Send it again, unchanged, with the same `:idempotency_key`
       within 24 hours of the key's first use, so it goes out once; its error's `:fix` says the
       same.
-    - `"not_attempted"`: an earlier request of the batch failed, or the PostHog instance
-      stopped, so the SDK sent nothing for this recipient.
   - `:message_id` - the email's message ID, when PostHog named it in its answer.
   - `:replayed` - `true` when an earlier send with the same key had already queued the email, so
     no new email was sent.
   - `:error` - a `PostHog.Emails.Error` that says why the email is not `"queued"`. For an
-    `"unconfirmed"` email, its `:code` is `"delivery_unavailable"`, `"idempotency_key_in_flight"`
-    or `"api_error"`.
-  - `:later_error` - for an `"unconfirmed"` email, what a retry in the same call answered, which
-    describes only that retry.
+    `"unconfirmed"` email, its `:code` is `"delivery_unavailable"` after a lost answer, or the
+    code PostHog answered, such as `"idempotency_key_in_flight"`.
   """
 
   @typedoc "What happened to one recipient of a batch."
@@ -115,8 +111,7 @@ defmodule PostHog.Emails.BatchEmailResult do
           status: String.t(),
           message_id: String.t() | nil,
           replayed: boolean(),
-          error: PostHog.Emails.Error.t() | nil,
-          later_error: PostHog.Emails.Error.t() | nil
+          error: PostHog.Emails.Error.t() | nil
         }
 
   @enforce_keys [:index, :to, :idempotency_key, :status]
@@ -127,8 +122,7 @@ defmodule PostHog.Emails.BatchEmailResult do
     :status,
     message_id: nil,
     replayed: false,
-    error: nil,
-    later_error: nil
+    error: nil
   ]
 end
 

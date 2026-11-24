@@ -17,11 +17,8 @@ defmodule PostHog.Emails.Error do
     `"attachment_upload_failed"` when the storage refused an upload, `"scheduling_requires_cloud"`
     for a send with `:scheduled_at` to a host that is not PostHog Cloud, `"schedule_not_confirmed"`
     when PostHog accepted a send with `:scheduled_at` without confirming its time,
-    `"content_too_large"` for a batch recipient whose email is larger than one batch request
-    takes, `"delivery_unavailable"` for a batch recipient PostHog didn't confirm, which may still
-    go out, `"not_attempted"` for a batch recipient the SDK didn't send because an earlier request
-    of the batch failed or the instance stopped, or an `"invalid_*"` code for an option the SDK refused before any
-    request.
+    `"delivery_unavailable"` for a batch recipient PostHog didn't confirm, which may still go
+    out, or an `"invalid_*"` code for an option the SDK refused before any request.
   - `:message` - human-readable message.
   - `:status_code` - the HTTP status, when PostHog answered, or the storage's for
     `"attachment_upload_failed"`.
@@ -109,12 +106,10 @@ end
 
 defmodule PostHog.Emails.BatchError do
   @moduledoc """
-  A request of `PostHog.Emails.batch/2` failed as a whole, or raised, so the batch stopped.
+  The request of `PostHog.Emails.batch/2` failed as a whole, or raised.
 
-  The fields of `PostHog.Emails.Error` describe that request's error. `:results` holds every
-  recipient: those of earlier requests as PostHog answered them, those of the failed request as
-  `"failed"`, or `"unconfirmed"` where PostHog may have queued them, and the rest as
-  `"not_attempted"`.
+  The fields of `PostHog.Emails.Error` describe the request's error. `:results` holds every
+  recipient: `"failed"`, or `"unconfirmed"` where PostHog may have queued the email.
 
   ## Fields
 
@@ -122,12 +117,12 @@ defmodule PostHog.Emails.BatchError do
     `:retry_after_ms` and `:message_id` - as on `PostHog.Emails.Error`.
   - `:results` - one `PostHog.Emails.BatchEmailResult` per recipient, in the order of
     `:recipients`.
-  - `:warnings` - the warnings PostHog returned about the requests that went out, each once.
+  - `:warnings` - the warnings PostHog returned about the batch, each once.
   """
 
   alias PostHog.Emails.Error
 
-  @typedoc "A batch that stopped at a request that failed as a whole."
+  @typedoc "A batch whose request failed as a whole."
   @type t() :: %__MODULE__{
           name: Error.name(),
           code: String.t(),

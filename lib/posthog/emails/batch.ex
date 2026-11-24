@@ -9,7 +9,6 @@ defmodule PostHog.Emails.Batch do
 
   @batch_path "/api/messaging/send/email_batch/"
   @max_recipients 100
-  @max_body_bytes 4 * 1024 * 1024
   @min_timeout_ms 45_000
   @unconfirmed_codes ["idempotency_key_in_flight", "delivery_unavailable", "api_error"]
   @recipient_fields [:to, :distinct_id, :idempotency_key, :template_data]
@@ -21,7 +20,7 @@ defmodule PostHog.Emails.Batch do
           {:ok, BatchResult.t()} | {:error, BatchError.t() | Error.t()}
   def batch(name, options) do
     case start(name, options) do
-      {:ok, run, connection} -> run |> send_chunks(connection) |> finish()
+      {:ok, run, connection} -> run |> send_batch(connection) |> finish()
       {:error, error} -> {:error, error}
     end
   end
@@ -29,7 +28,7 @@ defmodule PostHog.Emails.Batch do
   defp start(name, options) do
     with {:ok, run} <- prepare(options),
          {:ok, connection} <- Emails.connect(name, :send) do
-      {:ok, run, %{connection | nothing_done: "the rest of the batch wasn't sent"}}
+      {:ok, run, %{connection | nothing_done: "the batch wasn't sent"}}
     end
   rescue
     exception -> {:error, Emails.unexpected(exception, "Sending the batch failed unexpectedly.")}
@@ -39,11 +38,12 @@ defmodule PostHog.Emails.Batch do
     with {:ok, options} <- options(options),
          :ok <- refuse_fields(options),
          {:ok, recipients} <- fetch_recipients(options),
+         :ok <- within_limit(recipients),
          {:ok, max_retries} <- Emails.max_retries(options),
          {:ok, shared} <- Emails.content(Map.drop(options, [:recipients, :max_retries])),
          {:ok, shared} <- Emails.encode(shared, options),
          {:ok, members} <- members(recipients, options) do
-      {:ok, split(members, shared, max_retries)}
+      {:ok, run(members, shared, max_retries)}
     end
   end
 
@@ -103,6 +103,18 @@ defmodule PostHog.Emails.Batch do
         "recipients must be a list of recipients, each a map with to.",
         "recipients"
       )
+
+  defp within_limit(recipients) when length(recipients) <= @max_recipients, do: :ok
+
+  defp within_limit(_recipients) do
+    {:error,
+     Error.new(
+       "invalid_recipients",
+       "A batch takes at most #{@max_recipients} recipients, so no email was sent.",
+       field: "recipients",
+       fix: "Split the recipients into batches of #{@max_recipients} or fewer."
+     )}
+  end
 
   defp members(recipients, options), do: members(recipients, options, 0, %{}, [])
 
@@ -208,103 +220,59 @@ defmodule PostHog.Emails.Batch do
 
   defp invalid(code, message, field), do: {:error, Error.new(code, message, field: field)}
 
-  defp split(members, shared, max_retries) do
+  defp run(members, shared, max_retries) do
     head = binary_part(shared, 0, byte_size(shared) - 1) <> ~s(,"recipients":[)
-    empty = byte_size(head) + 2
 
-    run = %{
+    %{
       members: Map.new(members, &{&1.index, &1}),
-      head: head,
-      chunks: [],
+      body: IO.iodata_to_binary([head, Enum.map_join(members, ",", & &1.wire), "]}"]),
       results: %{},
       warnings: [],
       max_retries: max_retries
     }
-
-    {run, current, _size} =
-      Enum.reduce(members, {run, [], empty}, fn member, {run, current, size} ->
-        wire_size = byte_size(member.wire)
-
-        cond do
-          empty + wire_size > @max_body_bytes ->
-            {set(run, member.index, "failed", error: too_large()), current, size}
-
-          current == [] ->
-            {run, [member.index], empty + wire_size}
-
-          length(current) == @max_recipients or size + 1 + wire_size > @max_body_bytes ->
-            {add_chunk(run, current), [member.index], empty + wire_size}
-
-          true ->
-            {run, [member.index | current], size + 1 + wire_size}
-        end
-      end)
-
-    run = if current == [], do: run, else: add_chunk(run, current)
-    %{run | chunks: Enum.reverse(run.chunks)}
   end
 
-  defp add_chunk(run, reversed_chunk),
-    do: %{run | chunks: [Enum.reverse(reversed_chunk) | run.chunks]}
-
-  defp too_large do
-    Error.new(
-      "content_too_large",
-      "This recipient's email is larger than one batch request takes, so it wasn't sent.",
-      name: :validation_error,
-      fix: "Send this recipient's email with PostHog.Emails.send/2.",
-      field: "recipients"
-    )
-  end
-
-  defp send_chunks(run, connection) do
+  defp send_batch(run, connection) do
     post = %{connection | timeout_ms: max(connection.timeout_ms, @min_timeout_ms)}
     headers = [{"content-type", "application/json"} | Emails.headers(connection)]
     max_retries = run.max_retries || connection.max_retries
+    attempt_once = &attempt(&1, &2, post, headers)
 
-    run.chunks
-    |> Enum.with_index()
-    |> Enum.reduce_while({:ok, run}, fn {chunk, position}, {:ok, run} ->
-      body =
-        IO.iodata_to_binary([run.head, Enum.map_join(chunk, ",", &run.members[&1].wire), "]}"])
-
-      attempt_once = &attempt(&1, &2, post, headers, chunk, body)
-
-      case Emails.with_retries(post, max_retries, run, attempt_once) do
-        {:ok, run} ->
-          {:cont, {:ok, run}}
-
-        {:error, error, run} ->
-          {:halt, {:error, stop(run, position, error), error}}
-      end
-    end)
+    case Emails.with_retries(post, max_retries, run, attempt_once) do
+      {:ok, run} -> {:ok, run}
+      {:error, error, run} -> {:error, run, error}
+    end
   end
 
-  defp attempt(run, attempt, connection, headers, chunk, body) do
-    reply = Emails.request(connection, :post, @batch_path, headers, body)
-    answer(run, chunk, attempt, reply)
+  defp attempt(run, attempt, connection, headers) do
+    reply = Emails.request(connection, :post, @batch_path, headers, run.body)
+    answer(run, attempt, reply)
   rescue
     exception ->
       {:error, Emails.unexpected(exception, "Sending the batch failed unexpectedly."),
-       lost(run, chunk)}
+       all(run, "unconfirmed", unconfirmed())}
   end
 
-  defp answer(run, chunk, 0, {:error, %Error{code: "client_closed"} = error}),
-    do: {:error, error, skip(run, chunk, error)}
+  defp answer(run, 0, {:error, %Error{code: "client_closed"} = error}),
+    do: {:error, error, all(run, "failed", error)}
 
-  defp answer(run, chunk, _attempt, {:error, %Error{code: "network_error"} = error}),
-    do: {:error, error, lost(run, chunk)}
+  defp answer(run, _attempt, {:error, %Error{code: "network_error"} = error}),
+    do: {:error, error, all(run, "unconfirmed", unconfirmed())}
 
-  defp answer(run, _chunk, _attempt, {:error, error}), do: {:error, error, run}
+  defp answer(run, _attempt, {:error, error}) when map_size(run.results) > 0,
+    do: {:error, error, run}
 
-  defp answer(run, chunk, _attempt, {:ok, status, fields, _retry_after_ms})
+  defp answer(run, _attempt, {:error, error}),
+    do: {:error, error, all(run, "unconfirmed", error)}
+
+  defp answer(run, _attempt, {:ok, status, fields, _retry_after_ms})
        when status in 200..299 do
     case fields["results"] do
-      slots when is_list(slots) and length(slots) == length(chunk) ->
+      slots when is_list(slots) and length(slots) == map_size(run.members) ->
         run =
-          chunk
-          |> Enum.zip(slots)
-          |> Enum.reduce(run, fn {index, slot}, run -> settle(run, index, slot) end)
+          slots
+          |> Enum.with_index()
+          |> Enum.reduce(run, fn {slot, index}, run -> settle(run, index, slot) end)
 
         {:ok, add_warnings(run, Emails.warnings(fields["warnings"]))}
 
@@ -316,28 +284,23 @@ defmodule PostHog.Emails.Batch do
             status_code: status
           )
 
-        {:error, error, lost(run, chunk, unconfirmed(), error)}
+        {:error, error, all(run, "unconfirmed", error)}
     end
   end
 
-  defp answer(run, chunk, _attempt, {:ok, status, fields, retry_after_ms}) do
+  defp answer(run, _attempt, {:ok, status, fields, retry_after_ms}) do
     {:error, error} =
-      Emails.reply_error({:ok, status, request_fields(fields, status, chunk), retry_after_ms})
+      Emails.reply_error({:ok, status, request_fields(fields, status), retry_after_ms})
 
-    cond do
-      status != 429 and Emails.text(fields["code"]) in @unconfirmed_codes ->
-        {:error, error, lost(run, chunk, error, error)}
+    uncertain? =
+      status >= 500 or
+        (status != 429 and Emails.text(fields["code"]) in @unconfirmed_codes)
 
-      status >= 500 ->
-        {:error, error, lost(run, chunk, unconfirmed(), error)}
-
-      true ->
-        {:error, error, refused(run, chunk, error)}
-    end
+    {:error, error, all(run, if(uncertain?, do: "unconfirmed", else: "failed"), error)}
   end
 
-  defp request_fields(fields, status, chunk) do
-    fields = fields |> Map.reject(fn {_key, value} -> is_nil(value) end) |> remap_attr(chunk)
+  defp request_fields(fields, status) do
+    fields = Map.reject(fields, fn {_key, value} -> is_nil(value) end)
 
     fields =
       if status == 404,
@@ -354,37 +317,17 @@ defmodule PostHog.Emails.Batch do
           ),
         else: fields
 
-    if fields["code"] == "batch_unavailable",
-      do: Map.put(fields, "fix", "Until batch sends are on for the project, #{@send_each}"),
-      else: fields
+    cond do
+      fields["code"] == "batch_unavailable" ->
+        Map.put(fields, "fix", "Until batch sends are on for the project, #{@send_each}")
+
+      status == 413 ->
+        Map.put(fields, "fix", "Split the recipients into smaller batches and send each one.")
+
+      true ->
+        fields
+    end
   end
-
-  defp remap_attr(%{"attr" => "recipients__" <> rest} = fields, chunk) do
-    {position, tail} =
-      case String.split(rest, "__", parts: 2) do
-        [position, tail] -> {position, "__" <> tail}
-        [position] -> {position, ""}
-      end
-
-    count = length(chunk)
-
-    attr =
-      cond do
-        not Regex.match?(~r/\A[0-9]+\z/, position) ->
-          fields["attr"]
-
-        byte_size(position) > byte_size(Integer.to_string(count)) or
-            String.to_integer(position) >= count ->
-          "recipients"
-
-        true ->
-          "recipients__#{Enum.at(chunk, String.to_integer(position))}#{tail}"
-      end
-
-    %{fields | "attr" => attr}
-  end
-
-  defp remap_attr(fields, _chunk), do: fields
 
   defp settle(run, index, slot) do
     slot = if is_map(slot), do: slot, else: %{}
@@ -394,17 +337,8 @@ defmodule PostHog.Emails.Batch do
       set(run, index, "queued", message_id: message_id, replayed: slot["replayed"] == true)
     else
       answer = slot_error(slot["error"], message_id)
-
-      cond do
-        unconfirmed?(run, index) ->
-          update(run, index, message_id: message_id, later_error: answer)
-
-        answer.code in @unconfirmed_codes ->
-          set(run, index, "unconfirmed", message_id: message_id, error: answer)
-
-        true ->
-          set(run, index, "failed", message_id: message_id, error: answer)
-      end
+      status = if answer.code in @unconfirmed_codes, do: "unconfirmed", else: "failed"
+      set(run, index, status, message_id: message_id, error: answer)
     end
   end
 
@@ -426,22 +360,6 @@ defmodule PostHog.Emails.Batch do
     )
   end
 
-  defp lost(run, chunk, error \\ unconfirmed(), answer \\ nil) do
-    Enum.reduce(chunk, run, fn index, run ->
-      cond do
-        not unconfirmed?(run, index) -> set(run, index, "unconfirmed", error: error)
-        answer -> update(run, index, later_error: answer)
-        true -> run
-      end
-    end)
-  end
-
-  defp refused(run, chunk, error) do
-    chunk
-    |> Enum.filter(&unconfirmed?(run, &1))
-    |> Enum.reduce(run, &update(&2, &1, later_error: error))
-  end
-
   defp unconfirmed do
     Error.new(
       "delivery_unavailable",
@@ -450,29 +368,8 @@ defmodule PostHog.Emails.Batch do
     )
   end
 
-  defp stop(run, position, error) do
-    run =
-      run.chunks
-      |> Enum.at(position)
-      |> Enum.reject(&Map.has_key?(run.results, &1))
-      |> Enum.reduce(run, &set(&2, &1, "failed", error: error))
-
-    skipped =
-      if error.code == "client_closed",
-        do: error,
-        else:
-          Error.new(
-            "not_attempted",
-            "An earlier request of the batch failed, so the SDK sent nothing for this recipient."
-          )
-
-    skip(run, run.chunks |> Enum.drop(position + 1) |> Enum.concat(), skipped)
-  end
-
-  defp skip(run, indices, error),
-    do: Enum.reduce(indices, run, &set(&2, &1, "not_attempted", error: error))
-
-  defp unconfirmed?(run, index), do: match?(%{status: "unconfirmed"}, run.results[index])
+  defp all(run, status, error),
+    do: Enum.reduce(Map.keys(run.members), run, &set(&2, &1, status, error: error))
 
   defp set(run, index, "unconfirmed", fields),
     do: put_result(run, index, "unconfirmed", Keyword.update!(fields, :error, &resend_same_key/1))
@@ -498,9 +395,6 @@ defmodule PostHog.Emails.Batch do
 
     %{run | results: Map.put(run.results, index, result)}
   end
-
-  defp update(run, index, fields),
-    do: %{run | results: Map.update!(run.results, index, &struct!(&1, fields))}
 
   defp add_warnings(run, warnings) do
     Enum.reduce(warnings, run, fn warning, run ->

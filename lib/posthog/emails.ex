@@ -117,28 +117,26 @@ defmodule PostHog.Emails do
   ## Batches
 
   `batch/2` sends the same template or content to many recipients, one email each, with
-  `:template_data` per recipient for a template. The SDK sends at most 100 recipients and 4 MiB
-  of JSON per request, one request after another, and waits at least 45 seconds for each answer.
-  Each recipient has its own `:idempotency_key`, given or made by the SDK, that every retry
-  reuses. Check each result's `:status`:
+  `:template_data` per recipient for a template. A batch takes at most 100 recipients and goes out
+  in one request, and the SDK waits at least 45 seconds for its answer. Each recipient has its
+  own `:idempotency_key`, given or made by the SDK, that every retry reuses. Check each result's
+  `:status`:
 
   - `"queued"`: PostHog accepted the email.
   - `"failed"`: PostHog refused it, and `:error` says why, such as a suppressed address.
   - `"unconfirmed"`: the SDK can't tell whether PostHog accepted it, such as after a lost
     answer, so it may still go out. Send it again, unchanged, with the same `:idempotency_key`
     within 24 hours of the key's first use, so it goes out once.
-  - `"not_attempted"`: an earlier request of the batch failed, or the PostHog instance stopped,
-    so the SDK sent nothing for it.
 
-  A request that fails as a whole, such as a rate limit past its retries, stops the batch and
-  returns `{:error, %PostHog.Emails.BatchError{}}`, whose `:results` hold every recipient. After
-  an answer that leaves open whether PostHog queued the request's emails, such as a lost answer
-  or `idempotency_key_in_flight` past its retries, its recipients stay `"unconfirmed"`, even
-  when a retry is refused. The
-  code `batch_unavailable` (409) means the project can't send batches yet, and a 404 that the
-  template doesn't exist or batch sends are off for the project: send each email the batch
-  didn't queue with `send/2` and its recipient's `:idempotency_key`. A batch takes no `:cc`,
-  `:bcc`, `:attachments` or `:scheduled_at`.
+  A batch that PostHog refuses as a whole, such as a rate limit past its retries, returns
+  `{:error, %PostHog.Emails.BatchError{}}`, whose `:results` hold every recipient. The last answer
+  decides each result: after a lost answer, a 5xx or `idempotency_key_in_flight` past its retries,
+  the recipients are `"unconfirmed"`. PostHog answers 413 `too_large` when the request is too
+  large, such as shared `:template_data` copied to every recipient: split the recipients into
+  smaller batches. The code `batch_unavailable` (409) means the project can't send batches yet,
+  and a 404 that the template doesn't exist or batch sends are off for the project: send each
+  email the batch didn't queue with `send/2` and its recipient's `:idempotency_key`. A batch takes
+  no `:cc`, `:bcc`, `:attachments` or `:scheduled_at`.
 
       {:ok, %PostHog.Emails.BatchResult{results: results}} =
         PostHog.Emails.batch(
@@ -399,10 +397,9 @@ defmodule PostHog.Emails do
 
   Every batch takes:
 
-  - `:recipients` - 1 or more recipients, each a `t:batch_recipient/0`. Required. The SDK sends
-    at most 100, and at most 4 MiB of JSON, per request.
-  - `:max_retries` - overrides the config's `:email_request_max_retries` for each request of the
-    batch. `0` turns retries off.
+  - `:recipients` - 1 to 100 recipients, each a `t:batch_recipient/0`. Required.
+  - `:max_retries` - overrides the config's `:email_request_max_retries` for the batch. `0`
+    turns retries off.
 
   A template made in PostHog takes `:template_id` and `:template_data`, values shared by every
   recipient. Content your code rendered takes `:template_key`, `:subject`, `:html`, `:text`,
@@ -543,9 +540,8 @@ defmodule PostHog.Emails do
   Queues the same email for many recipients, one email each, from a template made in PostHog or
   from content your code rendered.
 
-  The SDK sends the recipients in requests of at most 100 recipients and 4 MiB of JSON, one after
-  another. Each recipient has an `:idempotency_key`, given or made by the SDK, that every retry
-  reuses, so a retry never queues an email twice.
+  The SDK sends up to 100 recipients in one request. Each recipient has an `:idempotency_key`,
+  given or made by the SDK, that every retry reuses, so a retry never queues an email twice.
 
   Returns `{:ok, %PostHog.Emails.BatchResult{}}` with a result per recipient, in the order of
   `:recipients`. Check each result's `:status`: `"queued"`, `"failed"` or `"unconfirmed"`. An
@@ -553,19 +549,19 @@ defmodule PostHog.Emails do
   `:idempotency_key` within 24 hours of the key's first use, so it goes out once. Its error's
   `:fix` says the same.
 
-  A request that fails as a whole stops the batch and returns
-  `{:error, %PostHog.Emails.BatchError{}}`, whose `:results` hold every recipient, those not sent
-  as `"not_attempted"`. Its `:code` is `batch_unavailable` when the project can't send batches
-  yet: send each email the batch didn't queue with `send/2` and its recipient's
-  `:idempotency_key`. `client_closed` means the PostHog instance stopped during the batch, so the
-  SDK sent no further request. A request already in flight when it stops returns its own outcome,
-  such as `network_error` with its recipients `"unconfirmed"`.
+  A batch that PostHog refuses as a whole returns `{:error, %PostHog.Emails.BatchError{}}`, whose
+  `:results` hold every recipient. Its `:code` is `batch_unavailable` when the project can't send
+  batches yet: send each email the batch didn't queue with `send/2` and its recipient's
+  `:idempotency_key`. It is `too_large` (413) when the request is too large for PostHog: split
+  the recipients into smaller batches. `client_closed` means the PostHog instance stopped during
+  the batch, so the SDK sent no further request. A request already in flight when it stops
+  returns its own outcome, such as `network_error` with its recipients `"unconfirmed"`.
 
-  Only a failure before the batch starts sending returns `{:error, %PostHog.Emails.Error{}}`: an
-  option the SDK refuses, such as two recipients with the same `:idempotency_key`, or a client
-  that can't send. Every later failure, an instance that stops or an unexpected exception from
-  the HTTP client too, returns `{:error, %PostHog.Emails.BatchError{}}` with every recipient's
-  result.
+  Only a failure before the batch is sent returns `{:error, %PostHog.Emails.Error{}}`: an option
+  the SDK refuses, such as more than 100 recipients or two with the same `:idempotency_key`, or a
+  client that can't send. Every later failure, an instance that stops or an unexpected exception
+  from the HTTP client too, returns `{:error, %PostHog.Emails.BatchError{}}` with every
+  recipient's result.
 
   See `t:batch_option/0` for the options and "Batches" in `PostHog.Emails` for the limits. `name`
   is the PostHog instance to send through, `PostHog` by default.
