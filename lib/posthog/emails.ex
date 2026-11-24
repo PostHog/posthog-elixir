@@ -812,7 +812,7 @@ defmodule PostHog.Emails do
 
   defp max_retries(_options), do: {:ok, nil}
 
-  defp scheduled_at(%{scheduled_at: %DateTime{year: year} = at}) when year >= 1,
+  defp scheduled_at(%{scheduled_at: %DateTime{} = at}),
     do: ceil_to_millisecond(DateTime.to_unix(at, :microsecond), false)
 
   defp scheduled_at(%{scheduled_at: at}) when is_binary(at) do
@@ -866,8 +866,8 @@ defmodule PostHog.Emails do
         else: milliseconds
 
     case DateTime.from_unix(milliseconds, :millisecond) do
-      {:ok, at} -> {:ok, at}
-      {:error, _reason} -> invalid_scheduled_at()
+      {:ok, %DateTime{year: year} = at} when year >= 1 -> {:ok, at}
+      _invalid -> invalid_scheduled_at()
     end
   end
 
