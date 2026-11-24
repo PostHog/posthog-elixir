@@ -445,6 +445,22 @@ defmodule PostHog.EmailsTest.FakePostHog do
   defp checksum(sha256), do: sha256 |> Base.decode16!(case: :lower) |> Base.encode64()
 end
 
+defmodule PostHog.EmailsTest.ShiftedCalendar do
+  @moduledoc false
+
+  def naive_datetime_to_iso_days(year, month, day, hour, minute, second, microsecond) do
+    Calendar.ISO.naive_datetime_to_iso_days(
+      year + 2026,
+      month,
+      day,
+      hour,
+      minute,
+      second,
+      microsecond
+    )
+  end
+end
+
 defmodule PostHog.EmailsTest do
   use ExUnit.Case, async: true
 
@@ -2277,6 +2293,30 @@ defmodule PostHog.EmailsTest do
       assert sent_body()["scheduled_at"] == "2026-12-01T08:00:00.000Z"
     end
 
+    test "takes a DateTime from a calendar whose year 0 is 2026", %{name: name} do
+      expect_reply(scheduled("2026-12-01T09:00:00.000Z"))
+
+      shifted = %DateTime{
+        calendar: PostHog.EmailsTest.ShiftedCalendar,
+        year: 0,
+        month: 12,
+        day: 1,
+        hour: 9,
+        minute: 0,
+        second: 0,
+        microsecond: {0, 0},
+        time_zone: "Etc/UTC",
+        zone_abbr: "UTC",
+        utc_offset: 0,
+        std_offset: 0
+      }
+
+      assert {:ok, %Emails.SendResult{scheduled_at: ~U[2026-12-01 09:00:00.000Z]}} =
+               Emails.send(name, @template_send ++ [scheduled_at: shifted])
+
+      assert sent_body()["scheduled_at"] == "2026-12-01T09:00:00.000Z"
+    end
+
     for {label, value} <- [
           {"a NaiveDateTime", quote(do: ~N[2026-12-01 09:00:00])},
           {"a string without an offset", "2026-12-01T09:00:00"},
@@ -2705,6 +2745,28 @@ defmodule PostHog.EmailsTest do
 
       assert {:error, %Error{code: "not_found", name: :not_found}} = Emails.get(name, @message_id)
       refute_received {:slept, _}
+    end
+
+    test "retries a 503 and reads the status on the next request", %{name: name} do
+      expect_reply(refused(503, %{"code" => "service_unavailable"}, %{"retry-after" => ["3"]}))
+
+      expect_reply(
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "id" => @message_id,
+             "status" => "delivered",
+             "created_at" => "2026-10-28T16:27:44Z",
+             "status_at" => "2026-10-28T16:27:46Z"
+           }
+         }}
+      )
+
+      assert {:ok, %Emails.Status{status: "delivered"}} = Emails.get(name, @message_id)
+      assert_received {:slept, 3_000}
+      assert_received {:request, :get, url, _opts}
+      assert_received {:request, :get, ^url, _opts}
     end
 
     test "refuses an ID that is not a UUID", %{name: name} do
