@@ -684,7 +684,8 @@ defmodule PostHog.EmailsBatchTest do
           {"a 413 without a body", 413, nil, [:lost], "Split the recipients"},
           {"a 404 without a body", 404, nil, [:lost], "PostHog.Emails.send/2"},
           {"a 409 batch_unavailable", 409, "batch_unavailable", [:lost], "PostHog.Emails.send/2"},
-          {"a 429 after a 503", 429, "throttled", [:lost, 503], nil}
+          {"a 429 after a 503", 429, "throttled", [:lost, 503], nil},
+          {"a 429 after a 409 in flight", 429, "throttled", [409], nil}
         ] do
       test "#{label} to a retry after a lost answer leaves the recipients unconfirmed",
            %{name: name} do
@@ -692,6 +693,7 @@ defmodule PostHog.EmailsBatchTest do
           Enum.map(unquote(earlier), fn
             :lost -> lost()
             503 -> whole_call(503, "delivery_unavailable")
+            409 -> whole_call(409, "idempotency_key_in_flight")
           end)
 
         answers(earlier ++ [whole_call(unquote(status), unquote(code))])
