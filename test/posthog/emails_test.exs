@@ -2912,7 +2912,8 @@ defmodule PostHog.EmailsTest do
       )
 
       assert {:ok, %Emails.Status{status: "delivered"}} = Emails.get(name, @message_id)
-      assert_received {:slept, _ms}
+      assert_received {:request, :get, url, _opts}
+      assert_received {:request, :get, ^url, _opts}
     end
 
     test "refuses an ID that is not a UUID", %{name: name} do

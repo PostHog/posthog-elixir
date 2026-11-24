@@ -38,9 +38,23 @@ defmodule PostHog.EmailsBatchTest do
         send(test_pid, {:slept, ms})
         if context[:stop_instance_on_sleep], do: stop_supervised!(context.test)
       end)
+      |> overrun_sleeps(context[:sleep_overruns_ms], test_pid)
 
     start_link_supervised!({PostHog.Supervisor, config})
     %{name: context.test, config: config}
+  end
+
+  defp overrun_sleeps(config, nil, _test_pid), do: config
+
+  defp overrun_sleeps(config, overrun_ms, test_pid) do
+    monotonic = start_supervised!({Agent, fn -> 0 end})
+
+    config
+    |> Map.put(:email_monotonic_ms, fn -> Agent.get(monotonic, & &1) end)
+    |> Map.put(:email_sleep, fn ms ->
+      send(test_pid, {:slept, ms})
+      Agent.update(monotonic, &(&1 + ms + overrun_ms))
+    end)
   end
 
   defp answers(replies) do
@@ -666,6 +680,17 @@ defmodule PostHog.EmailsBatchTest do
       assert {second.status, second.message_id} == {"unconfirmed", nil}
       assert %Error{code: "delivery_unavailable"} = first.error
       assert_resend_with_same_key(results)
+    end
+
+    @tag sleep_overruns_ms: 3_600_000
+    test "sends no retry after a wait that overran the hour", %{name: name} do
+      answers([whole_call(503, "delivery_unavailable")])
+
+      assert {:error, %BatchError{code: "delivery_unavailable", results: results}} =
+               batch(name, recipients(3), max_retries: 2)
+
+      assert length(requested()) == 1
+      assert statuses(results) == List.duplicate("unconfirmed", 3)
     end
 
     test "a 503 past its retries leaves the request unconfirmed", %{name: name} do
