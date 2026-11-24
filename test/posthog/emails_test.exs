@@ -2894,6 +2894,27 @@ defmodule PostHog.EmailsTest do
       assert DateTime.diff(second, first, :millisecond) == 3_000
     end
 
+    @tag sleep_overruns_ms: 3_600_000
+    test "a status read retries past the hour a send stops at", %{name: name} do
+      expect_reply(refused(503, %{"code" => "service_unavailable"}))
+
+      expect_reply(
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "id" => @message_id,
+             "status" => "delivered",
+             "created_at" => "2026-10-28T16:27:44Z",
+             "status_at" => "2026-10-28T16:27:46Z"
+           }
+         }}
+      )
+
+      assert {:ok, %Emails.Status{status: "delivered"}} = Emails.get(name, @message_id)
+      assert_received {:slept, _ms}
+    end
+
     test "refuses an ID that is not a UUID", %{name: name} do
       assert {:error, %Error{code: "invalid_message_id", name: :validation_error}} =
                Emails.get(name, "msg_1")

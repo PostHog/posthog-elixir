@@ -199,11 +199,12 @@ defmodule PostHog.Emails do
   service `:email_request_max_retries` times (2 by default), waiting about 1 and then 2 seconds,
   or the server's `Retry-After` when it is longer. A `Retry-After` over 30 seconds fails at once
   with `:retry_after_ms` set. A monthly quota and the day's upload quota are never retried.
-  Retries stop an hour after the first attempt, whatever `:max_retries` says, so a retry falls
-  inside the 24 hours in which PostHog keeps an idempotency key unless the call starts in the
-  last hour of them. To rerun with a stored key that close to its 24 hours, pass
+  A send's retries stop an hour after its first attempt, whatever `:max_retries` says, so a
+  retry falls inside the 24 hours in which PostHog keeps an idempotency key unless the call
+  starts in the last hour of them. To rerun with a stored key that close to its 24 hours, pass
   `max_retries: 0`.
-  The upload steps of a send with files retry the same way.
+  The upload steps of a send with files and status reads retry the same way, without the hour
+  limit, since they send no email.
 
   Every attempt sends the same idempotency key, so a retry never sends twice. Without
   `:idempotency_key`, the SDK makes a UUID for the call. When a job runner such as Oban
@@ -1415,7 +1416,7 @@ defmodule PostHog.Emails do
       with {:error, error} <- attempt_once.(), do: {:error, error, nil}
     end
 
-    with {:error, error, nil} <- with_retries(connection, max_retries, nil, attempt_once),
+    with {:error, error, nil} <- retry(connection, {max_retries, nil}, nil, attempt_once, 0),
          do: {:error, error}
   end
 
@@ -1456,6 +1457,8 @@ defmodule PostHog.Emails do
       retry(connection, limits, state, attempt_once, attempt)
     end
   end
+
+  defp past_retry_window?(_connection, nil, _delay_ms), do: false
 
   defp past_retry_window?(connection, started_at, delay_ms),
     do: connection.monotonic_ms.() - started_at + delay_ms >= @max_retry_window_ms
