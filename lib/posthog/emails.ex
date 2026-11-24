@@ -98,9 +98,10 @@ defmodule PostHog.Emails do
   `"queued"` and its `:scheduled_at` is `nil`. When PostHog accepts the email without confirming
   the time, the send returns `schedule_not_confirmed` with the email's `:message_id`. That
   includes an answer that sends the email now while the time was more than 60 seconds ahead of
-  this machine's clock at the first attempt PostHog didn't refuse with a 429. So an email can go
-  out up to 60 seconds before its time, and a clock that runs behind can return the error for an
-  email that went out as asked. Read its status with `get/2` before you send it again. `get/2` reads `"scheduled"` until the email goes
+  this machine's clock at the first attempt PostHog didn't refuse with a 429. The 60 seconds only
+  decide when the SDK takes such an answer as success. The SDK reads the answer after PostHog took
+  the email, so `schedule_not_confirmed` can come back for an email that already went out early,
+  and a clock that runs behind can return it for an email that went out as asked. Read its status with `get/2` before you send it again. `get/2` reads `"scheduled"` until the email goes
   out, and works for 30 days after the send, not after the scheduled time.
 
   Only PostHog Cloud schedules emails. A send with `:scheduled_at` to any other app host, such
@@ -282,6 +283,7 @@ defmodule PostHog.Emails do
   @max_retry_delay_ms 30_000
   @max_retry_doublings 6
   @max_retry_window_ms 3_600_000
+  @year_one_us -62_135_596_800_000_000
   # Enough of the storage's answer for an S3 error, whose XML is well under 1 KB.
   @max_storage_answer_bytes 16_384
   @log_metadata [posthog_skip_capture: true]
@@ -1009,6 +1011,10 @@ defmodule PostHog.Emails do
   defp digits_past_microseconds?(%{"fraction" => fraction}),
     do: fraction |> String.slice(7..-1//1) |> String.trim("0") != ""
 
+  defp ceil_to_millisecond(microseconds, _digits_past_microseconds?)
+       when microseconds < @year_one_us,
+       do: invalid_scheduled_at()
+
   defp ceil_to_millisecond(microseconds, digits_past_microseconds?) do
     milliseconds = Integer.floor_div(microseconds, 1000)
 
@@ -1018,8 +1024,8 @@ defmodule PostHog.Emails do
         else: milliseconds
 
     case DateTime.from_unix(milliseconds, :millisecond) do
-      {:ok, %DateTime{year: year} = at} when year >= 1 -> {:ok, at}
-      _invalid -> invalid_scheduled_at()
+      {:ok, at} -> {:ok, at}
+      {:error, _reason} -> invalid_scheduled_at()
     end
   end
 
