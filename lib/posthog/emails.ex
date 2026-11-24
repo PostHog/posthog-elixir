@@ -1317,6 +1317,7 @@ defmodule PostHog.Emails do
         {:ok, result}
 
       true ->
+        log_warnings(result)
         {:error, schedule_not_confirmed(result.id, status)}
     end
   end

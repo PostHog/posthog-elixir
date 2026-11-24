@@ -503,6 +503,10 @@ defmodule PostHog.EmailsTest do
       |> Map.put(:email_now, fn -> Agent.get(clock, & &1) end)
       |> Map.put(:email_sleep, fn ms ->
         send(test_pid, {:slept, ms})
+
+        if context[:clock_follows_sleep],
+          do: Agent.update(clock, &DateTime.add(&1, ms, :millisecond))
+
         if context[:stop_instance_on_sleep], do: stop_supervised!(context.test)
       end)
       |> Map.put(
@@ -972,11 +976,10 @@ defmodule PostHog.EmailsTest do
                    [scheduled_at: "2026-12-01T09:00:00Z"]
                )
 
-      assert FakePostHog.files(fake) == %{sha256(@pdf) => @pdf}
       assert [{^id, email}] = FakePostHog.messages(fake)
       assert email["scheduled_at"] == "2026-12-01T09:00:00.000Z"
       assert [%{"sha256" => sha256}] = email["attachments"]
-      assert sha256 == sha256(@pdf)
+      assert FakePostHog.files(fake)[sha256] == @pdf
     end
 
     # The storage refuses a second credential, such as the client's authorization.
@@ -2653,6 +2656,25 @@ defmodule PostHog.EmailsTest do
       end
     end
 
+    test "logs the warnings of an acceptance that doesn't confirm the schedule", %{name: name} do
+      expect_reply(
+        accepted(%{
+          "message_id" => @message_id,
+          "status" => "queued",
+          "scheduled_at" => "2026-12-01T09:00:00.000Z",
+          "warnings" => [%{"code" => "no_text", "detail" => "No text part."}]
+        })
+      )
+
+      log =
+        capture_log(fn ->
+          assert {:error, %Error{code: "schedule_not_confirmed"}} =
+                   Emails.send(name, @template_send ++ [scheduled_at: "2026-12-01T09:00:00Z"])
+        end)
+
+      assert log =~ "PostHog email warning no_text: No text part."
+    end
+
     test "returns a refusal of scheduled_at and never sends without it", %{name: name} do
       expect_reply(
         refused(400, %{
@@ -2749,10 +2771,20 @@ defmodule PostHog.EmailsTest do
       refute_received {:slept, _}
     end
 
-    test "retries a 503 and reads the status on the next request", %{name: name} do
-      expect_reply(refused(503, %{"code" => "service_unavailable"}, %{"retry-after" => ["3"]}))
+    @tag clock_follows_sleep: true
+    test "retries a 503 and reads the status on the next request", %{name: name, clock: clock} do
+      test_pid = self()
 
-      expect_reply(
+      reply_at = fn reply ->
+        expect(API.Mock, :request, fn _client, :get, url, _opts ->
+          send(test_pid, {:read_at, url, Agent.get(clock, & &1)})
+          reply
+        end)
+      end
+
+      reply_at.(refused(503, %{"code" => "service_unavailable"}, %{"retry-after" => ["3"]}))
+
+      reply_at.(
         {:ok,
          %{
            status: 200,
@@ -2766,9 +2798,9 @@ defmodule PostHog.EmailsTest do
       )
 
       assert {:ok, %Emails.Status{status: "delivered"}} = Emails.get(name, @message_id)
-      assert_received {:slept, 3_000}
-      assert_received {:request, :get, url, _opts}
-      assert_received {:request, :get, ^url, _opts}
+      assert_received {:read_at, url, first}
+      assert_received {:read_at, ^url, second}
+      assert DateTime.diff(second, first, :millisecond) == 3_000
     end
 
     test "refuses an ID that is not a UUID", %{name: name} do
