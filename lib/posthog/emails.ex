@@ -1370,7 +1370,10 @@ defmodule PostHog.Emails do
   end
 
   @doc false
-  def with_retries(connection, max_retries, state, attempt_once, attempt \\ 0) do
+  def with_retries(connection, max_retries, state, attempt_once),
+    do: retry(connection, max_retries, state, attempt_once, 0)
+
+  defp retry(connection, max_retries, state, attempt_once, attempt) do
     case attempt_once.(state, attempt) do
       {:ok, result} ->
         {:ok, result}
@@ -1382,7 +1385,7 @@ defmodule PostHog.Emails do
 
           delay_ms ->
             connection.sleep.(delay_ms)
-            with_retries(connection, max_retries, state, attempt_once, attempt + 1)
+            retry(connection, max_retries, state, attempt_once, attempt + 1)
         end
     end
   end
