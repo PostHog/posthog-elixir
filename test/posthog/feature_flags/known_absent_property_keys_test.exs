@@ -59,6 +59,26 @@ defmodule PostHog.FeatureFlags.KnownAbsentPropertyKeysTest do
     if is_nil(value), do: filter, else: Map.put(filter, "value", value)
   end
 
+  # The flags service decides each operator for a missing key before it reads the condition
+  # value, so invalid, malformed or non-portable values don't change the result.
+  @unread_condition_values [
+    {"not_regex", "[", true},
+    {"regex", "[", false},
+    {"not_regex", "(?<=a)b", true},
+    {"regex", "(?<=a)b", false},
+    {"not_regex", "\\p{L}", true},
+    {"regex", "\\p{L}", false},
+    {"gt", "not-a-number", false},
+    {"gte", "not-a-number", false},
+    {"lt", "not-a-number", false},
+    {"lte", "not-a-number", false},
+    {"semver_eq", "not-a-version", false},
+    {"semver_gt", "not-a-version", false},
+    {"semver_tilde", "not-a-version", false},
+    {"is_date_before", "not-a-date", false},
+    {"is_date_after", "not-a-date", false}
+  ]
+
   describe "local evaluation" do
     for {operator, value, expected} <- [
           {"is_not_set", nil, true},
@@ -234,24 +254,28 @@ defmodule PostHog.FeatureFlags.KnownAbsentPropertyKeysTest do
       end
     end
 
-    test "malformed condition values on a listed key keep their existing result" do
+    test "a listed key resolves without reading a present condition value" do
       context = %{person_property_keys_known_absent: ["plan"]}
 
-      for {operator, value} <- [
-            {"gt", "not-a-number"},
-            {"is_date_before", "not-a-date"},
-            {"semver_eq", "not-a-version"},
-            {"not_regex", "(?<=a)b"}
-          ] do
-        definitions = snapshot([flag("f", [person_filter(operator, value)])])
+      for {operator, value, expected} <- @unread_condition_values do
+        definitions =
+          snapshot(
+            [
+              flag("f", [person_filter(operator, value)]),
+              flag("cohort", [%{"type" => "cohort", "value" => 1}])
+            ],
+            %{
+              cohorts: %{
+                "1" => %{"type" => "AND", "values" => [person_filter(operator, value)]}
+              }
+            }
+          )
 
-        assert local(definitions, context, "f") == {:unresolved, :unsupported_definition},
-               operator
+        assert local(definitions, context, "f") == {:ok, expected}, inspect({operator, value})
+
+        assert local(definitions, context, "cohort") == {:ok, expected},
+               inspect({:cohort, operator, value})
       end
-
-      # An invalid regex is a definitive non-match locally, as for a present value.
-      definitions = snapshot([flag("f", [person_filter("not_regex", "[")])])
-      assert local(definitions, context, "f") == {:ok, false}
     end
 
     test "an omitted or null condition value on a listed key stays inconclusive" do
@@ -452,6 +476,31 @@ defmodule PostHog.FeatureFlags.KnownAbsentPropertyKeysTest do
 
       refute snapshot.flags["other"].locally_evaluated
       assert_received {:flags_body, %{person_property_keys_known_absent: ["plan"]}}
+    end
+
+    test "a listed key resolves without reading a present condition value or a /flags request" do
+      name = __MODULE__.UnreadConditionValue
+
+      flags =
+        for {{operator, value, _expected}, index} <- Enum.with_index(@unread_condition_values) do
+          flag("f#{index}", [person_filter(operator, value)])
+        end
+
+      start_instance(name, flags)
+      body = %{distinct_id: "user", person_property_keys_known_absent: ["plan"]}
+
+      for {{operator, value, expected}, index} <- Enum.with_index(@unread_condition_values) do
+        assert {:ok, %{enabled: ^expected, locally_evaluated: true}} =
+                 FeatureFlags.get_feature_flag_result(name, "f#{index}", body, send_event: false),
+               inspect({operator, value})
+      end
+
+      assert {:ok, snapshot} =
+               FeatureFlags.evaluate_flags(name, Map.put(body, :only_evaluate_locally, true))
+
+      for {{_operator, _value, expected}, index} <- Enum.with_index(@unread_condition_values) do
+        assert snapshot.flags["f#{index}"].enabled == expected
+      end
     end
 
     test "an omitted or null condition value on a listed key falls back to /flags" do

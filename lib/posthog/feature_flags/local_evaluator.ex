@@ -15,6 +15,8 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   @search_operators ~w(icontains not_icontains starts_with not_starts_with ends_with not_ends_with)
   @cohort_operators ~w(exact in not_in)
   @known_absent_matching_operators ~w(is_not_set is_not not_icontains not_starts_with not_ends_with not_regex)
+  @local_property_operators ~w(exact is_not is_set is_not_set regex not_regex gt gte lt lte is_date_before is_date_after) ++
+                              @search_operators ++ @semver_operators
   @person_metadata_prefix "__posthog_person_metadata__"
 
   # Stands in for the value of a property the caller listed as known absent. Property maps
@@ -882,7 +884,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
         {:inconclusive, property_reason(property, now, cohort?)}
 
       {:ok, @known_absent} ->
-        known_absent_result(property, operator, filter_value, now, cohort?)
+        known_absent_result(operator, filter_value)
 
       {:ok, property_value} when operator in ["exact", "is_not"] ->
         match = exact_match?(property_value, filter_value, property_matching_version)
@@ -910,20 +912,16 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
     _exception -> {:inconclusive, property_reason(property, now, cohort?)}
   end
 
-  # Unsupported or malformed filters keep their existing result, so known absence never
-  # resolves a filter that local evaluation can't use. The service reads a null condition
-  # value as omitted, so value-requiring operators without one stay inconclusive.
-  defp known_absent_result(property, operator, filter_value, now, cohort?) do
+  # Like the service, a listed key resolves without parsing, compiling or validating a present
+  # condition value. Operators not evaluated locally stay inconclusive, and the service reads
+  # a null condition value as omitted, so value-requiring operators without one do too.
+  defp known_absent_result(operator, filter_value) do
     cond do
+      operator not in @local_property_operators ->
+        {:inconclusive, :unsupported_definition}
+
       is_nil(filter_value) and operator not in ["is_set", "is_not_set"] ->
         {:inconclusive, :unsupported_definition}
-
-      not filter_supported?(property, now, cohort?) ->
-        {:inconclusive, :unsupported_definition}
-
-      operator in ["regex", "not_regex"] and
-          compile_regex(to_string(filter_value)) == :invalid_regex ->
-        :invalid_regex
 
       true ->
         boolean_result(operator in @known_absent_matching_operators)
