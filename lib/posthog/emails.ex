@@ -134,7 +134,7 @@ defmodule PostHog.Emails do
   is lost, a retry PostHog refuses can't show that the first try didn't queue the email, so those
   recipients stay `"unconfirmed"` too, with the error of the refusal. PostHog answers
   `content_too_large` in two cases. A 413 means the request is too large: split the recipients
-  into smaller batches. A 400 means the content or `:template_data` shared by every recipient is
+  into smaller batches, or make the email smaller when the batch has one recipient. A 400 means the content or `:template_data` shared by every recipient is
   too large, which splitting doesn't help: send those emails one at a time with `send/2`. The code `batch_unavailable` (409) means the project can't send batches yet,
   and a 404 that the template doesn't exist or batch sends are off for the project: send each
   email the batch didn't queue with `send/2` and its recipient's `:idempotency_key`. A batch takes
@@ -559,9 +559,9 @@ defmodule PostHog.Emails do
   `:results` hold every recipient. Its `:code` is `batch_unavailable` when the project can't send
   batches yet: send each email the batch didn't queue with `send/2` and its recipient's
   `:idempotency_key`. It is `content_too_large` with status 413 when the request is too large for
-  PostHog: split the recipients into smaller batches. With status 400, the shared content is too
-  large: send those emails one at a time. The error's `:fix` and `:message` carry PostHog's own
-  advice. `client_closed` means the PostHog instance stopped
+  PostHog: split the recipients into smaller batches, or, for a batch of one, make the email
+  smaller. With status 400, the shared content is too large: send those emails one at a time. The
+  error's `:fix` says which applies. `client_closed` means the PostHog instance stopped
   during the batch, so the SDK sent no further request. A request already in flight when it stops
   returns its own outcome, such as `network_error` with its recipients `"unconfirmed"`.
 
