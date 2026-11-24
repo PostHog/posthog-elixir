@@ -323,9 +323,16 @@ defmodule PostHog.Emails.Batch do
     {:error, error} =
       Emails.reply_error({:ok, status, request_fields(fields, status, chunk), retry_after_ms})
 
-    if status >= 500 or error.code in @unconfirmed_codes,
-      do: {:error, error, lost(run, chunk, error)},
-      else: {:error, error, refused(run, chunk, error)}
+    cond do
+      Emails.text(fields["code"]) in @unconfirmed_codes ->
+        {:error, error, lost(run, chunk, error)}
+
+      status >= 500 ->
+        {:error, error, lost(run, chunk)}
+
+      true ->
+        {:error, error, refused(run, chunk, error)}
+    end
   end
 
   defp request_fields(fields, status, chunk) do
@@ -418,9 +425,12 @@ defmodule PostHog.Emails.Batch do
     )
   end
 
-  defp lost(run, chunk, error \\ nil) do
-    error = if error && error.code in @unconfirmed_codes, do: error, else: unconfirmed()
-    Enum.reduce(chunk, run, &set(&2, &1, "unconfirmed", error: error))
+  defp lost(run, chunk, error \\ unconfirmed()) do
+    Enum.reduce(chunk, run, fn index, run ->
+      if unconfirmed?(run, index),
+        do: update(run, index, later_error: error),
+        else: set(run, index, "unconfirmed", error: error)
+    end)
   end
 
   defp refused(run, chunk, error) do
@@ -460,8 +470,10 @@ defmodule PostHog.Emails.Batch do
     do: Enum.reduce(indices, run, &set(&2, &1, "not_attempted", error: error))
 
   defp read_ids({:ok, run}, connection) do
-    {run, nil} = read_ids(run, connection, nil)
-    {:ok, run}
+    case read_ids(run, connection, nil) do
+      {run, nil} -> {:ok, run}
+      {run, closed} -> {:error, run, closed}
+    end
   end
 
   defp read_ids({:error, run, error}, connection) do
@@ -480,7 +492,7 @@ defmodule PostHog.Emails.Batch do
         {:error, %Error{status_code: 404}} ->
           {:cont, {run, error}}
 
-        {:error, %Error{code: "client_closed"} = closed} when not is_nil(error) ->
+        {:error, %Error{code: "client_closed"} = closed} ->
           {:halt, {run, closed}}
 
         {:error, _error} ->

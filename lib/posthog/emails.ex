@@ -278,6 +278,7 @@ defmodule PostHog.Emails do
     "https://eu.posthog.com" => @eu_app_host
   }
   @max_retry_delay_ms 30_000
+  @max_retry_doublings 6
   # Enough of the storage's answer for an S3 error, whose XML is well under 1 KB.
   @max_storage_answer_bytes 16_384
   @log_metadata [posthog_skip_capture: true]
@@ -1429,7 +1430,10 @@ defmodule PostHog.Emails do
 
       true ->
         backoff =
-          min(@max_retry_delay_ms, round(1000 * 2 ** attempt * (0.8 + :rand.uniform() * 0.4)))
+          min(
+            @max_retry_delay_ms,
+            round(1000 * 2 ** min(attempt, @max_retry_doublings) * (0.8 + :rand.uniform() * 0.4))
+          )
 
         max(backoff, error.retry_after_ms || 0)
     end
