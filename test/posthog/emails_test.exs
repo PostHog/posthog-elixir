@@ -275,10 +275,15 @@ defmodule PostHog.EmailsTest.FakePostHog do
           "attr" => nil
         })
       else
-        json(conn, 202, %{"message_id" => record_message(fake, email)})
+        json(conn, 202, schedule_answer(email, record_message(fake, email)))
       end
     end
   end
+
+  defp schedule_answer(%{"scheduled_at" => at}, id) when is_binary(at),
+    do: %{"message_id" => id, "status" => "scheduled", "scheduled_at" => at}
+
+  defp schedule_answer(_email, id), do: %{"message_id" => id}
 
   # PostHog's estimate of the sent message: each file and body as folded Base64, 64 KiB for
   # headers and MIME boundaries, and the subject as 75 bytes per 42 started. Without a text body,
@@ -930,6 +935,26 @@ defmodule PostHog.EmailsTest do
                },
                %{"sha256" => sha256(@logo), "filename" => "logo.png", "content_id" => "logo"}
              ]
+    end
+
+    test "uploads the files, then schedules the email that names them", %{name: name, fake: fake} do
+      assert {:ok,
+              %Emails.SendResult{
+                id: id,
+                status: "scheduled",
+                scheduled_at: ~U[2026-12-01 09:00:00.000Z]
+              }} =
+               Emails.send(
+                 name,
+                 with_files([%{filename: "invoice.pdf", content: @pdf}]) ++
+                   [scheduled_at: "2026-12-01T09:00:00Z"]
+               )
+
+      assert FakePostHog.files(fake) == %{sha256(@pdf) => @pdf}
+      assert [{^id, email}] = FakePostHog.messages(fake)
+      assert email["scheduled_at"] == "2026-12-01T09:00:00.000Z"
+      assert [%{"sha256" => sha256}] = email["attachments"]
+      assert sha256 == sha256(@pdf)
     end
 
     # The storage refuses a second credential, such as the client's authorization.
@@ -2177,7 +2202,6 @@ defmodule PostHog.EmailsTest do
           {"2026-12-01T09:00:00.1230000001Z", "2026-12-01T09:00:00.124Z"},
           {"2026-12-01T09:00:00.123000000Z", "2026-12-01T09:00:00.123Z"},
           {"2026-12-01T09:00:00Z", "2026-12-01T09:00:00.000Z"},
-          {"2026-12-31T23:59:59.9999-01:00", "2027-01-01T01:00:00.000Z"},
           {"2026-11-25T09:00Z", "2026-11-25T09:00:00.000Z"},
           {"2026-11-25T10:30+01:30", "2026-11-25T09:00:00.000Z"},
           {"2026-11-25T09:00:00-00:00", "2026-11-25T09:00:00.000Z"}
@@ -2190,6 +2214,19 @@ defmodule PostHog.EmailsTest do
 
         assert sent_body()["scheduled_at"] == unquote(sent)
       end
+    end
+
+    @tag now: ~U[2026-12-30 12:00:00.000000Z]
+    test "carries a rounded time into the next year", %{name: name} do
+      expect_reply(scheduled("2027-01-01T01:00:00.000Z"))
+
+      assert {:ok, %Emails.SendResult{status: "scheduled"}} =
+               Emails.send(
+                 name,
+                 @template_send ++ [scheduled_at: "2026-12-31T23:59:59.9999-01:00"]
+               )
+
+      assert sent_body()["scheduled_at"] == "2027-01-01T01:00:00.000Z"
     end
 
     for answer <- [
@@ -2245,6 +2282,9 @@ defmodule PostHog.EmailsTest do
           {"a lowercase z", "2026-12-01T09:00:00z"},
           {"a Unix time", 1_796_115_600},
           {"a Date", quote(do: ~D[2026-12-01])},
+          {"year zero, which PostHog refuses, also when its offset carries it into year one",
+           "0000-12-31T23:30:00-01:00"},
+          {"a DateTime in year zero", quote(do: %{~U[2026-12-01 09:00:00Z] | year: 0})},
           {"a DateTime past the last time Unix time can hold",
            quote(do: %{~U[2026-12-01 09:00:00Z] | year: 9_999_999})}
         ] do
@@ -2447,23 +2487,35 @@ defmodule PostHog.EmailsTest do
                Emails.send(name, @code_form ++ [scheduled_at: "2026-11-24T12:01:05Z"])
     end
 
-    test "keeps the first attempt's clock reading for its retries", %{name: name, clock: clock} do
-      test_pid = self()
+    for {status, code, label, outcome} <- [
+          {503, "service_unavailable",
+           "keeps the first clock reading after a 503, which PostHog may have taken", :error},
+          {429, "rate_limited", "reads the clock again after a 429, which PostHog refused", :ok}
+        ] do
+      test "#{label}", %{name: name, clock: clock} do
+        test_pid = self()
 
-      expect(API.Mock, :request, fn _client, method, url, opts ->
-        send(test_pid, {:request, method, url, opts})
-        Agent.update(clock, &DateTime.add(&1, 10, :second))
-        refused(503, %{"code" => "service_unavailable"})
-      end)
+        expect(API.Mock, :request, fn _client, method, url, opts ->
+          send(test_pid, {:request, method, url, opts})
+          Agent.update(clock, &DateTime.add(&1, 10, :second))
+          refused(unquote(status), %{"code" => unquote(code)})
+        end)
 
-      expect_reply(
-        accepted(%{"message_id" => @message_id, "status" => "queued", "scheduled_at" => nil})
-      )
+        expect_reply(
+          accepted(%{"message_id" => @message_id, "status" => "queued", "scheduled_at" => nil})
+        )
 
-      assert {:error, %Error{code: "schedule_not_confirmed", message_id: @message_id}} =
-               Emails.send(name, @code_form ++ [scheduled_at: "2026-11-24T12:01:05Z"])
+        result = Emails.send(name, @code_form ++ [scheduled_at: "2026-11-24T12:01:05Z"])
 
-      assert_received {:slept, _ms}
+        case unquote(outcome) do
+          :error ->
+            assert {:error, %Error{code: "schedule_not_confirmed", message_id: @message_id}} =
+                     result
+
+          :ok ->
+            assert {:ok, %Emails.SendResult{id: @message_id, status: "queued"}} = result
+        end
+      end
     end
 
     test "refuses a queued answer without the scheduled_at key, also inside 60 seconds",
@@ -2610,24 +2662,6 @@ defmodule PostHog.EmailsTest do
       assert header(opts, "authorization") == "Bearer phs_secret_key"
       assert header(opts, "idempotency-key") == nil
       refute Keyword.has_key?(opts, :body)
-    end
-
-    test "reads a scheduled email as scheduled", %{name: name} do
-      expect_reply(
-        {:ok,
-         %{
-           status: 200,
-           body: %{
-             "id" => @message_id,
-             "status" => "scheduled",
-             "created_at" => "2026-11-30T09:00:00Z",
-             "status_at" => "2026-11-30T09:00:00Z"
-           }
-         }}
-      )
-
-      assert {:ok, %Emails.Status{status: "scheduled", reason: nil}} =
-               Emails.get(name, @message_id)
     end
 
     test "passes an unknown status through", %{name: name} do

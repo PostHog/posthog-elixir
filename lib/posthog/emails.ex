@@ -90,16 +90,17 @@ defmodule PostHog.Emails do
   `"2026-12-01T09:00:00+02:00"` or `"2026-12-01T07:00Z"`. A `NaiveDateTime`, a string without an
   offset, or any other form returns `invalid_scheduled_at` before any request, because the email
   could go out at the wrong time.
-  The SDK rounds a time finer than a millisecond up to the next millisecond, so the email never
-  goes out early, and sends that time on every retry.
+  The SDK rounds a time finer than a millisecond up to the next millisecond, so rounding never
+  moves the email earlier, and sends that time on every retry.
 
   The result's `:status` is `"scheduled"` and its `:scheduled_at` is the time PostHog
   confirmed. A time that has already passed sends the email now: the result's `:status` is
   `"queued"` and its `:scheduled_at` is `nil`. When PostHog accepts the email without confirming
   the time, the send returns `schedule_not_confirmed` with the email's `:message_id`. That
   includes an answer that sends the email now while the time was more than 60 seconds ahead of
-  this machine's clock when the send started, so a clock that runs behind can return the error for an email that went
-  out as asked. Read its status with `get/2` before you send it again. `get/2` reads `"scheduled"` until the email goes
+  this machine's clock at the first attempt PostHog didn't refuse with a 429. So an email can go
+  out up to 60 seconds before its time, and a clock that runs behind can return the error for an
+  email that went out as asked. Read its status with `get/2` before you send it again. `get/2` reads `"scheduled"` until the email goes
   out, and works for 30 days after the send, not after the scheduled time.
 
   Only PostHog Cloud schedules emails. A send with `:scheduled_at` to any other app host, such
@@ -284,7 +285,7 @@ defmodule PostHog.Emails do
   @shared_fields [:to, :distinct_id, :idempotency_key, :max_retries, :scheduled_at]
   @sent_now_tolerance_us 60_000_000
   @host_shape ~r/\A(?:[A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\])(?::\d+)?\z/
-  @scheduled_at_shape ~r/\A(?<minute>\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(?<seconds>:\d{2}(?<fraction>\.\d+)?)?(?<offset>Z|[+-]\d{2}:[0-5]\d)\z/
+  @scheduled_at_shape ~r/\A(?<minute>(?!0000)\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(?<seconds>:\d{2}(?<fraction>\.\d+)?)?(?<offset>Z|[+-]\d{2}:[0-5]\d)\z/
   @template_fields @shared_fields ++ [:template_id, :template_data]
   @code_fields @shared_fields ++
                  [
@@ -586,13 +587,27 @@ defmodule PostHog.Emails do
       | headers(connection)
     ]
 
-    sent_at = connection.now.()
+    attempt_once = fn since, _attempt ->
+      sent_at = since || connection.now.()
 
-    with_retries(connection, prepared.max_retries || connection.max_retries, fn ->
-      connection
-      |> request(:post, @send_path, headers, prepared.body)
-      |> parse_send_reply(prepared.scheduled_at, sent_at)
-    end)
+      case connection
+           |> request(:post, @send_path, headers, prepared.body)
+           |> parse_send_reply(prepared.scheduled_at, sent_at) do
+        {:error, %Error{status_code: 429} = error} when is_nil(since) -> {:error, error, nil}
+        {:error, error} -> {:error, error, sent_at}
+        {:ok, result} -> {:ok, result}
+      end
+    end
+
+    case with_retries(
+           connection,
+           prepared.max_retries || connection.max_retries,
+           nil,
+           attempt_once
+         ) do
+      {:error, error, _sent_at} -> {:error, error}
+      {:ok, result} -> {:ok, result}
+    end
   end
 
   defp upload(_connection, %{files: []}), do: :ok
@@ -945,7 +960,7 @@ defmodule PostHog.Emails do
 
   def max_retries(_options), do: {:ok, nil}
 
-  defp scheduled_at(%{scheduled_at: %DateTime{} = at}),
+  defp scheduled_at(%{scheduled_at: %DateTime{year: year} = at}) when year >= 1,
     do: ceil_to_millisecond(DateTime.to_unix(at, :microsecond), false)
 
   defp scheduled_at(%{scheduled_at: at}) when is_binary(at) do

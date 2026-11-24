@@ -1,6 +1,7 @@
 defmodule PostHog.Emails.Error do
   @moduledoc """
-  PostHog did not queue the email or return its status, or the SDK could not tell whether it did.
+  PostHog did not queue the email or return its status, the SDK could not tell whether it did, or
+  PostHog took a scheduled email without confirming its time.
 
   Branch on `:code`, PostHog's stable error code, or on `:name`, a coarse category of the
   failure. The message never contains the secret key or the request body.
