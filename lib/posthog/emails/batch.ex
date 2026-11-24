@@ -324,7 +324,7 @@ defmodule PostHog.Emails.Batch do
       Emails.reply_error({:ok, status, request_fields(fields, status, chunk), retry_after_ms})
 
     cond do
-      Emails.text(fields["code"]) in @unconfirmed_codes ->
+      status != 429 and Emails.text(fields["code"]) in @unconfirmed_codes ->
         {:error, error, lost(run, chunk, error, error)}
 
       status >= 500 ->

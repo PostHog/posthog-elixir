@@ -1093,6 +1093,8 @@ defmodule PostHog.Emails do
          max_retries: config.email_request_max_retries,
          sleep: Map.get(config, :email_sleep, &Process.sleep/1),
          now: Map.get(config, :email_now, &DateTime.utc_now/0),
+         monotonic_ms:
+           Map.get(config, :email_monotonic_ms, fn -> System.monotonic_time(:millisecond) end),
          upload_adapter: Map.get(config, :email_upload_adapter, :none)
        }}
     end
@@ -1390,7 +1392,7 @@ defmodule PostHog.Emails do
 
   @doc false
   def with_retries(connection, max_retries, state, attempt_once),
-    do: retry(connection, {max_retries, connection.now.()}, state, attempt_once, 0)
+    do: retry(connection, {max_retries, connection.monotonic_ms.()}, state, attempt_once, 0)
 
   defp retry(connection, {max_retries, started_at} = limits, state, attempt_once, attempt) do
     case attempt_once.(state, attempt) do
@@ -1401,8 +1403,7 @@ defmodule PostHog.Emails do
         delay_ms = retry_delay_ms(error, attempt, max_retries)
 
         if is_nil(delay_ms) or
-             DateTime.diff(connection.now.(), started_at, :millisecond) + delay_ms >
-               @max_retry_window_ms do
+             connection.monotonic_ms.() - started_at + delay_ms > @max_retry_window_ms do
           {:error, error, state}
         else
           connection.sleep.(delay_ms)

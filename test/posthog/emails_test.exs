@@ -472,6 +472,7 @@ defmodule PostHog.EmailsTest do
     end)
 
     clock = start_supervised!({Agent, fn -> context[:now] || ~U[2026-11-24 12:00:00.000000Z] end})
+    monotonic = start_supervised!(Supervisor.child_spec({Agent, fn -> 0 end}, id: :monotonic))
 
     config =
       [
@@ -485,8 +486,10 @@ defmodule PostHog.EmailsTest do
       |> Keyword.merge(context[:config] || [])
       |> PostHog.Config.validate!()
       |> Map.put(:email_now, fn -> Agent.get(clock, & &1) end)
+      |> Map.put(:email_monotonic_ms, fn -> Agent.get(monotonic, & &1) end)
       |> Map.put(:email_sleep, fn ms ->
         send(test_pid, {:slept, ms})
+        Agent.update(monotonic, &(&1 + ms))
         if context[:stop_instance_on_sleep], do: stop_supervised!(context.test)
       end)
       |> Map.put(
@@ -495,7 +498,7 @@ defmodule PostHog.EmailsTest do
       )
 
     start_link_supervised!({PostHog.Supervisor, config})
-    %{name: context.test, clock: clock}
+    %{name: context.test, clock: clock, monotonic: monotonic}
   end
 
   defp expect_reply(times \\ 1, reply) do
@@ -1842,12 +1845,10 @@ defmodule PostHog.EmailsTest do
 
     test "stops retrying an hour after the first attempt, whatever max_retries says", %{
       name: name,
-      clock: clock
+      monotonic: monotonic
     } do
-      started_at = Agent.get(clock, & &1)
-
       expect(API.Mock, :request, 6, fn _client, _method, _url, _opts ->
-        Agent.update(clock, &DateTime.add(&1, 10, :minute))
+        Agent.update(monotonic, &(&1 + 600_000))
         refused(503, %{"code" => "service_unavailable"})
       end)
 
@@ -1858,7 +1859,22 @@ defmodule PostHog.EmailsTest do
                  max_retries: 100
                )
 
-      assert DateTime.diff(Agent.get(clock, & &1), started_at, :minute) == 60
+      assert Agent.get(monotonic, & &1) in 3_600_000..3_700_000
+    end
+
+    test "keeps retrying when the wall clock jumps ahead during a retry", %{
+      name: name,
+      clock: clock
+    } do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        Agent.update(clock, &DateTime.add(&1, 2, :hour))
+        refused(503, %{"code" => "service_unavailable"})
+      end)
+
+      expect_reply(accepted())
+
+      assert {:ok, %Emails.SendResult{}} =
+               Emails.send(name, to: "user@example.com", template_id: @template_id)
     end
 
     test "a per-send max_retries of 0 makes one attempt", %{name: name} do

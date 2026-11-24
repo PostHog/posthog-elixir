@@ -658,14 +658,16 @@ defmodule PostHog.EmailsBatchTest do
       assert %Error{code: "service_unavailable", status_code: 503} = result.later_error
     end
 
-    test "a 429 without a body fails the request and reads nothing", %{name: name} do
-      answers([whole_call(429)])
+    for {label, code} <- [{"without a body", nil}, {"coded api_error", "api_error"}] do
+      test "a 429 #{label} fails the request and reads nothing", %{name: name} do
+        answers([whole_call(429, unquote(code))])
 
-      assert {:error, %BatchError{status_code: 429, results: results}} =
-               batch(name, recipients(2), max_retries: 0)
+        assert {:error, %BatchError{status_code: 429, results: results}} =
+                 batch(name, recipients(2), max_retries: 0)
 
-      assert statuses(results) == ["failed", "failed"]
-      assert keys_read(requested()) == []
+        assert statuses(results) == ["failed", "failed"]
+        assert keys_read(requested()) == []
+      end
     end
 
     test "keeps every result when the retries outlast the backoff's growth", %{name: name} do
