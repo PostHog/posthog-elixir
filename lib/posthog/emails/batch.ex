@@ -14,7 +14,7 @@ defmodule PostHog.Emails.Batch do
   @recipient_fields [:to, :distinct_id, :idempotency_key, :template_data]
   @per_recipient_fields [:to, :distinct_id, :idempotency_key]
   @excluded_fields [:scheduled_at, :cc, :bcc, :attachments]
-  @resend_same_key Emails.resend_same_key()
+  @resend_same_key "Send this email again, unchanged, with the same idempotency_key within 24 hours of the key's first use, so it goes out once."
   @send_each "send each email the batch didn't queue with PostHog.Emails.send/2 and its recipient's idempotency_key."
 
   @spec batch(PostHog.supervisor_name(), [Emails.batch_option()] | map()) ::

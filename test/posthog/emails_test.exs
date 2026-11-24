@@ -2095,8 +2095,8 @@ defmodule PostHog.EmailsTest do
 
         refute error.message =~ "no email was sent"
         assert error.message =~ "may still go out"
-        assert error.fix =~ "same idempotency_key"
-        assert_received {:request, :post, _url, _opts}
+        assert_received {:request, :post, _url, opts}
+        assert error.fix =~ ~s(idempotency_key "#{header(opts, "idempotency-key")}")
         refute_received {:request, _method, _url, _opts}
       end
     end

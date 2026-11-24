@@ -232,8 +232,8 @@ defmodule PostHog.Emails do
     nothing.
   - `client_closed`: the PostHog instance stopped during a call, so the call made no further
     request. A send sent no email, unless PostHog didn't confirm an earlier try: then the
-    message says the email may still go out, and the fix says to send it again with the same
-    `:idempotency_key`.
+    message says the email may still go out, and the fix names the `:idempotency_key` to send it
+    again with.
   - `batch_unavailable` (409): the project can't send batches yet. Send each email with
     `send/2`.
 
@@ -274,7 +274,6 @@ defmodule PostHog.Emails do
   @send_path "/api/messaging/send/email/"
   @uploads_path "/api/messaging/attachments/uploads/"
   @status_path "/api/messaging/emails/"
-  @resend_same_key "Send this email again, unchanged, with the same idempotency_key within 24 hours of the key's first use, so it goes out once."
   @us_app_host "https://us.posthog.com"
   @eu_app_host "https://eu.posthog.com"
   @cloud_app_hosts %{
@@ -620,25 +619,26 @@ defmodule PostHog.Emails do
            nil,
            attempt_once
          ) do
-      {:error, error, since} -> {:error, closed_after_try(error, since, connection)}
-      {:ok, result} -> {:ok, result}
+      {:error, error, since} ->
+        {:error, closed_after_try(error, since, connection, prepared.idempotency_key)}
+
+      {:ok, result} ->
+        {:ok, result}
     end
   end
 
-  defp closed_after_try(%Error{code: "client_closed"} = error, since, connection)
+  defp closed_after_try(%Error{code: "client_closed"} = error, since, connection, key)
        when not is_nil(since) do
     %{
       error
       | message:
           "The PostHog instance #{inspect(connection.name)} stopped during the call, so the SDK sent no further request. PostHog didn't confirm an earlier try, so the email may still go out.",
-        fix: @resend_same_key
+        fix:
+          "Send this email again, unchanged, with idempotency_key #{inspect(key)} within 24 hours of the key's first use, so it goes out once."
     }
   end
 
-  defp closed_after_try(error, _since, _connection), do: error
-
-  @doc false
-  def resend_same_key, do: @resend_same_key
+  defp closed_after_try(error, _since, _connection, _key), do: error
 
   defp upload(_connection, %{files: []}), do: :ok
 
