@@ -263,6 +263,14 @@ defmodule PostHog.EmailsBatchTest do
   describe "batch/2 argument checks" do
     @code_form [template_key: "k", subject: "s", html: "h"]
 
+    test "refuses an improper list of recipients as not a list", %{name: name} do
+      assert {:error, %Error{code: "invalid_recipients", field: "recipients"} = error} =
+               batch(name, [%{to: "a@example.com"} | :bad_tail])
+
+      assert error.message =~ "must be a list"
+      assert requested() == []
+    end
+
     test "says to give each recipient its own key for a top-level idempotency_key", %{name: name} do
       assert {:error, %Error{field: "idempotency_key"} = error} =
                batch(name, recipients(2), idempotency_key: "shared")
@@ -432,6 +440,8 @@ defmodule PostHog.EmailsBatchTest do
            }, "Split the recipients into smaller batches."},
           {"without a body", nil,
            "Split the recipients into smaller batches, and keep each email and its idempotency_key unchanged."},
+          {"with a code and fix that aren't text", %{"code" => 13, "fix" => false},
+           "Split the recipients into smaller batches, and keep each email and its idempotency_key unchanged."},
           {"with an empty code and fix", %{"code" => "", "fix" => ""},
            "Split the recipients into smaller batches, and keep each email and its idempotency_key unchanged."}
         ] do
@@ -446,6 +456,16 @@ defmodule PostHog.EmailsBatchTest do
         assert length(requested()) == 1
         assert statuses(results) == ["failed", "failed"]
       end
+    end
+
+    test "a 413 without a body for one recipient says to make the email smaller", %{name: name} do
+      answers([{:ok, %{status: 413, headers: %{}, body: nil}}])
+
+      assert {:error, %BatchError{code: "content_too_large"} = error} =
+               batch(name, recipients(1))
+
+      assert error.fix =~ "Make the email smaller"
+      refute error.fix =~ "Split"
     end
 
     test "after a lost answer, a 400 content_too_large keeps PostHog's words", %{name: name} do

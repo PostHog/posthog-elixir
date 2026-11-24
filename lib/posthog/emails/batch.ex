@@ -98,7 +98,9 @@ defmodule PostHog.Emails.Batch do
      )}
   end
 
-  defp fetch_recipients(%{recipients: [_ | _] = recipients}), do: {:ok, recipients}
+  defp fetch_recipients(%{recipients: [_ | _] = recipients}) do
+    if List.improper?(recipients), do: fetch_recipients(%{}), else: {:ok, recipients}
+  end
 
   defp fetch_recipients(%{recipients: []}),
     do:
@@ -318,7 +320,9 @@ defmodule PostHog.Emails.Batch do
 
   defp answer(run, _attempt, {:ok, status, fields, retry_after_ms}) do
     {:error, error} =
-      Emails.reply_error({:ok, status, request_fields(fields, status), retry_after_ms})
+      Emails.reply_error(
+        {:ok, status, request_fields(fields, status, map_size(run.members)), retry_after_ms}
+      )
 
     uncertain? =
       status >= 500 or
@@ -336,17 +340,20 @@ defmodule PostHog.Emails.Batch do
     end
   end
 
-  defp request_fields(fields, status) do
+  defp request_fields(fields, status, recipients) do
     fields = Map.reject(fields, fn {_key, value} -> is_nil(value) or value == "" end)
 
-    fields = Map.merge(defaults(status), fields)
+    fields =
+      Map.merge(defaults(status, recipients), fields, fn _key, default, value ->
+        if is_binary(value), do: value, else: default
+      end)
 
     if fields["code"] == "batch_unavailable",
       do: Map.put(fields, "fix", "Until batch sends are on for the project, #{@send_each}"),
       else: fields
   end
 
-  defp defaults(404) do
+  defp defaults(404, _recipients) do
     %{
       "code" => "not_found",
       "detail" => "PostHog found no batch send for this request.",
@@ -356,7 +363,16 @@ defmodule PostHog.Emails.Batch do
     }
   end
 
-  defp defaults(413) do
+  defp defaults(413, 1) do
+    %{
+      "code" => "content_too_large",
+      "detail" => "PostHog refused the email as larger than it takes in one request.",
+      "fix" =>
+        "Make the email smaller, such as by linking to large images and files instead of embedding them."
+    }
+  end
+
+  defp defaults(413, _recipients) do
     %{
       "code" => "content_too_large",
       "detail" => "PostHog refused the batch as larger than it takes in one request.",
@@ -365,7 +381,7 @@ defmodule PostHog.Emails.Batch do
     }
   end
 
-  defp defaults(_status), do: %{}
+  defp defaults(_status, _recipients), do: %{}
 
   defp settle(run, index, slot) do
     slot = if is_map(slot), do: slot, else: %{}
