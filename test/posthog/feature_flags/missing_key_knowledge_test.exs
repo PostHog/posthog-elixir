@@ -854,4 +854,524 @@ defmodule PostHog.FeatureFlags.MissingKeyKnowledgeTest do
     send(worker_two, :release_parallel)
     Enum.each(waiters, &assert({:ok, _snapshot} = Task.await(&1)))
   end
+
+  test "a key /flags already returned is requested directly without waiting on a probe" do
+    owner = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    stub(PostHog.API.Mock, :request, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          call = Agent.get_and_update(calls, &{&1, &1 + 1})
+          send(owner, {:present_probe, call, self()})
+          if call == 1, do: receive(do: (:release_present -> :ok))
+          {:ok, %{status: 200, body: %{"flags" => %{"remote" => %{"enabled" => true}}}}}
+      end
+    end)
+
+    name = __MODULE__.KnownPresent
+    start_instance(name)
+
+    # The first request confirms the key exists.
+    assert {:ok, first} = scoped(name, ["remote"], "one")
+    assert first.flags["remote"].enabled
+    assert_receive {:present_probe, 0, _worker}
+
+    # A later request for that key is in flight, and another caller doesn't wait for it.
+    stalled = Task.async(fn -> scoped(name, ["remote"], "two") end)
+    assert_receive {:present_probe, 1, stalled_worker}
+    direct = Task.async(fn -> scoped(name, ["remote"], "three") end)
+    assert_receive {:present_probe, 2, _worker}, 500
+    assert {:ok, snapshot} = Task.await(direct, 500)
+    assert snapshot.flags["remote"].enabled
+
+    send(stalled_worker, :release_present)
+    assert {:ok, _snapshot} = Task.await(stalled)
+  end
+
+  test "a clean omission of a known-present key makes it unknown again" do
+    owner = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    stub(PostHog.API.Mock, :request, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          call = Agent.get_and_update(calls, &{&1, &1 + 1})
+          send(owner, {:deleted_probe, call, self()})
+
+          if call == 0,
+            do: {:ok, %{status: 200, body: %{"flags" => %{"remote" => %{"enabled" => true}}}}},
+            else: {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    name = __MODULE__.PresentThenDeleted
+    start_instance(name)
+
+    assert {:ok, _snapshot} = scoped(name, ["remote"], "one")
+    assert_receive {:deleted_probe, 0, _worker}
+    sync_loader(name)
+
+    assert MapSet.member?(
+             DefinitionLoader.evaluation_state(name, ["remote"]).known_present,
+             "remote"
+           )
+
+    # The flag is deleted. A clean omission moves it back to unknown, then missing.
+    assert {:ok, snapshot} = scoped(name, ["remote"], "two")
+    assert Evaluations.keys(snapshot) == []
+    assert_receive {:deleted_probe, 1, _worker}
+    sync_loader(name)
+
+    state = DefinitionLoader.evaluation_state(name, ["remote"])
+    refute MapSet.member?(state.known_present, "remote")
+    assert MapSet.member?(state.known_missing, "remote")
+
+    assert {:ok, _snapshot} = scoped(name, ["remote"], "three")
+    refute_receive {:deleted_probe, 2, _worker}, 50
+  end
+
+  test "an oversized request still updates a known-present key it omits" do
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+    unknown = for index <- 0..1_000, do: "unknown-#{index}"
+
+    stub(PostHog.API.Mock, :request, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          if Agent.get_and_update(calls, &{&1, &1 + 1}) == 0,
+            do: {:ok, %{status: 200, body: %{"flags" => %{"remote" => %{"enabled" => true}}}}},
+            else: {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    name = __MODULE__.OversizedPresent
+    start_instance(name)
+    assert {:ok, _snapshot} = scoped(name, ["remote"], "one")
+    sync_loader(name)
+
+    assert MapSet.member?(
+             DefinitionLoader.evaluation_state(name, ["remote"]).known_present,
+             "remote"
+           )
+
+    assert {:ok, _snapshot} = scoped(name, ["remote" | unknown], "two")
+    sync_loader(name)
+
+    refute MapSet.member?(
+             DefinitionLoader.evaluation_state(name, ["remote"]).known_present,
+             "remote"
+           )
+  end
+
+  test "a coordinated clean omission clears a known-present key past the missing-key limit" do
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+    unknown = for index <- 1..1_000, do: "z-#{String.pad_leading(to_string(index), 4, "0")}"
+
+    stub(PostHog.API.Mock, :request, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          if Agent.get_and_update(calls, &{&1, &1 + 1}) == 0,
+            do: {:ok, %{status: 200, body: %{"flags" => %{"a-retired" => %{"enabled" => true}}}}},
+            else: {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    name = __MODULE__.PresentPastLimit
+    start_instance(name)
+    assert {:ok, _snapshot} = scoped(name, ["a-retired"], "one")
+    sync_loader(name)
+
+    assert MapSet.member?(
+             DefinitionLoader.evaluation_state(name, ["a-retired"]).known_present,
+             "a-retired"
+           )
+
+    # 1,000 unknown keys stay within the coordination limit, so this request is coordinated.
+    assert {:ok, _snapshot} = scoped(name, ["a-retired" | unknown], "two")
+    sync_loader(name)
+
+    refute MapSet.member?(
+             DefinitionLoader.evaluation_state(name, ["a-retired"]).known_present,
+             "a-retired"
+           )
+  end
+
+  test "a definitions refresh forgets known-present keys" do
+    stub(PostHog.API.Mock, :request, fn :stub_client, method, path, _opts ->
+      case {method, path} do
+        {:get, "/flags/definitions"} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags"} ->
+          {:ok, %{status: 200, body: %{"flags" => %{"remote" => %{"enabled" => true}}}}}
+      end
+    end)
+
+    name = __MODULE__.PresentRefresh
+    start_instance(name)
+    assert {:ok, _snapshot} = scoped(name, ["remote"], "one")
+    sync_loader(name)
+
+    assert MapSet.member?(
+             DefinitionLoader.evaluation_state(name, ["remote"]).known_present,
+             "remote"
+           )
+
+    DefinitionLoader.refresh(name)
+    assert DefinitionLoader.evaluation_state(name, ["remote"]).known_present == MapSet.new()
+  end
+
+  defp waiting_on(name, key) do
+    coordinator = PostHog.Registry.via(name, FeatureFlags.MissingProbeCoordinator)
+    map_size(Map.get(:sys.get_state(coordinator).waiters, key, %{}))
+  end
+
+  defp record(name, generation, requested, returned, clean? \\ true) do
+    started = DefinitionLoader.probe_started(name)
+
+    :ok =
+      DefinitionLoader.update_negative_knowledge(
+        name,
+        generation,
+        requested,
+        returned,
+        clean?,
+        started
+      )
+  end
+
+  test "clearing a known-present key keeps it protected from older omissions" do
+    stub(PostHog.API.Mock, :request, fn :stub_client, :get, "/flags/definitions", _opts ->
+      {:ok, %{status: 200, body: envelope(), headers: %{}}}
+    end)
+
+    name = __MODULE__.PresenceHistory
+    start_instance(name)
+    %{generation: generation} = DefinitionLoader.evaluation_state(name, [])
+    unknown = for index <- 1..1_000, do: "z-#{String.pad_leading(to_string(index), 4, "0")}"
+
+    # An older probe for "a-retired" starts, then a newer response returns it.
+    older = DefinitionLoader.probe_started(name)
+    record(name, generation, [], ["a-retired"])
+
+    # A later request omits it alongside 1,000 keys, so it no longer fits as missing.
+    record(name, generation, ["a-retired" | unknown], [])
+    state = DefinitionLoader.evaluation_state(name, ["a-retired"])
+    refute MapSet.member?(state.known_present, "a-retired")
+    refute MapSet.member?(state.known_missing, "a-retired")
+
+    # The older probe's omission predates the return, so it can't record absence.
+    :ok =
+      DefinitionLoader.update_negative_knowledge(
+        name,
+        generation,
+        ["a-retired"],
+        [],
+        true,
+        older
+      )
+
+    refute MapSet.member?(
+             DefinitionLoader.evaluation_state(name, ["a-retired"]).known_missing,
+             "a-retired"
+           )
+  end
+
+  test "a waiter's omission clears a key another caller returned while it waited" do
+    owner = self()
+
+    stub(PostHog.API.Mock, :request, fn :stub_client, method, path, opts ->
+      case {method, path, opts[:json][:distinct_id]} do
+        {:get, "/flags/definitions", _id} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags", "one"} ->
+          send(owner, {:returning_owner, self()})
+          receive do: (:release_owner -> :ok)
+          {:ok, %{status: 200, body: %{"flags" => %{"k" => %{"enabled" => true}}}}}
+
+        {:post, "/flags", "two"} ->
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    name = __MODULE__.ReturnedWhileWaiting
+    start_instance(name)
+    first = Task.async(fn -> scoped(name, ["k"], "one") end)
+    assert_receive {:returning_owner, worker}
+    second = Task.async(fn -> scoped(name, ["k"], "two") end)
+    eventually(fn -> waiting_on(name, "k") == 1 end)
+
+    send(worker, :release_owner)
+    assert {:ok, _snapshot} = Task.await(first)
+    assert {:ok, _snapshot} = Task.await(second)
+    sync_loader(name)
+
+    state = DefinitionLoader.evaluation_state(name, ["k"])
+    refute MapSet.member?(state.known_present, "k")
+    assert MapSet.member?(state.known_missing, "k")
+  end
+
+  test "a waiter doesn't reinstall absence for a key that became missing while it waited" do
+    owner = self()
+
+    stub(PostHog.API.Mock, :request, fn :stub_client, method, path, opts ->
+      case {method, path, opts[:json][:distinct_id]} do
+        {:get, "/flags/definitions", _id} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags", "holder"} ->
+          send(owner, {:holder, self()})
+          receive do: (:release_holder -> :ok)
+          {:ok, %{status: 200, body: %{"flags" => %{}, "errorsWhileComputingFlags" => true}}}
+
+        {:post, "/flags", "mixed"} ->
+          send(owner, {:mixed, self()})
+          receive do: (:release_mixed -> :ok)
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    name = __MODULE__.MissingWhileWaiting
+    start_instance(name)
+    %{generation: generation} = DefinitionLoader.evaluation_state(name, [])
+    record(name, generation, [], ["a"])
+
+    holder = Task.async(fn -> scoped(name, ["b"], "holder") end)
+    assert_receive {:holder, holder_worker}
+    mixed = Task.async(fn -> scoped(name, ["a", "b"], "mixed") end)
+    eventually(fn -> waiting_on(name, "b") == 1 end)
+
+    # "a" becomes known missing while the mixed call waits on "b".
+    record(name, generation, ["a"], [])
+    assert MapSet.member?(DefinitionLoader.evaluation_state(name, ["a"]).known_missing, "a")
+
+    send(holder_worker, :release_holder)
+    assert {:ok, _snapshot} = Task.await(holder)
+    assert_receive {:mixed, mixed_worker}
+
+    # The negative entry is evicted while the mixed fallback is in flight.
+    evicting = for index <- 1..1_000, do: "z-#{String.pad_leading(to_string(index), 4, "0")}"
+    record(name, generation, evicting, [])
+    refute MapSet.member?(DefinitionLoader.evaluation_state(name, ["a"]).known_missing, "a")
+
+    send(mixed_worker, :release_mixed)
+    assert {:ok, _snapshot} = Task.await(mixed)
+    sync_loader(name)
+
+    refute MapSet.member?(DefinitionLoader.evaluation_state(name, ["a"]).known_missing, "a")
+  end
+
+  test "a waiter doesn't record absence for a key that gained a local definition while it waited" do
+    owner = self()
+    {:ok, definition_calls} = Agent.start_link(fn -> 0 end)
+
+    defined =
+      envelope([
+        %{
+          "key" => "a",
+          "active" => true,
+          "ensure_experience_continuity" => true,
+          "filters" => %{"groups" => []}
+        }
+      ])
+
+    stub(PostHog.API.Mock, :request, fn :stub_client, method, path, opts ->
+      case {method, path, opts[:json][:distinct_id]} do
+        {:get, "/flags/definitions", _id} ->
+          body =
+            if Agent.get_and_update(definition_calls, &{&1, &1 + 1}) == 0,
+              do: envelope(),
+              else: defined
+
+          {:ok, %{status: 200, body: body, headers: %{}}}
+
+        {:post, "/flags", "holder"} ->
+          send(owner, {:holder, self()})
+          receive do: (:release_holder -> :ok)
+          {:ok, %{status: 200, body: %{"flags" => %{}, "errorsWhileComputingFlags" => true}}}
+
+        {:post, "/flags", "single"} ->
+          send(owner, :single_requested)
+          {:ok, %{status: 200, body: %{"flags" => %{"a" => %{"enabled" => true}}}}}
+
+        {:post, "/flags", _id} ->
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    name = __MODULE__.DefinedWhileWaiting
+    start_instance(name)
+    %{generation: generation} = DefinitionLoader.evaluation_state(name, [])
+    record(name, generation, [], ["a"])
+
+    holder = Task.async(fn -> scoped(name, ["b"], "holder") end)
+    assert_receive {:holder, holder_worker}
+    mixed = Task.async(fn -> scoped(name, ["a", "b"], "mixed") end)
+    eventually(fn -> waiting_on(name, "b") == 1 end)
+
+    # A refresh installs a definition for "a" that still needs remote evaluation.
+    DefinitionLoader.refresh(name)
+
+    send(holder_worker, :release_holder)
+    assert {:ok, _snapshot} = Task.await(holder)
+    assert {:ok, _snapshot} = Task.await(mixed)
+    sync_loader(name)
+
+    refute MapSet.member?(DefinitionLoader.evaluation_state(name, ["a"]).known_missing, "a")
+    assert {:ok, _snapshot} = scoped(name, ["a"], "single")
+    assert_receive :single_requested
+  end
+
+  test "a waiter coordinates on a key that became unknown while it waited" do
+    owner = self()
+    {:ok, definition_calls} = Agent.start_link(fn -> 0 end)
+
+    stub(PostHog.API.Mock, :request, fn :stub_client, method, path, opts ->
+      case {method, path, opts[:json][:distinct_id]} do
+        {:get, "/flags/definitions", _id} ->
+          Agent.update(definition_calls, &(&1 + 1))
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags", "b-owner"} ->
+          send(owner, {:b_owner, self()})
+          receive do: (:release_b -> :ok)
+          {:ok, %{status: 200, body: %{"flags" => %{}, "errorsWhileComputingFlags" => true}}}
+
+        {:post, "/flags", "a-owner"} ->
+          send(owner, {:a_owner, self()})
+          receive do: (:release_a -> :ok)
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+
+        {:post, "/flags", "mixed"} ->
+          send(owner, :mixed_requested)
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    name = __MODULE__.UnknownAfterWait
+    start_instance(name)
+    %{generation: generation} = DefinitionLoader.evaluation_state(name, [])
+    record(name, generation, [], ["a"])
+
+    b_owner = Task.async(fn -> scoped(name, ["b"], "b-owner") end)
+    assert_receive {:b_owner, b_worker}
+    mixed = Task.async(fn -> scoped(name, ["a", "b"], "mixed") end)
+    eventually(fn -> waiting_on(name, "b") == 1 end)
+
+    # A refresh clears "a"'s presence, and another call starts checking "a".
+    DefinitionLoader.refresh(name)
+    a_owner = Task.async(fn -> scoped(name, ["a"], "a-owner") end)
+    assert_receive {:a_owner, a_worker}
+
+    # When "b" settles, the mixed call waits on the check for "a" instead of
+    # sending its request right away.
+    send(b_worker, :release_b)
+    assert {:ok, _snapshot} = Task.await(b_owner)
+    eventually(fn -> waiting_on(name, "a") == 1 end)
+    refute_received :mixed_requested
+
+    # The check for "a" cleanly omits it, so the mixed call requests only for "b".
+    send(a_worker, :release_a)
+    assert {:ok, _snapshot} = Task.await(a_owner)
+    assert {:ok, _snapshot} = Task.await(mixed)
+    assert_receive :mixed_requested
+  end
+
+  test "an older direct request's omission doesn't clear a newer return" do
+    owner = self()
+
+    stub(PostHog.API.Mock, :request, fn :stub_client, method, path, opts ->
+      case {method, path, opts[:json][:distinct_id]} do
+        {:get, "/flags/definitions", _id} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags", "older"} ->
+          send(owner, {:older, self()})
+          receive do: (:release_older -> :ok)
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+
+        {:post, "/flags", _id} ->
+          {:ok, %{status: 200, body: %{"flags" => %{"k" => %{"enabled" => true}}}}}
+      end
+    end)
+
+    name = __MODULE__.OlderDirectOmission
+    start_instance(name)
+    assert {:ok, _snapshot} = scoped(name, ["k"], "first")
+    sync_loader(name)
+    assert MapSet.member?(DefinitionLoader.evaluation_state(name, ["k"]).known_present, "k")
+
+    # Two direct requests for known-present "k" overlap. The newer one returns it.
+    older = Task.async(fn -> scoped(name, ["k"], "older") end)
+    assert_receive {:older, older_worker}
+    assert {:ok, _snapshot} = scoped(name, ["k"], "newer")
+
+    # The older request finishes last with a clean omission.
+    send(older_worker, :release_older)
+    assert {:ok, _snapshot} = Task.await(older)
+    sync_loader(name)
+
+    state = DefinitionLoader.evaluation_state(name, ["k"])
+    assert MapSet.member?(state.known_present, "k")
+    refute MapSet.member?(state.known_missing, "k")
+  end
+
+  test "a later coordination round respects the coordination limit" do
+    owner = self()
+    present = for index <- 1..1_000, do: "p-#{String.pad_leading(to_string(index), 4, "0")}"
+    missing = for index <- 1..1_000, do: "m-#{String.pad_leading(to_string(index), 4, "0")}"
+
+    stub(PostHog.API.Mock, :request, fn :stub_client, method, path, opts ->
+      case {method, path, opts[:json][:distinct_id]} do
+        {:get, "/flags/definitions", _id} ->
+          {:ok, %{status: 200, body: envelope(), headers: %{}}}
+
+        {:post, "/flags", "b-owner"} ->
+          send(owner, {:b_owner, self()})
+          receive do: (:release_b -> :ok)
+          {:ok, %{status: 200, body: %{"flags" => %{}, "errorsWhileComputingFlags" => true}}}
+
+        {:post, "/flags", "mixed"} ->
+          send(owner, {:mixed, self()})
+          receive do: (:release_mixed -> :ok)
+          {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end
+    end)
+
+    name = __MODULE__.LaterRoundLimit
+    start_instance(name)
+    %{generation: generation} = DefinitionLoader.evaluation_state(name, [])
+    record(name, generation, [], present)
+    record(name, generation, missing, [])
+
+    b_owner = Task.async(fn -> scoped(name, ["b"], "b-owner") end)
+    assert_receive {:b_owner, b_worker}
+    mixed = Task.async(fn -> scoped(name, ["b" | present ++ missing], "mixed") end)
+    eventually(fn -> waiting_on(name, "b") == 1 end)
+
+    # A refresh makes 2,000 keys unknown while the mixed call waits on "b".
+    DefinitionLoader.refresh(name)
+    send(b_worker, :release_b)
+    assert {:ok, _snapshot} = Task.await(b_owner)
+
+    # Too many new keys to coordinate, so the mixed call requests without claiming them.
+    assert_receive {:mixed, mixed_worker}, 1_000
+    coordinator = PostHog.Registry.via(name, FeatureFlags.MissingProbeCoordinator)
+    assert :sys.get_state(coordinator).owners == %{}
+    send(mixed_worker, :release_mixed)
+    assert {:ok, _snapshot} = Task.await(mixed)
+  end
 end
