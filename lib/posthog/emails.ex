@@ -199,8 +199,10 @@ defmodule PostHog.Emails do
   service `:email_request_max_retries` times (2 by default), waiting about 1 and then 2 seconds,
   or the server's `Retry-After` when it is longer. A `Retry-After` over 30 seconds fails at once
   with `:retry_after_ms` set. A monthly quota and the day's upload quota are never retried.
-  Retries stop an hour after the first attempt, whatever `:max_retries` says, so every retry
-  falls well inside the 24 hours in which PostHog keeps an idempotency key.
+  Retries stop an hour after the first attempt, whatever `:max_retries` says, so a retry falls
+  inside the 24 hours in which PostHog keeps an idempotency key unless the call starts in the
+  last hour of them. To rerun with a stored key that close to its 24 hours, pass
+  `max_retries: 0`.
   The upload steps of a send with files retry the same way.
 
   Every attempt sends the same idempotency key, so a retry never sends twice. Without
@@ -434,7 +436,9 @@ defmodule PostHog.Emails do
     call, so pass keys you store when a batch may be cut off and run again: a rerun within 24
     hours replays the emails that went out instead of sending them twice. A single send and a
     batch recipient with the same key and the same email replay each other. Never reuse a key
-    for another email: PostHog refuses it with `idempotency_key_reused`.
+    for another email: PostHog refuses it with `idempotency_key_reused`, though two different
+    emails sent at the same moment with one key can both come back `"queued"` while only one
+    goes out.
   - `:template_data` - only with `:template_id`: values for this recipient, merged over the
     batch's `:template_data`. A top-level key set here replaces the same key there.
   """

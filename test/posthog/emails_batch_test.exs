@@ -414,7 +414,7 @@ defmodule PostHog.EmailsBatchTest do
              "fix" => "Split the recipients into smaller batches."
            }, "Split the recipients into smaller batches."},
           {"without a body", nil,
-           "Split the recipients into smaller batches, or send less template_data."}
+           "Split the recipients into smaller batches, or make each email's content smaller."}
         ] do
       test "a 413 #{label} comes back as the error, with a fix to split the batch", %{name: name} do
         answers([{:ok, %{status: 413, headers: %{}, body: unquote(Macro.escape(body))}}])
@@ -488,6 +488,7 @@ defmodule PostHog.EmailsBatchTest do
       assert {first.status, first.message_id, first.replayed} == {"queued", "m0", true}
       assert {second.status, second.message_id} == {"unconfirmed", "m1"}
       assert %Error{code: "recipient_suppressed"} = second.error
+      assert second.error.message =~ "may still go out"
       assert_resend_with_same_key(results)
     end
 
@@ -579,6 +580,7 @@ defmodule PostHog.EmailsBatchTest do
           {"a 429", 429, "throttled", [:lost]},
           {"a 409 in flight", 409, "idempotency_key_in_flight", [:lost]},
           {"a 400", 400, "invalid_form", [:lost]},
+          {"a 413 without a body", 413, nil, [:lost]},
           {"a 429 after a 503", 429, "throttled", [:lost, 503]}
         ] do
       test "#{label} to a retry after a lost answer leaves the recipients unconfirmed",
@@ -591,11 +593,20 @@ defmodule PostHog.EmailsBatchTest do
 
         answers(earlier ++ [whole_call(unquote(status), unquote(code))])
 
-        assert {:error, %BatchError{code: unquote(code), results: [first, _second] = results}} =
+        assert {:error, %BatchError{results: [first, _second] = results} = error} =
                  batch(name, recipients(2), max_retries: length(earlier))
 
+        code = unquote(code) || "content_too_large"
+        assert {error.code, error.status_code} == {code, unquote(status)}
         assert statuses(results) == ["unconfirmed", "unconfirmed"]
-        assert %Error{code: unquote(code), status_code: unquote(status)} = first.error
+        assert %Error{code: ^code, status_code: unquote(status)} = first.error
+
+        for message <- [error.message, first.error.message],
+            code != "idempotency_key_in_flight" do
+          assert message =~ "may still go out"
+          refute message =~ "no email was sent"
+        end
+
         assert_resend_with_same_key(results)
       end
     end

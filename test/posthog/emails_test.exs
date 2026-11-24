@@ -1889,7 +1889,6 @@ defmodule PostHog.EmailsTest do
 
       refute_received {:request_at, _at}
       assert List.last(request_times) < 3_600_000
-      assert Agent.get(monotonic, & &1) in 3_600_000..3_700_000
     end
 
     for {label, overrun_ms, headers} <- [

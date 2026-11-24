@@ -316,7 +316,16 @@ defmodule PostHog.Emails.Batch do
       status >= 500 or
         (status != 429 and Emails.text(fields["code"]) in @unconfirmed_codes)
 
-    {:error, error, all(run, if(uncertain?, do: "unconfirmed", else: "failed"), error)}
+    cond do
+      uncertain? ->
+        {:error, error, all(run, "unconfirmed", error)}
+
+      run.lost? ->
+        {:error, refused_after_loss(error), all(run, "unconfirmed", refused_after_loss(error))}
+
+      true ->
+        {:error, error, all(run, "failed", error)}
+    end
   end
 
   defp request_fields(fields, status) do
@@ -343,7 +352,7 @@ defmodule PostHog.Emails.Batch do
     %{
       "code" => "content_too_large",
       "detail" => "The batch is larger than PostHog takes in one request, so no email was sent.",
-      "fix" => "Split the recipients into smaller batches, or send less template_data."
+      "fix" => "Split the recipients into smaller batches, or make each email's content smaller."
     }
   end
 
@@ -357,8 +366,20 @@ defmodule PostHog.Emails.Batch do
       set(run, index, "queued", message_id: message_id, replayed: slot["replayed"] == true)
     else
       answer = slot_error(slot["error"], message_id)
-      status = if answer.code in @unconfirmed_codes, do: "unconfirmed", else: "failed"
-      set(run, index, status, message_id: message_id, error: answer)
+
+      cond do
+        answer.code in @unconfirmed_codes ->
+          set(run, index, "unconfirmed", message_id: message_id, error: answer)
+
+        run.lost? ->
+          set(run, index, "unconfirmed",
+            message_id: message_id,
+            error: refused_after_loss(answer)
+          )
+
+        true ->
+          set(run, index, "failed", message_id: message_id, error: answer)
+      end
     end
   end
 
@@ -380,6 +401,14 @@ defmodule PostHog.Emails.Batch do
     )
   end
 
+  defp refused_after_loss(error) do
+    %{
+      error
+      | message:
+          "PostHog refused a retry with #{error.code}, but its answer to an earlier try was lost, so the email may still go out."
+    }
+  end
+
   defp unconfirmed do
     Error.new(
       "delivery_unavailable",
@@ -390,9 +419,6 @@ defmodule PostHog.Emails.Batch do
 
   defp all(run, status, error),
     do: Enum.reduce(Map.keys(run.members), run, &set(&2, &1, status, error: error))
-
-  defp set(run, index, "failed", fields) when run.lost?,
-    do: set(run, index, "unconfirmed", fields)
 
   defp set(run, index, "unconfirmed", fields),
     do: put_result(run, index, "unconfirmed", Keyword.update!(fields, :error, &resend_same_key/1))
