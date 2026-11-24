@@ -386,14 +386,22 @@ defmodule PostHog.EmailsBatchTest do
   end
 
   describe "batch/2 requests" do
-    test "sends 100 recipients in one request", %{name: name} do
-      answers([&all_queued/1])
+    for {label, extra} <- [
+          {"", quote(do: %{})},
+          {" of more than 4 MiB",
+           quote(do: %{template_data: %{"note" => String.duplicate("a", 45_000)}})}
+        ] do
+      test "sends 100 recipients#{label} in one request", %{name: name} do
+        answers([&all_queued/1])
 
-      assert {:ok, %Emails.BatchResult{results: results}} = batch(name, recipients(100))
+        assert {:ok, %Emails.BatchResult{results: results}} =
+                 batch(name, recipients(100, unquote(extra)))
 
-      assert [body] = batch_bodies(requested())
-      assert length(body["recipients"]) == 100
-      assert Enum.map(results, & &1.message_id) == Enum.map(0..99, &"msg_key-#{&1}")
+        assert [{:post, @batch_url, opts}] = requested()
+        assert byte_size(opts[:body]) > byte_size(Jason.encode!(unquote(extra))) * 100
+        assert length(Jason.decode!(opts[:body])["recipients"]) == 100
+        assert Enum.map(results, & &1.message_id) == Enum.map(0..99, &"msg_key-#{&1}")
+      end
     end
 
     test "refuses more than 100 recipients before any request", %{name: name} do
@@ -414,6 +422,8 @@ defmodule PostHog.EmailsBatchTest do
              "fix" => "Split the recipients into smaller batches."
            }, "Split the recipients into smaller batches."},
           {"without a body", nil,
+           "Split the recipients into smaller batches, or make each email's content smaller."},
+          {"with an empty code and fix", %{"code" => "", "fix" => ""},
            "Split the recipients into smaller batches, or make each email's content smaller."}
         ] do
       test "a 413 #{label} comes back as the error, with a fix to split the batch", %{name: name} do
@@ -427,6 +437,27 @@ defmodule PostHog.EmailsBatchTest do
         assert length(requested()) == 1
         assert statuses(results) == ["failed", "failed"]
       end
+    end
+
+    test "after a lost answer, a 400 content_too_large keeps PostHog's words", %{name: name} do
+      detail = "The content shared by every recipient can be at most 256 KiB."
+
+      answers([
+        lost(),
+        {:ok,
+         %{
+           status: 400,
+           headers: %{},
+           body: %{"type" => "invalid_request", "code" => "content_too_large", "detail" => detail}
+         }}
+      ])
+
+      assert {:error, %BatchError{code: "content_too_large", results: [first, _second]} = error} =
+               batch(name, recipients(2), max_retries: 1)
+
+      assert error.message =~ detail
+      assert first.error.message =~ detail
+      assert first.status == "unconfirmed"
     end
 
     test "a 400 content_too_large for shared content keeps PostHog's words and no split advice",
@@ -603,9 +634,12 @@ defmodule PostHog.EmailsBatchTest do
 
         for message <- [error.message, first.error.message],
             code != "idempotency_key_in_flight" do
+          assert message =~ "PostHog refused a retry: "
           assert message =~ "may still go out"
           refute message =~ "no email was sent"
         end
+
+        if code != "idempotency_key_in_flight", do: assert(error.fix == first.error.fix)
 
         assert_resend_with_same_key(results)
       end

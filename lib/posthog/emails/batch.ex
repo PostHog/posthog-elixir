@@ -329,7 +329,7 @@ defmodule PostHog.Emails.Batch do
   end
 
   defp request_fields(fields, status) do
-    fields = Map.reject(fields, fn {_key, value} -> is_nil(value) end)
+    fields = Map.reject(fields, fn {_key, value} -> is_nil(value) or value == "" end)
 
     fields = Map.merge(defaults(status), fields)
 
@@ -351,7 +351,7 @@ defmodule PostHog.Emails.Batch do
   defp defaults(413) do
     %{
       "code" => "content_too_large",
-      "detail" => "The batch is larger than PostHog takes in one request, so no email was sent.",
+      "detail" => "PostHog refused the batch as larger than it takes in one request.",
       "fix" => "Split the recipients into smaller batches, or make each email's content smaller."
     }
   end
@@ -402,11 +402,11 @@ defmodule PostHog.Emails.Batch do
   end
 
   defp refused_after_loss(error) do
-    %{
+    resend_same_key(%{
       error
       | message:
-          "PostHog refused a retry with #{error.code}, but its answer to an earlier try was lost, so the email may still go out."
-    }
+          "PostHog refused a retry: #{error.message} Its answer to an earlier try was lost, so the email may still go out."
+    })
   end
 
   defp unconfirmed do
