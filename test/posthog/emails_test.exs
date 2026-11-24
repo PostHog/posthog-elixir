@@ -1888,7 +1888,8 @@ defmodule PostHog.EmailsTest do
       assert {:error, %Error{status_code: 503}} =
                Emails.send(name, to: "user@example.com", template_id: @template_id)
 
-      assert_received {:slept, _ms}
+      assert_received {:request, :post, _url, _opts}
+      refute_received {:request, _method, _url, _opts}
     end
 
     test "keeps retrying when the wall clock jumps ahead during a retry", %{
@@ -2047,14 +2048,16 @@ defmodule PostHog.EmailsTest do
       assert_received {:slept, _}
     end
 
-    @tag stop_instance_on_sleep: true
-    test "sends no retry after the instance stops", %{name: name} do
-      expect_reply(refused(503, %{"code" => "service_unavailable"}))
+    for {label, overrun_ms} <- [{"", 0}, {" during a wait that overran the hour", 3_600_000}] do
+      @tag stop_instance_on_sleep: true, sleep_overruns_ms: overrun_ms
+      test "sends no retry after the instance stops#{label}", %{name: name} do
+        expect_reply(refused(429, %{"code" => "throttled"}))
 
-      assert {:error, %Error{code: "client_closed"}} =
-               Emails.send(name, to: "user@example.com", template_id: @template_id)
+        assert {:error, %Error{code: "client_closed"}} =
+                 Emails.send(name, to: "user@example.com", template_id: @template_id)
 
-      assert_received {:slept, _}
+        assert_received {:slept, _}
+      end
     end
 
     @tag capture_log: true

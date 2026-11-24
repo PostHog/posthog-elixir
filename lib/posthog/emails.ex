@@ -1424,9 +1424,14 @@ defmodule PostHog.Emails do
          attempt_once,
          attempt
        ) do
-    if past_retry_window?(connection, started_at, 0),
-      do: {:error, error, state},
-      else: retry(connection, limits, state, attempt_once, attempt)
+    if past_retry_window?(connection, started_at, 0) do
+      case check_running(connection) do
+        :ok -> {:error, error, state}
+        {:error, closed} -> {:error, closed, state}
+      end
+    else
+      retry(connection, limits, state, attempt_once, attempt)
+    end
   end
 
   defp past_retry_window?(connection, started_at, delay_ms),
