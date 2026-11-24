@@ -254,6 +254,35 @@ defmodule PostHog.FeatureFlags.KnownAbsentPropertyKeysTest do
       assert local(definitions, context, "f") == {:ok, false}
     end
 
+    test "an omitted or null condition value on a listed key stays inconclusive" do
+      context = %{person_property_keys_known_absent: ["plan"]}
+
+      filters = [
+        %{"key" => "plan", "type" => "person", "operator" => "is_not"},
+        %{"key" => "plan", "type" => "person", "operator" => "is_not", "value" => nil},
+        %{"key" => "plan", "type" => "person", "operator" => "exact", "value" => nil},
+        %{"key" => "plan", "type" => "person", "operator" => "gt", "value" => nil}
+      ]
+
+      for filter <- filters do
+        definitions = snapshot([flag("f", [filter])])
+
+        assert local(definitions, context, "f") == {:unresolved, :unsupported_definition},
+               inspect(filter)
+      end
+    end
+
+    test "is_set and is_not_set with a null condition value on a listed key keep their result" do
+      context = %{person_property_keys_known_absent: ["plan"]}
+
+      for {operator, expected} <- [{"is_not_set", true}, {"is_set", false}] do
+        filter = %{"key" => "plan", "type" => "person", "operator" => operator, "value" => nil}
+        definitions = snapshot([flag("f", [filter])])
+
+        assert local(definitions, context, "f") == {:ok, expected}, operator
+      end
+    end
+
     test "dynamic cohort leaves apply known absence before negation" do
       cohort = %{
         "type" => "AND",
@@ -423,6 +452,27 @@ defmodule PostHog.FeatureFlags.KnownAbsentPropertyKeysTest do
 
       refute snapshot.flags["other"].locally_evaluated
       assert_received {:flags_body, %{person_property_keys_known_absent: ["plan"]}}
+    end
+
+    test "an omitted or null condition value on a listed key falls back to /flags" do
+      name = __MODULE__.NullValueFallback
+      omitted = %{"key" => "plan", "type" => "person", "operator" => "is_not"}
+      null = Map.put(omitted, "value", nil)
+      start_instance(name, [flag("omitted", [omitted]), flag("null", [null])])
+      body = %{distinct_id: "user", person_property_keys_known_absent: ["plan"]}
+      owner = self()
+
+      for key <- ["omitted", "null"] do
+        expect(PostHog.API.Mock, :request, fn :stub_client, :post, "/flags", opts ->
+          send(owner, {:flags_body, opts[:json]})
+          {:ok, %{status: 200, body: %{"flags" => %{key => %{"enabled" => false}}}}}
+        end)
+
+        assert {:ok, %{enabled: false}} =
+                 FeatureFlags.get_feature_flag_result(name, key, body, send_event: false)
+
+        assert_received {:flags_body, %{person_property_keys_known_absent: ["plan"]}}, key
+      end
     end
 
     test "remote requests omit the fields when nothing is listed" do

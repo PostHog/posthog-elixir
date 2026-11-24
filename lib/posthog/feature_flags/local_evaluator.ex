@@ -911,9 +911,13 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   end
 
   # Unsupported or malformed filters keep their existing result, so known absence never
-  # resolves a filter that local evaluation can't use.
+  # resolves a filter that local evaluation can't use. The service reads a null condition
+  # value as omitted, so value-requiring operators without one stay inconclusive.
   defp known_absent_result(property, operator, filter_value, now, cohort?) do
     cond do
+      is_nil(filter_value) and operator not in ["is_set", "is_not_set"] ->
+        {:inconclusive, :unsupported_definition}
+
       not filter_supported?(property, now, cohort?) ->
         {:inconclusive, :unsupported_definition}
 
