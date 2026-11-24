@@ -429,6 +429,24 @@ defmodule PostHog.EmailsBatchTest do
       end
     end
 
+    test "a 400 content_too_large for shared content keeps PostHog's words and no split advice",
+         %{name: name} do
+      detail =
+        "The content or `message_data` that a batch sends to every recipient can be at most 256 KiB. Send larger emails one at a time."
+
+      body = %{"type" => "invalid_request", "code" => "content_too_large", "detail" => detail}
+      answers([{:ok, %{status: 400, headers: %{}, body: body}}])
+
+      assert {:error,
+              %BatchError{code: "content_too_large", status_code: 400, results: results} = error} =
+               batch(name, recipients(2))
+
+      assert error.message == detail
+      refute (error.fix || "") =~ "Split"
+      assert length(requested()) == 1
+      assert statuses(results) == ["failed", "failed"]
+    end
+
     @tag config: [email_request_timeout_ms: 50]
     test "waits for a slow answer whatever the client's timeout", %{name: name} do
       expect(API.Mock, :request, fn _client, :post, @batch_url, opts ->
