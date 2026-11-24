@@ -364,6 +364,146 @@ defmodule PostHog.FeatureFlags.KnownAbsentPropertyKeysTest do
       assert local(definitions, context, "negated") == {:unresolved, :unsupported_definition}
     end
 
+    test "person_metadata created_at never resolves from a listed created_at" do
+      date = %{
+        "type" => "person_metadata",
+        "key" => "created_at",
+        "operator" => "is_date_after",
+        "value" => "2000-01-01"
+      }
+
+      not_set = %{"type" => "person_metadata", "key" => "created_at", "operator" => "is_not_set"}
+
+      definitions =
+        snapshot(
+          [
+            flag("date", [date]),
+            flag("not_set", [not_set]),
+            flag("cohort_date", [%{"type" => "cohort", "value" => 1}]),
+            flag("cohort_not_set", [%{"type" => "cohort", "value" => 2}])
+          ],
+          %{
+            cohorts: %{
+              "1" => %{"type" => "AND", "values" => [date]},
+              "2" => %{"type" => "AND", "values" => [not_set]}
+            }
+          }
+        )
+
+      listed = %{person_property_keys_known_absent: ["created_at"]}
+
+      for key <- ["date", "not_set", "cohort_date", "cohort_not_set"] do
+        assert local(definitions, listed, key) == {:unresolved, :missing_context}, key
+      end
+
+      # A supplied value resolves as if the key were not listed.
+      supplied = Map.put(listed, :person_properties, %{"created_at" => "2024-01-01"})
+
+      assert local(definitions, supplied, "date") == {:ok, true}
+      assert local(definitions, supplied, "not_set") == {:ok, false}
+      assert local(definitions, supplied, "cohort_date") == {:ok, true}
+      assert local(definitions, supplied, "cohort_not_set") == {:ok, false}
+    end
+
+    test "group keys apply only to group filters of their own group type" do
+      project_tier = %{
+        "key" => "tier",
+        "type" => "group",
+        "operator" => "is_not_set",
+        "group_type_index" => 1
+      }
+
+      definitions =
+        snapshot([flag("org", [project_tier], %{"aggregation_group_type_index" => 0})])
+
+      context = %{
+        groups: %{"organization" => "acme", "project" => "web"},
+        group_property_keys_known_absent: %{"organization" => ["tier"]}
+      }
+
+      assert local(definitions, context, "org") == {:unresolved, :missing_context}
+    end
+
+    test "group keys never apply to person filters or person cohort leaves" do
+      plan = person_filter("is_not_set")
+
+      definitions =
+        snapshot(
+          [
+            flag("person_filter", [plan], %{"aggregation_group_type_index" => 0}),
+            flag("person_leaf", [%{"type" => "cohort", "value" => 1}], %{
+              "aggregation_group_type_index" => 0
+            })
+          ],
+          %{cohorts: %{"1" => %{"type" => "AND", "values" => [plan]}}}
+        )
+
+      context = %{
+        groups: %{"organization" => "acme"},
+        group_property_keys_known_absent: %{"organization" => ["plan"]}
+      }
+
+      assert local(definitions, context, "person_filter") == {:unresolved, :missing_context}
+      assert local(definitions, context, "person_leaf") == {:unresolved, :missing_context}
+    end
+
+    test "flag dependencies with a different aggregation don't use the other scope's listing" do
+      depends_on = fn key, dependency, extra_filters ->
+        flag(
+          key,
+          [
+            %{
+              "type" => "flag",
+              "key" => dependency,
+              "operator" => "flag_evaluates_to",
+              "value" => true,
+              "dependency_chain" => [dependency]
+            }
+          ],
+          extra_filters
+        )
+      end
+
+      group_tier = %{
+        "key" => "tier",
+        "type" => "group",
+        "operator" => "is_not_set",
+        "group_type_index" => 0
+      }
+
+      definitions =
+        snapshot([
+          flag("group_base", [group_tier], %{"aggregation_group_type_index" => 0}),
+          flag("person_base", [person_filter("is_not_set")]),
+          depends_on.("person_parent", "group_base", %{}),
+          depends_on.("group_parent", "person_base", %{"aggregation_group_type_index" => 0})
+        ])
+
+      groups = %{"organization" => "acme"}
+
+      assert local(
+               definitions,
+               %{groups: groups, person_property_keys_known_absent: ["tier"]},
+               "person_parent"
+             ) == {:unresolved, :unresolved_dependency}
+
+      assert local(
+               definitions,
+               %{groups: groups, group_property_keys_known_absent: %{"organization" => ["plan"]}},
+               "group_parent"
+             ) == {:unresolved, :unresolved_dependency}
+
+      assert local(
+               definitions,
+               %{
+                 groups: groups,
+                 person_property_keys_known_absent: ["plan"],
+                 group_property_keys_known_absent: %{"organization" => ["tier"]}
+               },
+               "person_parent"
+             ) == {:ok, true}
+    end
+
     test "flag dependencies evaluate with the same listing" do
       base = flag("base", [person_filter("is_not_set")])
 

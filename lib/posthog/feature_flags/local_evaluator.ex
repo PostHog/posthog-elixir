@@ -19,8 +19,10 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
                               @search_operators ++ @semver_operators
   @person_metadata_prefix "__posthog_person_metadata__"
 
-  # Stands in for the value of a property the caller listed as known absent. Property maps
-  # double as the present-key tables, so the marker overrides any supplied or default value.
+  # Tags the value of a property the caller listed as known absent, as
+  # `{@known_absent, scope, original}`. Property maps double as the present-key tables, so the
+  # marker overrides any supplied or default value for filters of the listing's scope (`:person`
+  # or a group type name). Filters of any other type read `original` as if nothing was listed.
   @known_absent {__MODULE__, :known_absent}
 
   @type reason :: PostHog.FeatureFlags.Evaluations.unresolved_reason()
@@ -222,7 +224,8 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
         context
         |> context_value(:person_property_keys_known_absent)
         |> known_absent_keys()
-        |> Enum.reject(&String.starts_with?(&1, @person_metadata_prefix))
+        |> Enum.reject(&String.starts_with?(&1, @person_metadata_prefix)),
+        :person
       )
 
     group_properties =
@@ -257,17 +260,21 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
 
   defp put_default_property(_properties, key, value), do: %{key => value}
 
-  defp mark_known_absent(properties, keys) when is_map(properties),
-    do: Enum.reduce(keys, properties, &Map.put(&2, &1, @known_absent))
+  defp mark_known_absent(properties, keys, scope) when is_map(properties) do
+    Enum.reduce(keys, properties, fn key, properties ->
+      Map.put(properties, key, {@known_absent, scope, map_fetch(properties, key)})
+    end)
+  end
 
-  defp mark_known_absent(properties, _keys), do: properties
+  defp mark_known_absent(properties, _keys, _scope), do: properties
 
   defp mark_known_absent_groups(group_properties, known_absent)
        when is_map(group_properties) and is_map(known_absent) do
     Enum.reduce(known_absent, group_properties, fn {group_type, keys}, group_properties ->
       group_type = to_string(group_type)
       focused = map_value(group_properties, group_type) || %{}
-      Map.put(group_properties, group_type, mark_known_absent(focused, known_absent_keys(keys)))
+      marked = mark_known_absent(focused, known_absent_keys(keys), group_type)
+      Map.put(group_properties, group_type, marked)
     end)
   end
 
@@ -693,7 +700,8 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
              property_values,
              context.now,
              Map.get(definitions, :property_matching_version, 1),
-             cohort?
+             cohort?,
+             definitions
            ), cache}
       end
 
@@ -874,16 +882,34 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
     end
   end
 
-  defp match_property(property, property_values, now, property_matching_version, cohort?) do
+  defp match_property(
+         property,
+         property_values,
+         now,
+         property_matching_version,
+         cohort?,
+         definitions
+       ) do
     key = value(property, "key")
     operator = value(property, "operator") || "exact"
     filter_value = value(property, "value")
 
-    case map_fetch(property_values, key) do
+    fetched =
+      case map_fetch(property_values, key) do
+        {:ok, {@known_absent, scope, original}} ->
+          if known_absent_scope?(property, scope, definitions),
+            do: :known_absent,
+            else: original
+
+        fetched ->
+          fetched
+      end
+
+    case fetched do
       :error ->
         {:inconclusive, property_reason(property, now, cohort?)}
 
-      {:ok, @known_absent} ->
+      :known_absent ->
         known_absent_result(operator, filter_value)
 
       {:ok, property_value} when operator in ["exact", "is_not"] ->
@@ -910,6 +936,21 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   rescue
     # Unsupported comparisons must not prevent later conditions from matching.
     _exception -> {:inconclusive, property_reason(property, now, cohort?)}
+  end
+
+  # Person keys apply only to person filters (an untyped filter is a person filter) and group
+  # keys only to group filters of their own group type. Other types, such as person_metadata,
+  # never resolve from a listing.
+  defp known_absent_scope?(property, :person, _definitions),
+    do: value(property, "type") in ["person", nil]
+
+  # A group filter is matched against the properties of the group being evaluated, so one
+  # without a group_type_index belongs to that group type.
+  defp known_absent_scope?(property, group_type, definitions) do
+    index = value(property, "group_type_index")
+
+    value(property, "type") == "group" and
+      (is_nil(index) or group_name(definitions, index) == group_type)
   end
 
   # Like the service, a listed key resolves without parsing, compiling or validating a present
@@ -1649,6 +1690,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   defp known_atom("ensure_experience_continuity"), do: :ensure_experience_continuity
   defp known_atom("early_exit"), do: :early_exit
   defp known_atom("filters"), do: :filters
+  defp known_atom("group_type_index"), do: :group_type_index
   defp known_atom("groups"), do: :groups
   defp known_atom("has_experiment"), do: :has_experiment
   defp known_atom("id"), do: :id
