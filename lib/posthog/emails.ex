@@ -125,9 +125,8 @@ defmodule PostHog.Emails do
   - `"queued"`: PostHog accepted the email.
   - `"failed"`: PostHog refused it, and `:error` says why, such as a suppressed address.
   - `"unconfirmed"`: the SDK can't tell whether PostHog accepted it, such as after a lost
-    answer. At the end of the batch the SDK reads, by its key, the message ID of each such email
-    PostHog didn't name. Check one with a `:message_id` with `get/2`, or send it again with the
-    same `:idempotency_key` within 24 hours, so it goes out once.
+    answer, so it may still go out. Send it again with the same `:idempotency_key` within 24
+    hours, so it goes out once.
   - `"not_attempted"`: an earlier request of the batch failed, or the PostHog instance stopped,
     so the SDK sent nothing for it.
 
@@ -436,8 +435,8 @@ defmodule PostHog.Emails do
     call, so pass keys you store when a batch may be cut off and run again: a rerun within 24
     hours replays the emails that went out instead of sending them twice. A single send and a
     batch recipient with the same key and the same email replay each other. Never reuse a key
-    for another email: after a lost answer, the SDK reads the email by its key, and an earlier
-    email with that key reads as this one, `"queued"`.
+    for another email: PostHog replays the earlier email with that key instead of sending this
+    one.
   - `:template_data` - only with `:template_id`: values for this recipient, merged over the
     batch's `:template_data`. A top-level key set here replaces the same key there.
   """
@@ -551,8 +550,8 @@ defmodule PostHog.Emails do
 
   Returns `{:ok, %PostHog.Emails.BatchResult{}}` with a result per recipient, in the order of
   `:recipients`. Check each result's `:status`: `"queued"`, `"failed"` or `"unconfirmed"`. An
-  `"unconfirmed"` email may carry a `:message_id` the SDK read by its key: check it with `get/2`,
-  or send it again with the same `:idempotency_key` within 24 hours, so it goes out once.
+  `"unconfirmed"` email may still go out: send it again with the same `:idempotency_key` within
+  24 hours, so it goes out once. Its error's `:fix` says the same.
 
   A request that fails as a whole stops the batch and returns
   `{:error, %PostHog.Emails.BatchError{}}`, whose `:results` hold every recipient, those not sent
@@ -1116,8 +1115,7 @@ defmodule PostHog.Emails do
      )}
   end
 
-  @doc false
-  def check_running(%{name: name, instance: instance, nothing_done: nothing_done}) do
+  defp check_running(%{name: name, instance: instance, nothing_done: nothing_done}) do
     with %{enabled: true} <- PostHog.Registry.config(name),
          ^instance <- GenServer.whereis(name) do
       :ok
@@ -1554,8 +1552,7 @@ defmodule PostHog.Emails do
     end
   end
 
-  @doc false
-  def parse_status_reply({:ok, status, fields, _retry_after}) when status in 200..299 do
+  defp parse_status_reply({:ok, status, fields, _retry_after}) when status in 200..299 do
     with id when is_binary(id) <- text(fields["id"]),
          delivery_status when is_binary(delivery_status) <- text(fields["status"]),
          {:ok, created_at, _offset} <- DateTime.from_iso8601(text(fields["created_at"]) || ""),
@@ -1575,7 +1572,7 @@ defmodule PostHog.Emails do
     end
   end
 
-  def parse_status_reply(reply), do: reply_error(reply)
+  defp parse_status_reply(reply), do: reply_error(reply)
 
   @doc false
   def reply_error({:error, error}), do: {:error, error}

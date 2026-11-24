@@ -8,7 +8,6 @@ defmodule PostHog.Emails.Batch do
   alias PostHog.Emails.Error
 
   @batch_path "/api/messaging/send/email_batch/"
-  @status_by_key_path "/api/messaging/emails/status/"
   @max_recipients 100
   @max_body_bytes 4 * 1024 * 1024
   @min_timeout_ms 45_000
@@ -22,7 +21,7 @@ defmodule PostHog.Emails.Batch do
           {:ok, BatchResult.t()} | {:error, BatchError.t() | Error.t()}
   def batch(name, options) do
     case start(name, options) do
-      {:ok, run, connection} -> run |> send_chunks(connection) |> read_ids(connection) |> finish()
+      {:ok, run, connection} -> run |> send_chunks(connection) |> finish()
       {:error, error} -> {:error, error}
     end
   end
@@ -471,55 +470,21 @@ defmodule PostHog.Emails.Batch do
   defp skip(run, indices, error),
     do: Enum.reduce(indices, run, &set(&2, &1, "not_attempted", error: error))
 
-  defp read_ids({:ok, run}, connection) do
-    case read_ids(run, connection, nil) do
-      {run, nil} -> {:ok, run}
-      {run, closed} -> {:error, run, closed}
-    end
-  end
-
-  defp read_ids({:error, run, error}, connection) do
-    {run, error} = read_ids(run, connection, error)
-    {:error, run, error}
-  end
-
-  defp read_ids(run, connection, error) do
-    0..(map_size(run.members) - 1)
-    |> Enum.filter(&match?(%{status: "unconfirmed", message_id: nil}, run.results[&1]))
-    |> Enum.reduce_while({run, error}, fn index, {run, error} ->
-      {step, run, error} = read_id(run, index, connection, error)
-
-      case Emails.check_running(connection) do
-        :ok -> {step, {run, error}}
-        {:error, closed} -> {:halt, {run, closed}}
-      end
-    end)
-  end
-
-  defp read_id(run, index, connection, error) do
-    case read_by_key(connection, run.members[index].idempotency_key) do
-      {:ok, status} -> {:cont, update(run, index, message_id: status.id), error}
-      {:error, %Error{status_code: 404}} -> {:cont, run, error}
-      {:error, %Error{code: "client_closed"} = closed} -> {:halt, run, closed}
-      {:error, _error} -> {:halt, run, error}
-    end
-  end
-
-  defp read_by_key(connection, key) do
-    path = @status_by_key_path <> "?" <> URI.encode_query(%{"idempotency_key" => key})
-
-    connection
-    |> Emails.request(:get, path, Emails.headers(connection), nil)
-    |> Emails.parse_status_reply()
-  rescue
-    exception ->
-      {:error,
-       Emails.unexpected(exception, "Reading a batch email by its key failed unexpectedly.")}
-  end
-
   defp unconfirmed?(run, index), do: match?(%{status: "unconfirmed"}, run.results[index])
 
-  defp set(run, index, status, fields) do
+  defp set(run, index, "unconfirmed", fields),
+    do: put_result(run, index, "unconfirmed", Keyword.update!(fields, :error, &resend_same_key/1))
+
+  defp set(run, index, status, fields), do: put_result(run, index, status, fields)
+
+  defp resend_same_key(error),
+    do: %{
+      error
+      | fix:
+          "Send this email again with the same idempotency_key within 24 hours, so it goes out once."
+    }
+
+  defp put_result(run, index, status, fields) do
     member = run.members[index]
 
     result =
