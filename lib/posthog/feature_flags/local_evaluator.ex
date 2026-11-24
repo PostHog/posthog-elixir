@@ -262,7 +262,11 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
 
   defp mark_known_absent(properties, keys, scope) when is_map(properties) do
     Enum.reduce(keys, properties, fn key, properties ->
-      Map.put(properties, key, {@known_absent, scope, map_fetch(properties, key)})
+      case map_fetch(properties, key) do
+        # A key listed more than once keeps the value from before the first listing.
+        {:ok, {@known_absent, _scope, _original}} -> properties
+        original -> Map.put(properties, key, {@known_absent, scope, original})
+      end
     end)
   end
 

@@ -392,8 +392,13 @@ defmodule PostHog.FeatureFlags.KnownAbsentPropertyKeysTest do
 
       listed = %{person_property_keys_known_absent: ["created_at"]}
 
-      for key <- ["date", "not_set", "cohort_date", "cohort_not_set"] do
-        assert local(definitions, listed, key) == {:unresolved, :missing_context}, key
+      for context <- [
+            listed,
+            %{person_property_keys_known_absent: ["created_at", :created_at, "created_at"]}
+          ],
+          key <- ["date", "not_set", "cohort_date", "cohort_not_set"] do
+        assert local(definitions, context, key) == {:unresolved, :missing_context},
+               inspect({context, key})
       end
 
       # A supplied value resolves as if the key were not listed.
