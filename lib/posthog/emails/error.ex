@@ -19,7 +19,7 @@ defmodule PostHog.Emails.Error do
     `"content_too_large"` for a batch recipient whose email is larger than one batch request
     takes, `"delivery_unavailable"` for a batch recipient PostHog didn't confirm, which may still
     go out, `"not_attempted"` for a batch recipient the SDK didn't send because an earlier request
-    of the batch failed, or an `"invalid_*"` code for an option the SDK refused before any
+    of the batch failed or the instance stopped, or an `"invalid_*"` code for an option the SDK refused before any
     request.
   - `:message` - human-readable message.
   - `:status_code` - the HTTP status, when PostHog answered, or the storage's for
@@ -108,11 +108,11 @@ end
 
 defmodule PostHog.Emails.BatchError do
   @moduledoc """
-  A request of `PostHog.Emails.batch/2` failed as a whole, so the batch stopped.
+  A request of `PostHog.Emails.batch/2` failed as a whole, or raised, so the batch stopped.
 
   The fields of `PostHog.Emails.Error` describe that request's error. `:results` holds every
   recipient: those of earlier requests as PostHog answered them, those of the failed request as
-  `"failed"`, or `"unconfirmed"` where an earlier attempt may have queued them, and the rest as
+  `"failed"`, or `"unconfirmed"` where PostHog may have queued them, and the rest as
   `"not_attempted"`.
 
   ## Fields

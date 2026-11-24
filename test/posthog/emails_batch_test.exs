@@ -42,7 +42,7 @@ defmodule PostHog.EmailsBatchTest do
       end)
 
     start_link_supervised!({PostHog.Supervisor, config})
-    %{name: context.test}
+    %{name: context.test, config: config}
   end
 
   defp answers(replies) do
@@ -114,18 +114,34 @@ defmodule PostHog.EmailsBatchTest do
 
   defp lost, do: {:error, %Req.TransportError{reason: :econnreset}}
 
-  defp status_found(message_id) do
+  defp status_found(message_id, status \\ "sent", reason \\ nil) do
     {:ok,
      %{
        status: 200,
        headers: %{},
        body: %{
          "id" => message_id,
-         "status" => "sent",
+         "status" => status,
          "created_at" => "2026-11-22T10:00:00Z",
-         "status_at" => "2026-11-22T10:00:01Z"
+         "status_at" => "2026-11-22T10:00:01Z",
+         "reason" => reason
        }
      }}
+  end
+
+  defp raises(_opts), do: raise("The client failed.")
+
+  defp held(reply) do
+    test_pid = self()
+
+    expect(API.Mock, :request, fn _client, method, url, opts ->
+      send(test_pid, {:request, method, url, opts})
+      send(test_pid, {:requesting, self()})
+
+      receive do
+        :release -> reply_to(reply, opts)
+      end
+    end)
   end
 
   defp recipients(count, extra \\ %{}) do
@@ -319,6 +335,15 @@ defmodule PostHog.EmailsBatchTest do
       end
     end
 
+    test "refuses a code field in a template batch for what it is", %{name: name} do
+      assert {:error, %Error{code: "invalid_form", field: "subject"} = error} =
+               batch(name, recipients(1), subject: "Hi")
+
+      assert error.why =~ "A template made in PostHog sets its own"
+      refute error.why =~ "scheduled_at"
+      assert requested() == []
+    end
+
     test "refuses template_data on a recipient of a code batch", %{name: name} do
       assert {:error, %Error{code: "invalid_form", field: "recipients__0__template_data"} = error} =
                Emails.batch(
@@ -417,27 +442,32 @@ defmodule PostHog.EmailsBatchTest do
       base =
         byte_size(Jason.encode!(%{template_id: @template_id, message_data: %{}, recipients: []}))
 
-      one = %{to: "a@example.com", idempotency_key: "k1", template_data: %{n: ""}}
-
       item =
         byte_size(
           Jason.encode!(%{to: "a@example.com", idempotency_key: "k1", message_data: %{n: ""}})
         )
 
-      first = %{
-        one
-        | template_data: %{n: String.duplicate("a", @four_mib - base - item - 1 - item)}
-      }
+      padding = @four_mib - base - 3 * item - 2
+      third = div(padding, 3)
+
+      people =
+        for {key, size} <- [{"k1", third}, {"k2", third}, {"k3", padding - 2 * third}, {"k4", 0}],
+            do: %{
+              to: "a@example.com",
+              idempotency_key: key,
+              template_data: %{n: String.duplicate("a", size)}
+            }
+
+      assert Enum.all?(people, &(byte_size(&1.template_data.n) < 1_500_000))
 
       answers([&all_queued/1, &all_queued/1])
 
-      assert {:ok, _result} =
-               batch(name, [first, %{one | idempotency_key: "k2"}, %{one | idempotency_key: "k3"}])
+      assert {:ok, _result} = batch(name, people)
 
       requests = requested()
       assert [{:post, @batch_url, opts} | _rest] = requests
       assert byte_size(opts[:body]) == @four_mib
-      assert Enum.map(batch_bodies(requests), &length(&1["recipients"])) == [2, 1]
+      assert Enum.map(batch_bodies(requests), &length(&1["recipients"])) == [3, 1]
     end
 
     @tag config: [email_request_timeout_ms: 50]
@@ -484,20 +514,39 @@ defmodule PostHog.EmailsBatchTest do
     end
 
     test "a 503 and then a refusal also keeps the recipient unconfirmed", %{name: name} do
-      answers([whole_call(503, "delivery_unavailable"), ok([refused("m0", "sending_paused")])])
+      answers([
+        whole_call(503, "delivery_unavailable"),
+        ok([refused("m0", "recipient_suppressed")])
+      ])
 
       assert {:ok, %Emails.BatchResult{results: [result]}} = batch(name, recipients(1))
 
       assert result.status == "unconfirmed"
-      assert %Error{code: "sending_paused"} = result.later_error
+      assert %Error{code: "recipient_suppressed"} = result.later_error
     end
 
     test "a refusal without an earlier lost answer is failed", %{name: name} do
-      answers([ok([refused("m0", "sending_paused")])])
+      answers([ok([refused("m0", "recipient_suppressed")])])
 
       assert {:ok, %Emails.BatchResult{results: [result]}} = batch(name, recipients(1))
 
       assert {result.status, result.later_error} == {"failed", nil}
+    end
+
+    test "a batch that succeeds reads each unconfirmed email without a message ID", %{name: name} do
+      in_flight = refused(nil, "idempotency_key_in_flight", 409, true)
+
+      answers([
+        ok([queued("m0"), in_flight, in_flight, in_flight]),
+        status_found("m1"),
+        lost()
+      ])
+
+      assert {:ok, %Emails.BatchResult{results: results}} = batch(name, recipients(4))
+
+      assert keys_read(requested()) == ["key-1", "key-2"]
+      assert statuses(results) == ["queued", "unconfirmed", "unconfirmed", "unconfirmed"]
+      assert Enum.map(results, & &1.message_id) == ["m0", "m1", nil, nil]
     end
 
     for {code, status} <- [{"delivery_unavailable", 503}, {"idempotency_key_in_flight", 409}] do
@@ -512,7 +561,7 @@ defmodule PostHog.EmailsBatchTest do
     end
 
     test "a recipient answered without a readable result is unconfirmed", %{name: name} do
-      answers([ok(["not a result"])])
+      answers([ok(["not a result"]), whole_call(404, "not_found")])
 
       assert {:ok, %Emails.BatchResult{results: [result]}} = batch(name, recipients(1))
 
@@ -555,9 +604,20 @@ defmodule PostHog.EmailsBatchTest do
                batch(name, recipients(2))
 
       assert keys_read(requested()) == ["key-0", "key-1"]
-      assert {first.status, first.message_id, first.error} == {"queued", "m0", nil}
+      assert {first.status, first.message_id} == {"unconfirmed", "m0"}
+      assert %Error{code: "delivery_unavailable"} = first.error
       assert {second.status, second.message_id} == {"unconfirmed", nil}
       assert %Error{code: "delivery_unavailable"} = second.error
+    end
+
+    test "a read by key fills in only the message ID, whatever the status", %{name: name} do
+      answers([lost(), status_found("m0", "failed", "recipient_suppressed")])
+
+      assert {:error, %BatchError{code: "network_error", results: [result]}} =
+               batch(name, recipients(1), max_retries: 0)
+
+      assert {result.status, result.message_id, result.later_error} == {"unconfirmed", "m0", nil}
+      assert %Error{code: "delivery_unavailable"} = result.error
     end
 
     test "stops reading by key when PostHog stays unreachable", %{name: name} do
@@ -582,16 +642,20 @@ defmodule PostHog.EmailsBatchTest do
     end
 
     test "encodes a key with reserved characters in the status read", %{name: name} do
-      answers([lost(), whole_call(404, "not_found")])
+      answers([lost()])
 
-      assert {:error, %BatchError{}} =
+      expect(API.Mock, :request, fn _client, :get, @status_by_key_url <> "?" <> query, _opts ->
+        if URI.decode_query(query) == %{"idempotency_key" => "order#1&x=2"},
+          do: status_found("m0"),
+          else: whole_call(404, "not_found")
+      end)
+
+      assert {:error, %BatchError{results: [result]}} =
                batch(name, [%{to: "a@example.com", idempotency_key: "order#1&x=2"}],
                  max_retries: 0
                )
 
-      assert [_batch, {:get, url, opts}] = requested()
-      assert url == @status_by_key_url <> "?idempotency_key=order%231%26x%3D2"
-      refute Keyword.has_key?(opts, :body)
+      assert {result.status, result.message_id} == {"unconfirmed", "m0"}
     end
 
     test "an answer without a result per recipient leaves the request unconfirmed", %{name: name} do
@@ -601,7 +665,64 @@ defmodule PostHog.EmailsBatchTest do
                batch(name, recipients(2), max_retries: 0)
 
       assert statuses(results) == ["unconfirmed", "unconfirmed"]
+      assert Enum.map(results, & &1.later_error) == [nil, nil]
       assert keys_read(requested()) == ["key-0", "key-1"]
+    end
+
+    for {status, code} <- [{409, "idempotency_key_in_flight"}, {400, "api_error"}] do
+      test "a request answered #{code} as a whole leaves it unconfirmed", %{name: name} do
+        answers([whole_call(unquote(status), unquote(code)), whole_call(404), whole_call(404)])
+
+        assert {:error, %BatchError{code: unquote(code), results: results}} =
+                 batch(name, recipients(2), max_retries: 0)
+
+        assert statuses(results) == ["unconfirmed", "unconfirmed"]
+        assert keys_read(requested()) == ["key-0", "key-1"]
+      end
+    end
+
+    test "a request in flight past its retries stays unconfirmed after a refusal", %{name: name} do
+      answers([
+        whole_call(409, "idempotency_key_in_flight"),
+        whole_call(429, "throttled"),
+        whole_call(404),
+        whole_call(404)
+      ])
+
+      assert {:error, %BatchError{code: "throttled", results: results}} =
+               batch(name, recipients(2), max_retries: 1)
+
+      assert statuses(results) == ["unconfirmed", "unconfirmed"]
+      assert Enum.map(results, & &1.later_error.code) == ["throttled", "throttled"]
+      assert %Error{code: "idempotency_key_in_flight"} = hd(results).error
+    end
+
+    test "an exception in a later request keeps every result", %{name: name} do
+      answers([&all_queued/1, &raises/1, lost()])
+
+      capture_log(fn ->
+        assert {:error, %BatchError{code: "unexpected_error", results: results}} =
+                 batch(name, recipients(201))
+
+        assert statuses(results) ==
+                 List.duplicate("queued", 100) ++
+                   List.duplicate("unconfirmed", 100) ++ ["not_attempted"]
+
+        assert Enum.at(results, 150).idempotency_key == "key-150"
+      end)
+
+      assert keys_read(requested()) == ["key-100"]
+    end
+
+    test "an exception in a read by key keeps the batch error", %{name: name} do
+      answers([lost(), &raises/1])
+
+      capture_log(fn ->
+        assert {:error, %BatchError{code: "network_error", results: [result]}} =
+                 batch(name, recipients(1), max_retries: 0)
+
+        assert result.status == "unconfirmed"
+      end)
     end
 
     test "batch_unavailable is not retried and says to send each email alone", %{name: name} do
@@ -670,16 +791,7 @@ defmodule PostHog.EmailsBatchTest do
 
   describe "batch/2 when the instance stops" do
     test "stops before the next request", %{name: name} do
-      test_pid = self()
-
-      expect(API.Mock, :request, fn _client, method, url, opts ->
-        send(test_pid, {:request, method, url, opts})
-        send(test_pid, {:requesting, self()})
-
-        receive do
-          :release -> all_queued(opts)
-        end
-      end)
+      held(&all_queued/1)
 
       sending = Task.async(fn -> batch(name, recipients(150)) end)
       assert_receive {:requesting, worker}
@@ -698,9 +810,45 @@ defmodule PostHog.EmailsBatchTest do
       assert %Error{code: "client_closed"} = Enum.at(results, 100).error
     end
 
+    test "sends nothing more through an instance restarted under its name", %{
+      name: name,
+      config: config
+    } do
+      held(&all_queued/1)
+
+      sending = Task.async(fn -> batch(name, recipients(150)) end)
+      assert_receive {:requesting, worker}
+      stop_supervised!(name)
+      start_link_supervised!({PostHog.Supervisor, config})
+      send(worker, :release)
+
+      assert {:error, %BatchError{code: "client_closed", results: results}} =
+               Task.await(sending)
+
+      assert length(requested()) == 1
+
+      assert statuses(results) ==
+               List.duplicate("queued", 100) ++ List.duplicate("not_attempted", 50)
+    end
+
+    test "a stop before a read by key returns client_closed", %{name: name} do
+      held(lost())
+
+      sending = Task.async(fn -> batch(name, recipients(2), max_retries: 0) end)
+      assert_receive {:requesting, worker}
+      stop_supervised!(name)
+      send(worker, :release)
+
+      assert {:error, %BatchError{code: "client_closed", results: results}} =
+               Task.await(sending)
+
+      assert length(requested()) == 1
+      assert statuses(results) == ["unconfirmed", "unconfirmed"]
+    end
+
     @tag stop_instance_on_sleep: true
     test "sends no retry", %{name: name} do
-      answers([whole_call(429)])
+      answers([whole_call(429, "throttled")])
 
       assert {:error, %BatchError{code: "client_closed", results: results}} =
                batch(name, recipients(150))

@@ -123,11 +123,17 @@ defmodule PostHog.Emails do
   - `"queued"`: PostHog accepted the email.
   - `"failed"`: PostHog refused it, and `:error` says why, such as a suppressed address.
   - `"unconfirmed"`: the SDK can't tell whether PostHog accepted it, such as after a lost
-    answer. Send it again with the same `:idempotency_key` within 24 hours, so it goes out once.
-  - `"not_attempted"`: an earlier request of the batch failed, so the SDK sent nothing for it.
+    answer. At the end of the batch the SDK reads, by its key, the message ID of each such email
+    PostHog didn't name. Check one with a `:message_id` with `get/2`, or send it again with the
+    same `:idempotency_key` within 24 hours, so it goes out once.
+  - `"not_attempted"`: an earlier request of the batch failed, or the PostHog instance stopped,
+    so the SDK sent nothing for it.
 
   A request that fails as a whole, such as a rate limit past its retries, stops the batch and
-  returns `{:error, %PostHog.Emails.BatchError{}}`, whose `:results` hold every recipient. The
+  returns `{:error, %PostHog.Emails.BatchError{}}`, whose `:results` hold every recipient. After
+  an answer that leaves open whether PostHog queued the request's emails, such as a lost answer
+  or `idempotency_key_in_flight` past its retries, its recipients stay `"unconfirmed"`, even
+  when a retry is refused. The
   code `batch_unavailable` (409) means the project can't send batches yet, and a 404 that the
   template doesn't exist or batch sends are off for the project: send each email the batch
   didn't queue with `send/2` and its recipient's `:idempotency_key`. A batch takes no `:cc`,
@@ -537,9 +543,9 @@ defmodule PostHog.Emails do
   reuses, so a retry never queues an email twice.
 
   Returns `{:ok, %PostHog.Emails.BatchResult{}}` with a result per recipient, in the order of
-  `:recipients`. Check each result's `:status`: `"queued"`, `"failed"` or `"unconfirmed"`. Send
-  an `"unconfirmed"` email again with the same `:idempotency_key` within 24 hours, so it goes out
-  once.
+  `:recipients`. Check each result's `:status`: `"queued"`, `"failed"` or `"unconfirmed"`. An
+  `"unconfirmed"` email may carry a `:message_id` the SDK read by its key: check it with `get/2`,
+  or send it again with the same `:idempotency_key` within 24 hours, so it goes out once.
 
   A request that fails as a whole stops the batch and returns
   `{:error, %PostHog.Emails.BatchError{}}`, whose `:results` hold every recipient, those not sent
@@ -547,8 +553,11 @@ defmodule PostHog.Emails do
   yet: send each email the batch didn't queue with `send/2` and its recipient's
   `:idempotency_key`. `client_closed` means the PostHog instance stopped during the batch.
 
-  An option the SDK refuses, such as two recipients with the same `:idempotency_key`, or a client
-  that can't send returns `{:error, %PostHog.Emails.Error{}}` before any request.
+  Only a failure before the batch starts sending returns `{:error, %PostHog.Emails.Error{}}`: an
+  option the SDK refuses, such as two recipients with the same `:idempotency_key`, or a client
+  that can't send. Every later failure, an instance that stops or an unexpected exception from
+  the HTTP client too, returns `{:error, %PostHog.Emails.BatchError{}}` with every recipient's
+  result.
 
   See `t:batch_option/0` for the options and "Batches" in `PostHog.Emails` for the limits. `name`
   is the PostHog instance to send through, `PostHog` by default.
@@ -1044,6 +1053,7 @@ defmodule PostHog.Emails do
     nothing_done =
       if operation == :send, do: "no email was sent", else: "no email status was read"
 
+    instance = GenServer.whereis(name)
     config = PostHog.Registry.config(name)
 
     with :ok <- check_enabled(config, name, nothing_done),
@@ -1052,6 +1062,7 @@ defmodule PostHog.Emails do
       {:ok,
        %{
          name: name,
+         instance: instance,
          nothing_done: nothing_done,
          api_client: config.api_client,
          app_host: app_host,
@@ -1077,11 +1088,11 @@ defmodule PostHog.Emails do
   end
 
   @doc false
-  def check_running(%{name: name, nothing_done: nothing_done}) do
-    case PostHog.Registry.config(name) do
-      %{enabled: true} ->
-        :ok
-
+  def check_running(%{name: name, instance: instance, nothing_done: nothing_done}) do
+    with %{enabled: true} <- PostHog.Registry.config(name),
+         ^instance <- GenServer.whereis(name) do
+      :ok
+    else
       _stopped ->
         {:error,
          Error.new(
@@ -1347,19 +1358,29 @@ defmodule PostHog.Emails do
 
   defp fields(_body), do: %{}
 
-  defp with_retries(connection, max_retries, attempt_once, attempt \\ 0) do
-    case attempt_once.() do
+  defp with_retries(connection, max_retries, attempt_once) do
+    attempt_once = fn nil, _attempt ->
+      with {:error, error} <- attempt_once.(), do: {:error, error, nil}
+    end
+
+    with {:error, error, nil} <- with_retries(connection, max_retries, nil, attempt_once),
+         do: {:error, error}
+  end
+
+  @doc false
+  def with_retries(connection, max_retries, state, attempt_once, attempt \\ 0) do
+    case attempt_once.(state, attempt) do
       {:ok, result} ->
         {:ok, result}
 
-      {:error, %Error{} = error} ->
+      {:error, %Error{} = error, state} ->
         case retry_delay_ms(error, attempt, max_retries) do
           nil ->
-            {:error, error}
+            {:error, error, state}
 
           delay_ms ->
             connection.sleep.(delay_ms)
-            with_retries(connection, max_retries, attempt_once, attempt + 1)
+            with_retries(connection, max_retries, state, attempt_once, attempt + 1)
         end
     end
   end
@@ -1377,8 +1398,7 @@ defmodule PostHog.Emails do
 
   defp retryable?(%Error{status_code: status}), do: status == 503
 
-  @doc false
-  def retry_delay_ms(error, attempt, max_retries) do
+  defp retry_delay_ms(error, attempt, max_retries) do
     cond do
       attempt >= max_retries or not retryable?(error) ->
         nil
