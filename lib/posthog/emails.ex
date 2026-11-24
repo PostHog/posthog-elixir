@@ -239,8 +239,8 @@ defmodule PostHog.Emails do
   @log_metadata [posthog_skip_capture: true]
 
   @shared_fields [:to, :distinct_id, :idempotency_key, :max_retries, :scheduled_at]
-  @sent_now_tolerance_ms 60_000
-  @host_shape ~r/\A(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::\d+)?\z/
+  @sent_now_tolerance_us 60_000_000
+  @host_shape ~r/\A(?:[A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\])(?::\d+)?\z/
   @scheduled_at_shape ~r/\A(?<minute>\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(?<seconds>:\d{2}(?<fraction>\.\d+)?)?(?<offset>Z|[+-]\d{2}:[0-5]\d)\z/
   @template_fields @shared_fields ++ [:template_id, :template_data]
   @code_fields @shared_fields ++
@@ -1291,7 +1291,7 @@ defmodule PostHog.Emails do
 
   defp sent_now_as_time_passed?(fields, scheduled_at, now) do
     fields["status"] == "queued" and Map.fetch(fields, "scheduled_at") == {:ok, nil} and
-      DateTime.diff(scheduled_at, now.(), :millisecond) <= @sent_now_tolerance_ms
+      DateTime.diff(scheduled_at, now.(), :microsecond) <= @sent_now_tolerance_us
   end
 
   defp same_instant?(answer, scheduled_at) when is_binary(answer) do

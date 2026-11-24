@@ -2176,9 +2176,9 @@ defmodule PostHog.EmailsTest do
           {"2026-12-01T09:00:00.123000000Z", "2026-12-01T09:00:00.123Z"},
           {"2026-12-01T09:00:00Z", "2026-12-01T09:00:00.000Z"},
           {"2026-12-31T23:59:59.9999-01:00", "2027-01-01T01:00:00.000Z"},
-          {"2026-11-24T09:00Z", "2026-11-24T09:00:00.000Z"},
-          {"2026-11-24T10:30+01:30", "2026-11-24T09:00:00.000Z"},
-          {"2026-11-24T09:00:00-00:00", "2026-11-24T09:00:00.000Z"}
+          {"2026-11-25T09:00Z", "2026-11-25T09:00:00.000Z"},
+          {"2026-11-25T10:30+01:30", "2026-11-25T09:00:00.000Z"},
+          {"2026-11-25T09:00:00-00:00", "2026-11-25T09:00:00.000Z"}
         ] do
       test "sends #{given} as #{sent}", %{name: name} do
         expect_reply(scheduled(unquote(sent)))
@@ -2312,6 +2312,7 @@ defmodule PostHog.EmailsTest do
            [api_host: "https://proxy.example.com", app_host: "https://posthog.example.com:8443"]},
           {"PostHog Cloud with its default port", [app_host: "https://us.posthog.com:443"]},
           {"an IPv6 app host", [app_host: "http://[::1]:8010"]},
+          {"a Docker service app host", [app_host: "http://posthog_dev:8010"]},
           {"a plain-HTTP app host", [app_host: "http://localhost:8010"]},
           {"a proxy in front of PostHog Cloud",
            [api_host: "https://proxy.example.com", app_host: "https://ph.example.com"]}
@@ -2398,6 +2399,17 @@ defmodule PostHog.EmailsTest do
       )
 
       assert {:ok, %Emails.SendResult{status: "queued", scheduled_at: nil}} =
+               Emails.send(name, @code_form ++ [scheduled_at: "2026-11-24T12:01:00.000Z"])
+    end
+
+    @tag now: ~U[2026-11-24 11:59:59.999500Z]
+    test "refuses to call a time less than a millisecond past 60 seconds ahead sent now",
+         %{name: name} do
+      expect_reply(
+        accepted(%{"message_id" => @message_id, "status" => "queued", "scheduled_at" => nil})
+      )
+
+      assert {:error, %Error{code: "schedule_not_confirmed", message_id: @message_id}} =
                Emails.send(name, @code_form ++ [scheduled_at: "2026-11-24T12:01:00.000Z"])
     end
 
