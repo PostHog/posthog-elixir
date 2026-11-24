@@ -224,7 +224,7 @@ defmodule PostHog.Emails.Batch do
     head = binary_part(shared, 0, byte_size(shared) - 1) <> ~s(,"recipients":[)
 
     %{
-      members: Map.new(members, &{&1.index, &1}),
+      members: Map.new(members, &{&1.index, Map.delete(&1, :wire)}),
       body: IO.iodata_to_binary([head, Enum.map_join(members, ",", & &1.wire), "]}"]),
       results: %{},
       warnings: [],
