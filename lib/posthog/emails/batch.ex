@@ -325,10 +325,10 @@ defmodule PostHog.Emails.Batch do
 
     cond do
       Emails.text(fields["code"]) in @unconfirmed_codes ->
-        {:error, error, lost(run, chunk, error)}
+        {:error, error, lost(run, chunk, error, error)}
 
       status >= 500 ->
-        {:error, error, lost(run, chunk)}
+        {:error, error, lost(run, chunk, unconfirmed(), error)}
 
       true ->
         {:error, error, refused(run, chunk, error)}
@@ -425,11 +425,13 @@ defmodule PostHog.Emails.Batch do
     )
   end
 
-  defp lost(run, chunk, error \\ unconfirmed()) do
+  defp lost(run, chunk, error \\ unconfirmed(), answer \\ nil) do
     Enum.reduce(chunk, run, fn index, run ->
-      if unconfirmed?(run, index),
-        do: update(run, index, later_error: error),
-        else: set(run, index, "unconfirmed", error: error)
+      cond do
+        not unconfirmed?(run, index) -> set(run, index, "unconfirmed", error: error)
+        answer -> update(run, index, later_error: answer)
+        true -> run
+      end
     end)
   end
 
@@ -485,20 +487,22 @@ defmodule PostHog.Emails.Batch do
     0..(map_size(run.members) - 1)
     |> Enum.filter(&match?(%{status: "unconfirmed", message_id: nil}, run.results[&1]))
     |> Enum.reduce_while({run, error}, fn index, {run, error} ->
-      case read_by_key(connection, run.members[index].idempotency_key) do
-        {:ok, status} ->
-          {:cont, {update(run, index, message_id: status.id), error}}
+      {step, run, error} = read_id(run, index, connection, error)
 
-        {:error, %Error{status_code: 404}} ->
-          {:cont, {run, error}}
-
-        {:error, %Error{code: "client_closed"} = closed} ->
-          {:halt, {run, closed}}
-
-        {:error, _error} ->
-          {:halt, {run, error}}
+      case Emails.check_running(connection) do
+        :ok -> {step, {run, error}}
+        {:error, closed} -> {:halt, {run, closed}}
       end
     end)
+  end
+
+  defp read_id(run, index, connection, error) do
+    case read_by_key(connection, run.members[index].idempotency_key) do
+      {:ok, status} -> {:cont, update(run, index, message_id: status.id), error}
+      {:error, %Error{status_code: 404}} -> {:cont, run, error}
+      {:error, %Error{code: "client_closed"} = closed} -> {:halt, run, closed}
+      {:error, _error} -> {:halt, run, error}
+    end
   end
 
   defp read_by_key(connection, key) do

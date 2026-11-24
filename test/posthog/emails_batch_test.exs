@@ -648,6 +648,16 @@ defmodule PostHog.EmailsBatchTest do
       end
     end
 
+    test "a lost retry keeps the last answer PostHog gave", %{name: name} do
+      answers([lost(), whole_call(503, "service_unavailable"), lost(), whole_call(404)])
+
+      assert {:error, %BatchError{results: [result]}} =
+               batch(name, recipients(1), max_retries: 2)
+
+      assert %Error{code: "delivery_unavailable"} = result.error
+      assert %Error{code: "service_unavailable", status_code: 503} = result.later_error
+    end
+
     test "a 429 without a body fails the request and reads nothing", %{name: name} do
       answers([whole_call(429)])
 
@@ -675,11 +685,12 @@ defmodule PostHog.EmailsBatchTest do
       answers([lost()])
 
       expect(API.Mock, :request, fn _client, :get, url, _opts ->
-        %URI{query: query} = URI.parse(url)
+        uri = URI.parse(url)
 
-        if URI.decode_query(query || "") == %{"idempotency_key" => "order#1&x=2"},
-          do: status_found("m0"),
-          else: whole_call(404, "not_found")
+        if URI.to_string(%{uri | query: nil}) == @status_by_key_url and
+             URI.decode_query(uri.query || "") == %{"idempotency_key" => "order#1&x=2"},
+           do: status_found("m0"),
+           else: whole_call(404, "not_found")
       end)
 
       assert {:error, %BatchError{results: [result]}} =
@@ -892,6 +903,19 @@ defmodule PostHog.EmailsBatchTest do
 
       assert length(requested()) == 1
       assert {result.status, result.message_id} == {"unconfirmed", nil}
+    end
+
+    test "a stop while a read by key is in flight returns client_closed", %{name: name} do
+      answers([ok([refused(nil, "idempotency_key_in_flight", 409, true)])])
+      held(whole_call(404, "not_found"))
+
+      sending = Task.async(fn -> batch(name, recipients(1)) end)
+      assert_receive {:requesting, worker}
+      stop_supervised!(name)
+      send(worker, :release)
+
+      assert {:error, %BatchError{code: "client_closed", results: [result]}} = Task.await(sending)
+      assert result.status == "unconfirmed"
     end
 
     @tag stop_instance_on_sleep: true

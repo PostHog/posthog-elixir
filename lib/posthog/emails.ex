@@ -199,6 +199,8 @@ defmodule PostHog.Emails do
   service `:email_request_max_retries` times (2 by default), waiting about 1 and then 2 seconds,
   or the server's `Retry-After` when it is longer. A `Retry-After` over 30 seconds fails at once
   with `:retry_after_ms` set. A monthly quota and the day's upload quota are never retried.
+  Retries stop an hour after the first attempt, whatever `:max_retries` says, so every retry
+  falls well inside the 24 hours in which PostHog keeps an idempotency key.
   The upload steps of a send with files retry the same way.
 
   Every attempt sends the same idempotency key, so a retry never sends twice. Without
@@ -279,6 +281,7 @@ defmodule PostHog.Emails do
   }
   @max_retry_delay_ms 30_000
   @max_retry_doublings 6
+  @max_retry_window_ms 3_600_000
   # Enough of the storage's answer for an S3 error, whose XML is well under 1 KB.
   @max_storage_answer_bytes 16_384
   @log_metadata [posthog_skip_capture: true]
@@ -1387,21 +1390,23 @@ defmodule PostHog.Emails do
 
   @doc false
   def with_retries(connection, max_retries, state, attempt_once),
-    do: retry(connection, max_retries, state, attempt_once, 0)
+    do: retry(connection, {max_retries, connection.now.()}, state, attempt_once, 0)
 
-  defp retry(connection, max_retries, state, attempt_once, attempt) do
+  defp retry(connection, {max_retries, started_at} = limits, state, attempt_once, attempt) do
     case attempt_once.(state, attempt) do
       {:ok, result} ->
         {:ok, result}
 
       {:error, %Error{} = error, state} ->
-        case retry_delay_ms(error, attempt, max_retries) do
-          nil ->
-            {:error, error, state}
+        delay_ms = retry_delay_ms(error, attempt, max_retries)
 
-          delay_ms ->
-            connection.sleep.(delay_ms)
-            retry(connection, max_retries, state, attempt_once, attempt + 1)
+        if is_nil(delay_ms) or
+             DateTime.diff(connection.now.(), started_at, :millisecond) + delay_ms >
+               @max_retry_window_ms do
+          {:error, error, state}
+        else
+          connection.sleep.(delay_ms)
+          retry(connection, limits, state, attempt_once, attempt + 1)
         end
     end
   end

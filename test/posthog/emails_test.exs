@@ -1840,6 +1840,27 @@ defmodule PostHog.EmailsTest do
       assert second in 1600..2400
     end
 
+    test "stops retrying an hour after the first attempt, whatever max_retries says", %{
+      name: name,
+      clock: clock
+    } do
+      started_at = Agent.get(clock, & &1)
+
+      expect(API.Mock, :request, 6, fn _client, _method, _url, _opts ->
+        Agent.update(clock, &DateTime.add(&1, 10, :minute))
+        refused(503, %{"code" => "service_unavailable"})
+      end)
+
+      assert {:error, %Error{status_code: 503}} =
+               Emails.send(name,
+                 to: "user@example.com",
+                 template_id: @template_id,
+                 max_retries: 100
+               )
+
+      assert DateTime.diff(Agent.get(clock, & &1), started_at, :minute) == 60
+    end
+
     test "a per-send max_retries of 0 makes one attempt", %{name: name} do
       expect_reply(refused(503, %{"code" => "service_unavailable"}))
 
