@@ -557,7 +557,9 @@ defmodule PostHog.Emails do
   `{:error, %PostHog.Emails.BatchError{}}`, whose `:results` hold every recipient, those not sent
   as `"not_attempted"`. Its `:code` is `batch_unavailable` when the project can't send batches
   yet: send each email the batch didn't queue with `send/2` and its recipient's
-  `:idempotency_key`. `client_closed` means the PostHog instance stopped during the batch.
+  `:idempotency_key`. `client_closed` means the PostHog instance stopped during the batch, so the
+  SDK sent no further request. A request already in flight when it stops returns its own outcome,
+  such as `network_error` with its recipients `"unconfirmed"`.
 
   Only a failure before the batch starts sending returns `{:error, %PostHog.Emails.Error{}}`: an
   option the SDK refuses, such as two recipients with the same `:idempotency_key`, or a client
@@ -1406,15 +1408,29 @@ defmodule PostHog.Emails do
       {:error, %Error{} = error, state} ->
         delay_ms = retry_delay_ms(error, attempt, max_retries)
 
-        if is_nil(delay_ms) or
-             connection.monotonic_ms.() - started_at + delay_ms > @max_retry_window_ms do
+        if is_nil(delay_ms) or past_retry_window?(connection, started_at, delay_ms) do
           {:error, error, state}
         else
           connection.sleep.(delay_ms)
-          retry(connection, limits, state, attempt_once, attempt + 1)
+          retry_in_window(connection, limits, {error, state}, attempt_once, attempt + 1)
         end
     end
   end
+
+  defp retry_in_window(
+         connection,
+         {_max, started_at} = limits,
+         {error, state},
+         attempt_once,
+         attempt
+       ) do
+    if past_retry_window?(connection, started_at, 0),
+      do: {:error, error, state},
+      else: retry(connection, limits, state, attempt_once, attempt)
+  end
+
+  defp past_retry_window?(connection, started_at, delay_ms),
+    do: connection.monotonic_ms.() - started_at + delay_ms > @max_retry_window_ms
 
   # A send carries an idempotency key, so a retry can't queue a second email. A status read changes nothing.
   # An upload writes the same bytes to the same key, and S3 asks clients to retry its 500s.

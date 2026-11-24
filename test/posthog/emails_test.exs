@@ -505,7 +505,7 @@ defmodule PostHog.EmailsTest do
       |> Map.put(:email_monotonic_ms, fn -> Agent.get(monotonic, & &1) end)
       |> Map.put(:email_sleep, fn ms ->
         send(test_pid, {:slept, ms})
-        Agent.update(monotonic, &(&1 + ms))
+        Agent.update(monotonic, &(&1 + ms + (context[:sleep_overruns_ms] || 0)))
 
         if context[:clock_follows_sleep],
           do: Agent.update(clock, &DateTime.add(&1, ms, :millisecond))
@@ -1879,6 +1879,16 @@ defmodule PostHog.EmailsTest do
                )
 
       assert Agent.get(monotonic, & &1) in 3_600_000..3_700_000
+    end
+
+    @tag sleep_overruns_ms: 3_600_000
+    test "sends no retry after a wait that overran the hour", %{name: name} do
+      expect_reply(refused(503, %{"code" => "service_unavailable"}))
+
+      assert {:error, %Error{status_code: 503}} =
+               Emails.send(name, to: "user@example.com", template_id: @template_id)
+
+      assert_received {:slept, _ms}
     end
 
     test "keeps retrying when the wall clock jumps ahead during a retry", %{
