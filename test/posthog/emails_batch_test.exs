@@ -298,6 +298,9 @@ defmodule PostHog.EmailsBatchTest do
            "recipients__0__to"},
           {"a recipient with a blank to", [recipients: [%{to: " "}]], "invalid_recipient",
            "recipients__0__to"},
+          {"a recipient with a field that is not a name",
+           [recipients: [%{{:a, 1} => 1, to: "a@example.com"}]], "invalid_form",
+           "recipients__0__{:a, 1}"},
           {"a recipient with an unknown field",
            [recipients: [%{to: "a@example.com", cc: "b@example.com"}]], "invalid_form",
            "recipients__0__cc"},
@@ -478,6 +481,23 @@ defmodule PostHog.EmailsBatchTest do
           assert fix =~ "Make the email smaller"
           refute fix =~ "Split"
         end
+      end
+    end
+
+    test "after a lost answer, a 413 for one recipient says only to resend unchanged", %{
+      name: name
+    } do
+      answers([lost(), {:ok, %{status: 413, headers: %{}, body: nil}}])
+
+      assert {:error, %BatchError{code: "content_too_large", results: [result]} = error} =
+               batch(name, recipients(1), max_retries: 1)
+
+      assert result.status == "unconfirmed"
+
+      for fix <- [error.fix, result.error.fix] do
+        assert fix =~ "unchanged, with the same idempotency_key"
+        refute fix =~ "smaller"
+        refute fix =~ "If PostHog refuses it again"
       end
     end
 

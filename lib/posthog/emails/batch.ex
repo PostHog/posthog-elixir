@@ -173,11 +173,14 @@ defmodule PostHog.Emails.Batch do
       field ->
         invalid(
           "invalid_form",
-          "recipients[#{index}] takes only to, distinct_id, idempotency_key and template_data, not #{field}.",
-          "recipients__#{index}__#{field}"
+          "recipients[#{index}] takes only to, distinct_id, idempotency_key and template_data, not #{field_name(field)}.",
+          "recipients__#{index}__#{field_name(field)}"
         )
     end
   end
+
+  defp field_name(field) when is_atom(field) or is_binary(field), do: to_string(field)
+  defp field_name(field), do: inspect(field)
 
   defp wire(recipient, key, index, options) do
     wire = recipient |> Map.take([:to, :distinct_id]) |> Map.put(:idempotency_key, key)
@@ -333,6 +336,9 @@ defmodule PostHog.Emails.Batch do
         {:error, error, all(run, "unconfirmed", error)}
 
       run.lost? ->
+        error =
+          if status == 413 and map_size(run.members) == 1, do: %{error | fix: nil}, else: error
+
         {:error, refused_after_loss(error), all(run, "unconfirmed", refused_after_loss(error))}
 
       true ->
