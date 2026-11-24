@@ -96,8 +96,10 @@ defmodule PostHog.Emails do
   The result's `:status` is `"scheduled"` and its `:scheduled_at` is the time PostHog
   confirmed. A time that has already passed sends the email now: the result's `:status` is
   `"queued"` and its `:scheduled_at` is `nil`. When PostHog accepts the email without confirming
-  the time, the send returns `schedule_not_confirmed` with the email's `:message_id`. Read its
-  status with `get/2` before you send it again. `get/2` reads `"scheduled"` until the email goes
+  the time, the send returns `schedule_not_confirmed` with the email's `:message_id`. That
+  includes an answer that sends the email now while the time is more than 60 seconds ahead of
+  this machine's clock, so a clock that runs behind can return the error for an email that went
+  out as asked. Read its status with `get/2` before you send it again. `get/2` reads `"scheduled"` until the email goes
   out, and works for 30 days after the send, not after the scheduled time.
 
   Only PostHog Cloud schedules emails. A send with `:scheduled_at` to any other app host, such
@@ -177,7 +179,8 @@ defmodule PostHog.Emails do
   - `missing_app_host`: the `:api_host` is not PostHog Cloud. Set `:app_host`.
   - `scheduling_requires_cloud`: a send with `:scheduled_at` to a host that is not PostHog Cloud.
   - `schedule_not_confirmed`: PostHog accepted a send with `:scheduled_at` without confirming its
-    time. The error's `:message_id` names the email.
+    time, or sent it now while the time was more than 60 seconds ahead. The error's
+    `:message_id` names the email.
   - `authentication_failed` (401) or `permission_denied` (403): the key is wrong, or it lacks
     `transactional_email:write`.
   - `not_found` (404): the template ID is wrong, or transactional email is not enabled for the
@@ -236,6 +239,7 @@ defmodule PostHog.Emails do
   @log_metadata [posthog_skip_capture: true]
 
   @shared_fields [:to, :distinct_id, :idempotency_key, :max_retries, :scheduled_at]
+  @sent_now_tolerance_ms 60_000
   @host_shape ~r/\A(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::\d+)?\z/
   @scheduled_at_shape ~r/\A(?<minute>\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(?<seconds>:\d{2}(?<fraction>\.\d+)?)?(?<offset>Z|[+-]\d{2}:[0-5]\d)\z/
   @template_fields @shared_fields ++ [:template_id, :template_data]
@@ -442,7 +446,7 @@ defmodule PostHog.Emails do
     with_retries(connection, prepared.max_retries || connection.max_retries, fn ->
       connection
       |> request(:post, @send_path, headers, prepared.body)
-      |> parse_send_reply(prepared.scheduled_at)
+      |> parse_send_reply(prepared.scheduled_at, connection.now)
     end)
   end
 
@@ -915,6 +919,7 @@ defmodule PostHog.Emails do
          timeout_ms: config.email_request_timeout_ms,
          max_retries: config.email_request_max_retries,
          sleep: Map.get(config, :email_sleep, &Process.sleep/1),
+         now: Map.get(config, :email_now, &DateTime.utc_now/0),
          upload_adapter: Map.get(config, :email_upload_adapter, :none)
        }}
     end
@@ -1247,7 +1252,7 @@ defmodule PostHog.Emails do
 
   # Replies
 
-  defp parse_send_reply({:ok, status, fields, _retry_after}, scheduled_at)
+  defp parse_send_reply({:ok, status, fields, _retry_after}, scheduled_at, now)
        when status in 200..299 do
     case text(fields["message_id"]) do
       nil ->
@@ -1260,20 +1265,20 @@ defmodule PostHog.Emails do
           replayed: fields["replayed"] == true,
           warnings: warnings(fields["warnings"])
         }
-        |> confirm_schedule(fields, scheduled_at, status)
+        |> confirm_schedule(fields, scheduled_at, status, now)
     end
   end
 
-  defp parse_send_reply(reply, _scheduled_at), do: reply_error(reply)
+  defp parse_send_reply(reply, _scheduled_at, _now), do: reply_error(reply)
 
-  defp confirm_schedule(result, _fields, nil, _status), do: {:ok, result}
+  defp confirm_schedule(result, _fields, nil, _status, _now), do: {:ok, result}
 
-  defp confirm_schedule(result, fields, scheduled_at, status) do
+  defp confirm_schedule(result, fields, scheduled_at, status, now) do
     cond do
       confirms?(fields, scheduled_at) ->
         {:ok, %{result | status: "scheduled", scheduled_at: scheduled_at}}
 
-      sent_now_as_time_passed?(fields) ->
+      sent_now_as_time_passed?(fields, scheduled_at, now) ->
         {:ok, result}
 
       true ->
@@ -1284,8 +1289,10 @@ defmodule PostHog.Emails do
   defp confirms?(fields, scheduled_at),
     do: fields["status"] == "scheduled" and same_instant?(fields["scheduled_at"], scheduled_at)
 
-  defp sent_now_as_time_passed?(fields),
-    do: fields["status"] == "queued" and Map.fetch(fields, "scheduled_at") == {:ok, nil}
+  defp sent_now_as_time_passed?(fields, scheduled_at, now) do
+    fields["status"] == "queued" and Map.fetch(fields, "scheduled_at") == {:ok, nil} and
+      DateTime.diff(scheduled_at, now.(), :millisecond) <= @sent_now_tolerance_ms
+  end
 
   defp same_instant?(answer, scheduled_at) when is_binary(answer) do
     case parse_time(answer) do

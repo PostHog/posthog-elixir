@@ -476,6 +476,7 @@ defmodule PostHog.EmailsTest do
       ]
       |> Keyword.merge(context[:config] || [])
       |> PostHog.Config.validate!()
+      |> Map.put(:email_now, fn -> context[:now] || ~U[2026-11-24 12:00:00.000000Z] end)
       |> Map.put(:email_sleep, fn ms ->
         send(test_pid, {:slept, ms})
         if context[:stop_instance_on_sleep], do: stop_supervised!(context.test)
@@ -2391,6 +2392,33 @@ defmodule PostHog.EmailsTest do
                Emails.send(name, @code_form ++ [scheduled_at: "2026-11-01T09:00:00Z"])
     end
 
+    test "accepts a time at most 60 seconds ahead as queued without a time", %{name: name} do
+      expect_reply(
+        accepted(%{"message_id" => @message_id, "status" => "queued", "scheduled_at" => nil})
+      )
+
+      assert {:ok, %Emails.SendResult{status: "queued", scheduled_at: nil}} =
+               Emails.send(name, @code_form ++ [scheduled_at: "2026-11-24T12:01:00.000Z"])
+    end
+
+    test "refuses to call a time more than 60 seconds ahead sent now", %{name: name} do
+      expect_reply(
+        accepted(%{"message_id" => @message_id, "status" => "queued", "scheduled_at" => nil})
+      )
+
+      record_any_further_request()
+
+      assert {:error,
+              %Error{
+                code: "schedule_not_confirmed",
+                message_id: @message_id,
+                status_code: 202
+              }} = Emails.send(name, @code_form ++ [scheduled_at: "2026-11-24T12:01:00.001Z"])
+
+      assert_received {:request, :post, @send_url, _}
+      refute_requested()
+    end
+
     test "returns a replayed schedule", %{name: name} do
       expect_reply(scheduled("2026-12-01T09:00:00.000Z", %{"replayed" => true}))
 
@@ -2402,6 +2430,8 @@ defmodule PostHog.EmailsTest do
           {"without the scheduled_at key", %{"message_id" => @message_id}},
           {"queued without the scheduled_at key",
            %{"message_id" => @message_id, "status" => "queued"}},
+          {"queued without a time while the time is days ahead",
+           %{"message_id" => @message_id, "status" => "queued", "scheduled_at" => nil}},
           {"with another time",
            %{
              "message_id" => @message_id,
