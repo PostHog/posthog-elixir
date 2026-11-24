@@ -348,9 +348,16 @@ defmodule PostHog.Emails.Batch do
         if is_binary(value), do: value, else: default
       end)
 
-    if fields["code"] == "batch_unavailable",
-      do: Map.put(fields, "fix", "Until batch sends are on for the project, #{@send_each}"),
-      else: fields
+    cond do
+      fields["code"] == "batch_unavailable" ->
+        Map.put(fields, "fix", "Until batch sends are on for the project, #{@send_each}")
+
+      status == 413 and recipients == 1 ->
+        Map.put(fields, "fix", defaults(413, 1)["fix"])
+
+      true ->
+        fields
+    end
   end
 
   defp defaults(404, _recipients) do

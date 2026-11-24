@@ -458,14 +458,27 @@ defmodule PostHog.EmailsBatchTest do
       end
     end
 
-    test "a 413 without a body for one recipient says to make the email smaller", %{name: name} do
-      answers([{:ok, %{status: 413, headers: %{}, body: nil}}])
+    for {label, body} <- [
+          {"without a body", nil},
+          {"with PostHog's split fix",
+           %{
+             "type" => "invalid_request",
+             "code" => "content_too_large",
+             "detail" => "The batch is larger than PostHog can send at once.",
+             "fix" => "Split the recipients into smaller batches."
+           }}
+        ] do
+      test "a 413 #{label} for one recipient says to make the email smaller", %{name: name} do
+        answers([{:ok, %{status: 413, headers: %{}, body: unquote(Macro.escape(body))}}])
 
-      assert {:error, %BatchError{code: "content_too_large"} = error} =
-               batch(name, recipients(1))
+        assert {:error, %BatchError{code: "content_too_large", results: [result]} = error} =
+                 batch(name, recipients(1))
 
-      assert error.fix =~ "Make the email smaller"
-      refute error.fix =~ "Split"
+        for fix <- [error.fix, result.error.fix] do
+          assert fix =~ "Make the email smaller"
+          refute fix =~ "Split"
+        end
+      end
     end
 
     test "after a lost answer, a 400 content_too_large keeps PostHog's words", %{name: name} do
@@ -684,9 +697,9 @@ defmodule PostHog.EmailsBatchTest do
 
         if code != "idempotency_key_in_flight", do: assert(error.fix == first.error.fix)
 
-        if unquote(then_fix) do
+        for fragment <- List.wrap(unquote(then_fix)) do
           assert error.fix =~ "If PostHog refuses it again: "
-          assert error.fix =~ unquote(then_fix)
+          assert error.fix =~ fragment
         end
 
         refute (error.fix || "") =~ "content smaller"
