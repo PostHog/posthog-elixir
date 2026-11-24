@@ -112,6 +112,38 @@ defmodule PostHog.Emails do
   before they go out, disable the email's workflow in PostHog until they reach a final status.
   That refuses every new send of it meanwhile.
 
+  ## Batches
+
+  `batch/2` sends the same template or content to many recipients, one email each, with
+  `:template_data` per recipient for a template. The SDK sends at most 100 recipients and 4 MiB
+  of JSON per request, one request after another, and waits at least 45 seconds for each answer.
+  Each recipient has its own `:idempotency_key`, given or made by the SDK, that every retry
+  reuses. Check each result's `:status`:
+
+  - `"queued"`: PostHog accepted the email.
+  - `"failed"`: PostHog refused it, and `:error` says why, such as a suppressed address.
+  - `"unconfirmed"`: the SDK can't tell whether PostHog accepted it, such as after a lost
+    answer. Send it again with the same `:idempotency_key` within 24 hours, so it goes out once.
+  - `"not_attempted"`: an earlier request of the batch failed, so the SDK sent nothing for it.
+
+  A request that fails as a whole, such as a rate limit past its retries, stops the batch and
+  returns `{:error, %PostHog.Emails.BatchError{}}`, whose `:results` hold every recipient. The
+  code `batch_unavailable` (409) means the project can't send batches yet, and a 404 that the
+  template doesn't exist or batch sends are off for the project: send each email the batch
+  didn't queue with `send/2` and its recipient's `:idempotency_key`. A batch takes no `:cc`,
+  `:bcc`, `:attachments` or `:scheduled_at`.
+
+      {:ok, %PostHog.Emails.BatchResult{results: results}} =
+        PostHog.Emails.batch(
+          template_id: "0190f6d2-7c1e-7b3a-9f5e-1c2d3e4f5a6b",
+          recipients: [
+            %{to: "ada@example.com", template_data: %{name: "Ada"}},
+            %{to: "alan@example.com", template_data: %{name: "Alan"}}
+          ]
+        )
+
+      retry = Enum.filter(results, &(&1.status == "unconfirmed"))
+
   ## Where requests go
 
   A client on PostHog Cloud sends to its region's app host, `https://us.posthog.com` or
@@ -189,6 +221,8 @@ defmodule PostHog.Emails do
     nothing.
   - `client_closed`: the PostHog instance stopped during a call, so the call made no further
     request, and a send sent no email.
+  - `batch_unavailable` (409): the project can't send batches yet. Send each email with
+    `send/2`.
 
   A send with files can also return:
 
@@ -216,6 +250,9 @@ defmodule PostHog.Emails do
   require Logger
 
   alias PostHog.Emails.Attachments
+  alias PostHog.Emails.Batch
+  alias PostHog.Emails.BatchError
+  alias PostHog.Emails.BatchResult
   alias PostHog.Emails.Error
   alias PostHog.Emails.SendResult
   alias PostHog.Emails.Status
@@ -346,6 +383,61 @@ defmodule PostHog.Emails do
           | {:capture_engagement, boolean() | nil}
 
   @typedoc """
+  Options for `batch/2`. Pass `:template_id` or `:template_key`, never both.
+
+  Every batch takes:
+
+  - `:recipients` - 1 or more recipients, each a `t:batch_recipient/0`. Required. The SDK sends
+    at most 100, and at most 4 MiB of JSON, per request.
+  - `:max_retries` - overrides the config's `:email_request_max_retries` for each request of the
+    batch. `0` turns retries off.
+
+  A template made in PostHog takes `:template_id` and `:template_data`, values shared by every
+  recipient. Content your code rendered takes `:template_key`, `:subject`, `:html`, `:text`,
+  `:from`, `:reply_to`, `:sensitive`, `:tracking` and `:capture_engagement`, as `t:send_option/0`
+  describes them, the same for every recipient. A batch takes no `:cc`, `:bcc`, `:attachments` or
+  `:scheduled_at`.
+  """
+  @type batch_option() ::
+          {:recipients, [batch_recipient()]}
+          | {:max_retries, non_neg_integer() | nil}
+          | {:template_id, String.t()}
+          | {:template_data, map() | nil}
+          | {:template_key, String.t()}
+          | {:subject, String.t()}
+          | {:html, String.t() | nil}
+          | {:text, String.t() | nil}
+          | {:from, String.t() | nil}
+          | {:reply_to, String.t() | [String.t()] | nil}
+          | {:sensitive, boolean() | nil}
+          | {:tracking, tracking() | nil}
+          | {:capture_engagement, boolean() | nil}
+
+  @typedoc """
+  One recipient of `batch/2`, a map or a keyword list. Each gets its own email.
+
+  - `:to` - the recipient's email address. Required.
+  - `:distinct_id` - the recipient's distinct ID in your product.
+  - `:idempotency_key` - 1 to 255 visible ASCII characters, a different one for each recipient
+    of the batch. Without it, the SDK makes one that covers its own retries but not a second
+    call, so pass keys you store when a batch may be cut off and run again: a rerun within 24
+    hours replays the emails that went out instead of sending them twice. A single send and a
+    batch recipient with the same key and the same email replay each other. Never reuse a key
+    for another email: after a lost answer, the SDK reads the email by its key, and an earlier
+    email with that key reads as this one, `"queued"`.
+  - `:template_data` - only with `:template_id`: values for this recipient, merged over the
+    batch's `:template_data`. A top-level key set here replaces the same key there.
+  """
+  @type batch_recipient() ::
+          %{
+            required(:to) => String.t(),
+            optional(:distinct_id) => String.t() | nil,
+            optional(:idempotency_key) => String.t() | nil,
+            optional(:template_data) => map() | nil
+          }
+          | keyword()
+
+  @typedoc """
   A file sent with the email. `:content` is the file's raw bytes, such as `File.read!/1`
   returns. Don't pass content that is already Base64: the recipient would get the Base64 text.
   """
@@ -435,6 +527,48 @@ defmodule PostHog.Emails do
   rescue
     exception -> {:error, unexpected(exception, "Reading the email status failed unexpectedly.")}
   end
+
+  @doc """
+  Queues the same email for many recipients, one email each, from a template made in PostHog or
+  from content your code rendered.
+
+  The SDK sends the recipients in requests of at most 100 recipients and 4 MiB of JSON, one after
+  another. Each recipient has an `:idempotency_key`, given or made by the SDK, that every retry
+  reuses, so a retry never queues an email twice.
+
+  Returns `{:ok, %PostHog.Emails.BatchResult{}}` with a result per recipient, in the order of
+  `:recipients`. Check each result's `:status`: `"queued"`, `"failed"` or `"unconfirmed"`. Send
+  an `"unconfirmed"` email again with the same `:idempotency_key` within 24 hours, so it goes out
+  once.
+
+  A request that fails as a whole stops the batch and returns
+  `{:error, %PostHog.Emails.BatchError{}}`, whose `:results` hold every recipient, those not sent
+  as `"not_attempted"`. Its `:code` is `batch_unavailable` when the project can't send batches
+  yet: send each email the batch didn't queue with `send/2` and its recipient's
+  `:idempotency_key`. `client_closed` means the PostHog instance stopped during the batch.
+
+  An option the SDK refuses, such as two recipients with the same `:idempotency_key`, or a client
+  that can't send returns `{:error, %PostHog.Emails.Error{}}` before any request.
+
+  See `t:batch_option/0` for the options and "Batches" in `PostHog.Emails` for the limits. `name`
+  is the PostHog instance to send through, `PostHog` by default.
+
+  ## Examples
+
+      {:ok, %PostHog.Emails.BatchResult{results: results}} =
+        PostHog.Emails.batch(
+          template_id: "0190f6d2-7c1e-7b3a-9f5e-1c2d3e4f5a6b",
+          recipients: [
+            %{to: "ada@example.com", distinct_id: "user_1", template_data: %{name: "Ada"}},
+            %{to: "alan@example.com", distinct_id: "user_2", template_data: %{name: "Alan"}}
+          ]
+        )
+
+      not_queued = Enum.reject(results, &(&1.status == "queued"))
+  """
+  @spec batch(PostHog.supervisor_name(), [batch_option()] | map()) ::
+          {:ok, BatchResult.t()} | {:error, BatchError.t() | Error.t()}
+  def batch(name \\ PostHog, options), do: Batch.batch(name, options)
 
   defp deliver(connection, prepared) do
     headers = [
@@ -532,8 +666,9 @@ defmodule PostHog.Emails do
   defp prepare_send(_options), do: invalid_options()
 
   # Options are often built generically, so an empty list counts as left out on both forms.
-  defp left_out?({key, []}) when key in [:attachments | @address_fields], do: true
-  defp left_out?({_key, value}), do: is_nil(value)
+  @doc false
+  def left_out?({key, []}) when key in [:attachments | @address_fields], do: true
+  def left_out?({_key, value}), do: is_nil(value)
 
   defp invalid_options,
     do: {:error, Error.new("invalid_form", "send takes a keyword list or a map of options.")}
@@ -561,7 +696,8 @@ defmodule PostHog.Emails do
     end
   end
 
-  defp check_recipient(options) do
+  @doc false
+  def check_recipient(options) do
     cond do
       not nonblank?(options[:to]) ->
         invalid("invalid_recipient", "to must be one email address as a nonempty string.", "to")
@@ -574,10 +710,11 @@ defmodule PostHog.Emails do
     end
   end
 
-  defp content(%{template_id: _, template_key: _}), do: invalid_form()
-  defp content(%{template_id: _} = options), do: template_content(options)
-  defp content(%{template_key: _} = options), do: code_content(options)
-  defp content(_options), do: invalid_form()
+  @doc false
+  def content(%{template_id: _, template_key: _}), do: invalid_form()
+  def content(%{template_id: _} = options), do: template_content(options)
+  def content(%{template_key: _} = options), do: code_content(options)
+  def content(_options), do: invalid_form()
 
   defp invalid_form,
     do:
@@ -772,7 +909,8 @@ defmodule PostHog.Emails do
     end
   end
 
-  defp idempotency_key(%{idempotency_key: key}) do
+  @doc false
+  def idempotency_key(%{idempotency_key: key}) do
     if is_binary(key) and key =~ ~r/\A[\x21-\x7e]{1,255}\z/ do
       {:ok, key}
     else
@@ -784,16 +922,17 @@ defmodule PostHog.Emails do
     end
   end
 
-  defp idempotency_key(_options), do: {:ok, uuid4()}
+  def idempotency_key(_options), do: {:ok, uuid4()}
 
-  defp max_retries(%{max_retries: retries}) when is_integer(retries) and retries >= 0,
+  @doc false
+  def max_retries(%{max_retries: retries}) when is_integer(retries) and retries >= 0,
     do: {:ok, retries}
 
-  defp max_retries(%{max_retries: _retries}),
+  def max_retries(%{max_retries: _retries}),
     do:
       invalid("invalid_max_retries", "max_retries must be a nonnegative integer.", "max_retries")
 
-  defp max_retries(_options), do: {:ok, nil}
+  def max_retries(_options), do: {:ok, nil}
 
   defp scheduled_at(%{scheduled_at: %DateTime{} = at}),
     do: ceil_to_millisecond(DateTime.to_unix(at, :microsecond), false)
@@ -859,7 +998,8 @@ defmodule PostHog.Emails do
   defp put_scheduled_at(content, scheduled_at),
     do: Map.put(content, :scheduled_at, DateTime.to_iso8601(scheduled_at))
 
-  defp encode(content, options) do
+  @doc false
+  def encode(content, options) do
     case Jason.encode(content) do
       {:ok, body} ->
         {:ok, body}
@@ -899,7 +1039,8 @@ defmodule PostHog.Emails do
 
   # Connection
 
-  defp connect(name, operation) do
+  @doc false
+  def connect(name, operation) do
     nothing_done =
       if operation == :send, do: "no email was sent", else: "no email status was read"
 
@@ -935,7 +1076,8 @@ defmodule PostHog.Emails do
      )}
   end
 
-  defp check_running(%{name: name, nothing_done: nothing_done}) do
+  @doc false
+  def check_running(%{name: name, nothing_done: nothing_done}) do
     case PostHog.Registry.config(name) do
       %{enabled: true} ->
         :ok
@@ -1021,7 +1163,8 @@ defmodule PostHog.Emails do
     end
   end
 
-  defp headers(connection) do
+  @doc false
+  def headers(connection) do
     headers = [
       {"authorization", "Bearer #{connection.secret_key}"},
       {"accept", "application/json"},
@@ -1036,7 +1179,8 @@ defmodule PostHog.Emails do
 
   # Requests
 
-  defp request(connection, method, path, headers, body) do
+  @doc false
+  def request(connection, method, path, headers, body) do
     %{module: module, client: client} = connection.api_client
     url = connection.app_host <> path
 
@@ -1233,7 +1377,8 @@ defmodule PostHog.Emails do
 
   defp retryable?(%Error{status_code: status}), do: status == 503
 
-  defp retry_delay_ms(error, attempt, max_retries) do
+  @doc false
+  def retry_delay_ms(error, attempt, max_retries) do
     cond do
       attempt >= max_retries or not retryable?(error) ->
         nil
@@ -1333,7 +1478,8 @@ defmodule PostHog.Emails do
     {:error, %{error | field: Attachments.field(error, files)}}
   end
 
-  defp warnings(warnings) when is_list(warnings) do
+  @doc false
+  def warnings(warnings) when is_list(warnings) do
     for %{} = warning <- warnings do
       %Warning{
         code: text(warning["code"]) || "warning",
@@ -1343,15 +1489,17 @@ defmodule PostHog.Emails do
     end
   end
 
-  defp warnings(_warnings), do: []
+  def warnings(_warnings), do: []
 
-  defp log_warnings(%SendResult{warnings: warnings}) do
+  @doc false
+  def log_warnings(%{warnings: warnings}) do
     for warning <- warnings do
       Logger.warning("PostHog email warning #{warning.code}: #{warning.message}", @log_metadata)
     end
   end
 
-  defp parse_status_reply({:ok, status, fields, _retry_after}) when status in 200..299 do
+  @doc false
+  def parse_status_reply({:ok, status, fields, _retry_after}) when status in 200..299 do
     with id when is_binary(id) <- text(fields["id"]),
          delivery_status when is_binary(delivery_status) <- text(fields["status"]),
          {:ok, created_at, _offset} <- DateTime.from_iso8601(text(fields["created_at"]) || ""),
@@ -1371,11 +1519,12 @@ defmodule PostHog.Emails do
     end
   end
 
-  defp parse_status_reply(reply), do: reply_error(reply)
+  def parse_status_reply(reply), do: reply_error(reply)
 
-  defp reply_error({:error, error}), do: {:error, error}
+  @doc false
+  def reply_error({:error, error}), do: {:error, error}
 
-  defp reply_error({:ok, status, fields, retry_after_ms}) do
+  def reply_error({:ok, status, fields, retry_after_ms}) do
     {:error,
      Error.new(
        text(fields["code"]) || "api_error",
@@ -1389,10 +1538,12 @@ defmodule PostHog.Emails do
      )}
   end
 
-  defp text(value) when is_binary(value) and value != "", do: value
-  defp text(_value), do: nil
+  @doc false
+  def text(value) when is_binary(value) and value != "", do: value
+  def text(_value), do: nil
 
-  defp unexpected(exception, message) do
+  @doc false
+  def unexpected(exception, message) do
     Logger.error("#{message} #{inspect(exception.__struct__)}", @log_metadata)
     Error.new("unexpected_error", message)
   end

@@ -59,7 +59,10 @@ defmodule PostHog.MixProject do
           PostHog.Emails.Error,
           PostHog.Emails.SendResult,
           PostHog.Emails.Status,
-          PostHog.Emails.Warning
+          PostHog.Emails.Warning,
+          PostHog.Emails.BatchResult,
+          PostHog.Emails.BatchEmailResult,
+          PostHog.Emails.BatchError
         ],
         Integrations: [PostHog.Integrations.Plug, PostHog.Integrations.LLMAnalytics.Req],
         Testing: [PostHog.Test]

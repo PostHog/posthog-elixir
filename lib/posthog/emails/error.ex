@@ -15,8 +15,12 @@ defmodule PostHog.Emails.Error do
     make the email too large, which the SDK checks before any request and PostHog checks again,
     `"attachment_upload_failed"` when the storage refused an upload, `"scheduling_requires_cloud"`
     for a send with `:scheduled_at` to a host that is not PostHog Cloud, `"schedule_not_confirmed"`
-    when PostHog accepted a send with `:scheduled_at` without confirming its time, or an
-    `"invalid_*"` code for an option the SDK refused before any request.
+    when PostHog accepted a send with `:scheduled_at` without confirming its time,
+    `"content_too_large"` for a batch recipient whose email is larger than one batch request
+    takes, `"delivery_unavailable"` for a batch recipient PostHog didn't confirm, which may still
+    go out, `"not_attempted"` for a batch recipient the SDK didn't send because an earlier request
+    of the batch failed, or an `"invalid_*"` code for an option the SDK refused before any
+    request.
   - `:message` - human-readable message.
   - `:status_code` - the HTTP status, when PostHog answered, or the storage's for
     `"attachment_upload_failed"`.
@@ -100,4 +104,64 @@ defmodule PostHog.Emails.Error do
   defp name(429, _code), do: :rate_limit_exceeded
   defp name(503, _code), do: :service_unavailable
   defp name(_status, _code), do: :application_error
+end
+
+defmodule PostHog.Emails.BatchError do
+  @moduledoc """
+  A request of `PostHog.Emails.batch/2` failed as a whole, so the batch stopped.
+
+  The fields of `PostHog.Emails.Error` describe that request's error. `:results` holds every
+  recipient: those of earlier requests as PostHog answered them, those of the failed request as
+  `"failed"`, or `"unconfirmed"` where an earlier attempt may have queued them, and the rest as
+  `"not_attempted"`.
+
+  ## Fields
+
+  - `:name`, `:code`, `:message`, `:status_code`, `:why`, `:fix`, `:docs_url`, `:field`,
+    `:retry_after_ms` and `:message_id` - as on `PostHog.Emails.Error`.
+  - `:results` - one `PostHog.Emails.BatchEmailResult` per recipient, in the order of
+    `:recipients`.
+  - `:warnings` - the warnings PostHog returned about the requests that went out, each once.
+  """
+
+  alias PostHog.Emails.Error
+
+  @typedoc "A batch that stopped at a request that failed as a whole."
+  @type t() :: %__MODULE__{
+          name: Error.name(),
+          code: String.t(),
+          message: String.t(),
+          status_code: pos_integer() | nil,
+          why: String.t() | nil,
+          fix: String.t() | nil,
+          docs_url: String.t() | nil,
+          field: String.t() | nil,
+          retry_after_ms: non_neg_integer() | nil,
+          message_id: String.t() | nil,
+          results: [PostHog.Emails.BatchEmailResult.t()],
+          warnings: [PostHog.Emails.Warning.t()]
+        }
+
+  defexception [
+    :name,
+    :code,
+    :message,
+    :status_code,
+    :why,
+    :fix,
+    :docs_url,
+    :field,
+    :retry_after_ms,
+    :message_id,
+    results: [],
+    warnings: []
+  ]
+
+  @doc false
+  @spec new(Error.t(), [PostHog.Emails.BatchEmailResult.t()], [PostHog.Emails.Warning.t()]) ::
+          t()
+  def new(%Error{} = error, results, warnings) do
+    fields = error |> Map.from_struct() |> Map.delete(:__exception__)
+    struct!(__MODULE__, Map.merge(fields, %{results: results, warnings: warnings}))
+  end
 end
