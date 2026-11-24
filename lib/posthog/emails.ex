@@ -1435,7 +1435,7 @@ defmodule PostHog.Emails do
   end
 
   defp past_retry_window?(connection, started_at, delay_ms),
-    do: connection.monotonic_ms.() - started_at + delay_ms > @max_retry_window_ms
+    do: connection.monotonic_ms.() - started_at + delay_ms >= @max_retry_window_ms
 
   # A send carries an idempotency key, so a retry can't queue a second email. A status read changes nothing.
   # An upload writes the same bytes to the same key, and S3 asks clients to retry its 500s.

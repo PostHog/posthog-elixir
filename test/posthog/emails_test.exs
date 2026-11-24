@@ -1892,15 +1892,24 @@ defmodule PostHog.EmailsTest do
       assert Agent.get(monotonic, & &1) in 3_600_000..3_700_000
     end
 
-    @tag sleep_overruns_ms: 3_600_000
-    test "sends no retry after a wait that overran the hour", %{name: name} do
-      expect_reply(refused(503, %{"code" => "service_unavailable"}))
+    for {label, overrun_ms, headers} <- [
+          {"overran the hour", 3_600_000, %{}},
+          {"ended exactly at the hour", 3_598_000, %{"retry-after" => ["2"]}}
+        ] do
+      @tag sleep_overruns_ms: overrun_ms
+      test "sends no retry after a wait that #{label}", %{name: name} do
+        expect_reply(
+          refused(503, %{"code" => "service_unavailable"}, unquote(Macro.escape(headers)))
+        )
 
-      assert {:error, %Error{status_code: 503}} =
-               Emails.send(name, to: "user@example.com", template_id: @template_id)
+        assert {:error, %Error{status_code: 503}} =
+                 Emails.send(name, to: "user@example.com", template_id: @template_id)
 
-      assert_received {:request, :post, _url, _opts}
-      refute_received {:request, _method, _url, _opts}
+        assert_received {:slept, slept_ms}
+        assert slept_ms + unquote(overrun_ms) >= 3_600_000
+        assert_received {:request, :post, _url, _opts}
+        refute_received {:request, _method, _url, _opts}
+      end
     end
 
     test "keeps retrying when the wall clock jumps ahead during a retry", %{

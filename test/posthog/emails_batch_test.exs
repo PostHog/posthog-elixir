@@ -728,7 +728,8 @@ defmodule PostHog.EmailsBatchTest do
       assert {:error, %BatchError{code: "client_closed", results: results} = error} =
                Task.await(sending)
 
-      assert error.message =~ "the batch wasn't sent"
+      assert error.message =~ "sent no retry"
+      refute error.message =~ "wasn't sent"
       assert length(requested()) == 1
       assert statuses(results) == ["unconfirmed", "unconfirmed"]
     end
@@ -737,23 +738,31 @@ defmodule PostHog.EmailsBatchTest do
     test "sends no retry", %{name: name} do
       answers([whole_call(429, "throttled")])
 
-      assert {:error, %BatchError{code: "client_closed", results: results}} =
+      assert {:error, %BatchError{code: "client_closed", results: results} = error} =
                batch(name, recipients(2))
 
+      assert error.message =~ "the batch wasn't sent"
       assert length(requested()) == 1
       assert statuses(results) == ["failed", "failed"]
       assert %Error{code: "throttled"} = hd(results).error
     end
 
-    @tag stop_instance_on_sleep: true
-    test "sends no retry after an uncertain answer", %{name: name} do
-      answers([whole_call(503, "delivery_unavailable")])
+    for {label, answer} <- [
+          {"a lost answer", quote(do: lost())},
+          {"an uncertain answer", quote(do: whole_call(503, "delivery_unavailable"))}
+        ] do
+      @tag stop_instance_on_sleep: true
+      test "sends no retry after #{label} and says emails may have gone out", %{name: name} do
+        answers([unquote(answer)])
 
-      assert {:error, %BatchError{code: "client_closed", results: results}} =
-               batch(name, recipients(2))
+        assert {:error, %BatchError{code: "client_closed", results: results} = error} =
+                 batch(name, recipients(2))
 
-      assert length(requested()) == 1
-      assert statuses(results) == ["unconfirmed", "unconfirmed"]
+        assert error.message =~ "sent no retry"
+        refute error.message =~ "wasn't sent"
+        assert length(requested()) == 1
+        assert statuses(results) == ["unconfirmed", "unconfirmed"]
+      end
     end
   end
 

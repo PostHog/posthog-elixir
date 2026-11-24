@@ -241,9 +241,23 @@ defmodule PostHog.Emails.Batch do
 
     case Emails.with_retries(post, max_retries, run, attempt_once) do
       {:ok, run} -> {:ok, run}
-      {:error, error, run} -> {:error, run, error}
+      {:error, error, run} -> {:error, run, closed_after_send(error, run, connection)}
     end
   end
+
+  defp closed_after_send(%Error{code: "client_closed"} = error, run, connection) do
+    if Enum.any?(Map.values(run.results), &(&1.status == "unconfirmed")) do
+      %{
+        error
+        | message:
+            "The PostHog instance #{inspect(connection.name)} stopped during the call, so the SDK sent no retry. PostHog may have queued some of the emails, and each result says which."
+      }
+    else
+      error
+    end
+  end
+
+  defp closed_after_send(error, _run, _connection), do: error
 
   defp attempt(run, attempt, connection, headers) do
     run = %{
