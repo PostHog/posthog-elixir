@@ -2332,6 +2332,8 @@ defmodule PostHog.EmailsTest do
            "0000-12-31T23:30:00-01:00"},
           {"a DateTime in year zero", quote(do: %{~U[2026-12-01 09:00:00Z] | year: 0})},
           {"a string whose offset carries it back into year zero", "0001-01-01T00:30:00+01:00"},
+          {"a string in year zero that rounding would carry into year one",
+           "0001-01-01T00:59:59.9999+01:00"},
           {"a DateTime past the last time Unix time can hold",
            quote(do: %{~U[2026-12-01 09:00:00Z] | year: 9_999_999})}
         ] do
