@@ -263,6 +263,15 @@ defmodule PostHog.EmailsBatchTest do
   describe "batch/2 argument checks" do
     @code_form [template_key: "k", subject: "s", html: "h"]
 
+    test "says to give each recipient its own key for a top-level idempotency_key", %{name: name} do
+      assert {:error, %Error{field: "idempotency_key"} = error} =
+               batch(name, recipients(2), idempotency_key: "shared")
+
+      assert error.fix =~ "its own idempotency_key"
+      refute error.fix =~ "Move"
+      assert requested() == []
+    end
+
     for {label, overrides, code, field} <- [
           {"scheduled_at", [scheduled_at: "2026-12-01T09:00:00Z"], "invalid_form",
            "scheduled_at"},
@@ -422,9 +431,9 @@ defmodule PostHog.EmailsBatchTest do
              "fix" => "Split the recipients into smaller batches."
            }, "Split the recipients into smaller batches."},
           {"without a body", nil,
-           "Split the recipients into smaller batches, or make each email's content smaller."},
+           "Split the recipients into smaller batches, and keep each email and its idempotency_key unchanged."},
           {"with an empty code and fix", %{"code" => "", "fix" => ""},
-           "Split the recipients into smaller batches, or make each email's content smaller."}
+           "Split the recipients into smaller batches, and keep each email and its idempotency_key unchanged."}
         ] do
       test "a 413 #{label} comes back as the error, with a fix to split the batch", %{name: name} do
         answers([{:ok, %{status: 413, headers: %{}, body: unquote(Macro.escape(body))}}])
@@ -645,7 +654,11 @@ defmodule PostHog.EmailsBatchTest do
         for message <- [error.message, first.error.message],
             code != "idempotency_key_in_flight" do
           assert message =~ "PostHog refused a retry: "
-          assert message =~ "may still go out"
+
+          assert message =~
+                   "PostHog didn't confirm an earlier try, so the email may still go out."
+
+          refute message =~ "was lost"
           refute message =~ "no email was sent"
         end
 
@@ -655,6 +668,8 @@ defmodule PostHog.EmailsBatchTest do
           assert error.fix =~ "If PostHog refuses it again: "
           assert error.fix =~ unquote(then_fix)
         end
+
+        refute (error.fix || "") =~ "content smaller"
 
         assert_resend_with_same_key(results)
       end

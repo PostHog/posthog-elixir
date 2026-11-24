@@ -66,6 +66,13 @@ defmodule PostHog.Emails.Batch do
       nil ->
         :ok
 
+      :idempotency_key ->
+        refuse_field(
+          :idempotency_key,
+          "Each recipient's to, distinct_id and idempotency_key go in recipients.",
+          "Give each recipient in recipients its own idempotency_key."
+        )
+
       field when field in @per_recipient_fields ->
         refuse_field(
           field,
@@ -353,7 +360,8 @@ defmodule PostHog.Emails.Batch do
     %{
       "code" => "content_too_large",
       "detail" => "PostHog refused the batch as larger than it takes in one request.",
-      "fix" => "Split the recipients into smaller batches, or make each email's content smaller."
+      "fix" =>
+        "Split the recipients into smaller batches, and keep each email and its idempotency_key unchanged."
     }
   end
 
@@ -408,7 +416,7 @@ defmodule PostHog.Emails.Batch do
     %{
       error
       | message:
-          "PostHog refused a retry: #{error.message} Its answer to an earlier try was lost, so the email may still go out.",
+          "PostHog refused a retry: #{error.message} PostHog didn't confirm an earlier try, so the email may still go out.",
         fix: @resend_same_key <> then_fix
     }
   end
