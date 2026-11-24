@@ -166,11 +166,11 @@ defmodule PostHog.Emails.Batch do
       )
 
   defp known_fields(recipient, index) do
-    case recipient |> Map.keys() |> Enum.sort() |> Enum.find(&(&1 not in @recipient_fields)) do
-      nil ->
+    case recipient |> Map.keys() |> Enum.reject(&(&1 in @recipient_fields)) |> Enum.sort() do
+      [] ->
         :ok
 
-      field ->
+      [field | _others] ->
         invalid(
           "invalid_form",
           "recipients[#{index}] takes only to, distinct_id, idempotency_key and template_data, not #{field_name(field)}.",
@@ -179,6 +179,7 @@ defmodule PostHog.Emails.Batch do
     end
   end
 
+  defp field_name(nil), do: "nil"
   defp field_name(field) when is_atom(field) or is_binary(field), do: to_string(field)
   defp field_name(field), do: inspect(field)
 

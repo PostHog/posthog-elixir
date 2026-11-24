@@ -301,6 +301,8 @@ defmodule PostHog.EmailsBatchTest do
           {"a recipient with a field that is not a name",
            [recipients: [%{{:a, 1} => 1, to: "a@example.com"}]], "invalid_form",
            "recipients__0__{:a, 1}"},
+          {"a recipient with a nil field", [recipients: [%{nil => 1, to: "a@example.com"}]],
+           "invalid_form", "recipients__0__nil"},
           {"a recipient with an unknown field",
            [recipients: [%{to: "a@example.com", cc: "b@example.com"}]], "invalid_form",
            "recipients__0__cc"},
