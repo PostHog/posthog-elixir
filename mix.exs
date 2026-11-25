@@ -64,7 +64,7 @@ defmodule PostHog.MixProject do
         Integrations: [PostHog.Integrations.Plug, PostHog.Integrations.LLMAnalytics.Req],
         Testing: [PostHog.Test]
       ],
-      skip_code_autolink_to: &String.starts_with?(&1, "Posthog"),
+      skip_code_autolink_to: &(String.starts_with?(&1, "Posthog") or &1 == "PostHog.Sender"),
       before_closing_body_tag: &before_closing_body_tag/1
     ]
   end
