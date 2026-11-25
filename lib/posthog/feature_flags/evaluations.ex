@@ -117,9 +117,9 @@ defmodule PostHog.FeatureFlags.Evaluations do
     the SDK.
   - `:unresolved_dependency` - a flag this flag depends on has a loaded
     definition but was not resolved.
-  - `:missing_context` - the call did not pass a property, group key, group
-    property, or device id the flag needs, or passed it in a form local
-    evaluation cannot use.
+  - `:missing_context` - the call did not pass a property, group property, or
+    device id the flag needs, or passed it in a form local evaluation cannot
+    use. A group flag whose group is not passed resolves as `false`.
 
   When several causes apply, the reason is the first in this list.
   """

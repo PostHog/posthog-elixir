@@ -1000,10 +1000,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
     assert LocalEvaluator.evaluate(bucketed_definitions, inside_group).results["group"].enabled
     refute LocalEvaluator.evaluate(bucketed_definitions, outside_group).results["group"].enabled
 
-    assert MapSet.member?(
-             LocalEvaluator.evaluate(definitions, %{distinct_id: "person"}).unresolved,
-             "group"
-           )
+    refute LocalEvaluator.evaluate(definitions, %{distinct_id: "person"}).results["group"].enabled
 
     mixed = flag("mixed")
 
@@ -1216,9 +1213,10 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
        {:reason, :unsupported_definition}},
       {"no device id", [Map.put(flag("checkout"), "bucketing_identifier", "device_id")], %{},
        {:reason, :missing_context}},
-      {"no group key", [group.([])], %{}, {:reason, :missing_context}},
-      {"no group key, static cohort", [group.([static_cohort])], %{},
-       {:reason, :unsupported_definition}},
+      {"no group key", [group.([])], %{}, {:value, false}},
+      {"group key without group properties", [group.([missing_plan])],
+       %{groups: %{organization: "acme"}}, {:reason, :missing_context}},
+      {"no group key, static cohort", [group.([static_cohort])], %{}, {:value, false}},
       {"dependency without a definition", [flag("checkout", [depends_on("absent")])], %{},
        {:reason, :unsupported_definition}},
       {"unresolved dependency, dependency without a definition",

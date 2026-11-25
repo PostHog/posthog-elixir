@@ -356,6 +356,11 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
         {{:inconclusive, :unsupported_definition}, cache}
       end
     else
+      # Like the flags service, a group flag is false when its group is not passed, directly
+      # or as a dependency.
+      :group_not_supplied ->
+        {{:ok, false}, cache}
+
       # No condition can be checked, so a cause in the definition outranks the missing context.
       {:inconclusive, reason} ->
         {{:inconclusive, with_definition_reason(reason, flag, definitions)}, cache}
@@ -376,7 +381,8 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
 
     cond do
       not is_binary(group_name) -> {:inconclusive, :unsupported_definition}
-      is_nil(group_key) or not is_map(properties) -> {:inconclusive, :missing_context}
+      is_nil(group_key) -> :group_not_supplied
+      not is_map(properties) -> {:inconclusive, :missing_context}
       true -> {:ok, properties, to_string(group_key)}
     end
   end

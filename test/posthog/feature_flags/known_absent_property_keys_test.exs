@@ -54,6 +54,21 @@ defmodule PostHog.FeatureFlags.KnownAbsentPropertyKeysTest do
     end
   end
 
+  defp group_filter(key, operator, value \\ nil) do
+    filter = %{"key" => key, "type" => "group", "operator" => operator, "group_type_index" => 0}
+    if is_nil(value), do: filter, else: Map.put(filter, "value", value)
+  end
+
+  defp flag_dependency(key) do
+    %{
+      "type" => "flag",
+      "key" => key,
+      "operator" => "flag_evaluates_to",
+      "value" => true,
+      "dependency_chain" => [key]
+    }
+  end
+
   defp person_filter(operator, value \\ nil) do
     filter = %{"key" => "plan", "type" => "person", "operator" => operator}
     if is_nil(value), do: filter, else: Map.put(filter, "value", value)
@@ -507,6 +522,120 @@ defmodule PostHog.FeatureFlags.KnownAbsentPropertyKeysTest do
                },
                "person_parent"
              ) == {:ok, true}
+    end
+
+    test "a dependency is evaluated with its own aggregation" do
+      definitions =
+        snapshot([
+          flag("org-parent", [group_filter("region", "exact", "us")], %{
+            "aggregation_group_type_index" => 0
+          }),
+          flag("person-child", [flag_dependency("org-parent")])
+        ])
+
+      context = %{
+        groups: %{"organization" => "acme"},
+        person_properties: %{"region" => "us"},
+        group_properties: %{"organization" => %{"region" => "eu"}}
+      }
+
+      assert local(definitions, context, "org-parent") == {:ok, false}
+      assert local(definitions, context, "person-child") == {:ok, false}
+    end
+
+    test "a group dependency without its group resolves as false" do
+      definitions =
+        snapshot([
+          flag("org-parent", [group_filter("tier", "is_not_set")], %{
+            "aggregation_group_type_index" => 0
+          }),
+          flag("person-child", [flag_dependency("org-parent")])
+        ])
+
+      context = %{group_property_keys_known_absent: %{"organization" => ["tier"]}}
+
+      assert local(definitions, context, "org-parent") == {:ok, false}
+      assert local(definitions, context, "person-child") == {:ok, false}
+    end
+
+    test "a group dependency with its group key but without the group properties stays inconclusive" do
+      definitions =
+        snapshot([
+          flag("org-parent", [group_filter("tier", "exact", "pro")], %{
+            "aggregation_group_type_index" => 0
+          }),
+          flag("person-child", [flag_dependency("org-parent")])
+        ])
+
+      context = %{groups: %{"organization" => "acme"}}
+
+      assert local(definitions, context, "org-parent") == {:unresolved, :missing_context}
+      assert local(definitions, context, "person-child") == {:unresolved, :unresolved_dependency}
+    end
+
+    test "a group dependency buckets by its group key" do
+      definitions =
+        snapshot([
+          flag("org-parent", [], %{"aggregation_group_type_index" => 0})
+          |> put_in(["filters", "groups", Access.at(0), "rollout_percentage"], 50),
+          flag("person-child", [flag_dependency("org-parent")])
+        ])
+
+      for {distinct_id, group_key} <- [{"u3", "q1"}, {"u2", "zzz"}, {"u1", "acme"}] do
+        in_rollout = LocalEvaluator.hash("org-parent", group_key) < 0.5
+        context = %{distinct_id: distinct_id, groups: %{"organization" => group_key}}
+
+        assert local(definitions, context, "person-child") == {:ok, in_rollout}
+      end
+
+      assert LocalEvaluator.hash("org-parent", "q1") < 0.5
+      refute LocalEvaluator.hash("org-parent", "u3") < 0.5
+    end
+
+    test "a person dependency of a group flag reads person properties and the distinct id" do
+      definitions =
+        snapshot([
+          flag("person-parent", [
+            person_filter("is_not_set"),
+            %{"key" => "region", "type" => "person", "operator" => "exact", "value" => "us"}
+          ]),
+          flag("org-child", [flag_dependency("person-parent")], %{
+            "aggregation_group_type_index" => 0
+          })
+        ])
+
+      context = %{
+        groups: %{"organization" => "acme"},
+        person_properties: %{"region" => "us"},
+        group_properties: %{"organization" => %{"region" => "eu"}},
+        person_property_keys_known_absent: ["plan"]
+      }
+
+      assert local(definitions, context, "person-parent") == {:ok, true}
+      assert local(definitions, context, "org-child") == {:ok, true}
+    end
+
+    test "a group filter without a group type index reads the condition's group type" do
+      legacy = fn key, operator, value ->
+        filter = %{"key" => "tier", "type" => "group", "operator" => operator}
+        filter = if is_nil(value), do: filter, else: Map.put(filter, "value", value)
+        flag(key, [filter], %{"aggregation_group_type_index" => 0})
+      end
+
+      definitions =
+        snapshot([
+          legacy.("legacy-exact", "exact", "enterprise"),
+          legacy.("legacy-unset", "is_not_set", nil)
+        ])
+
+      context = %{
+        groups: %{"organization" => "acme"},
+        group_properties: %{"organization" => %{"tier" => "enterprise"}},
+        group_property_keys_known_absent: %{"organization" => ["tier"]}
+      }
+
+      assert local(definitions, context, "legacy-exact") == {:ok, false}
+      assert local(definitions, context, "legacy-unset") == {:ok, true}
     end
 
     test "flag dependencies evaluate with the same listing" do
