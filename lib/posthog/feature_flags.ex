@@ -271,8 +271,9 @@ defmodule PostHog.FeatureFlags do
   when `:person_properties` or `:group_properties` supplies a value for it. So
   `is_not_set` and the negated operators (`is_not`, `not_icontains`,
   `not_starts_with`, `not_ends_with`, `not_regex`) match it without a `/flags`
-  call, and every other operator doesn't match. Person keys starting with
-  `__posthog_person_metadata__` are ignored. Each list accepts strings or atoms
+  call, and every other locally supported operator doesn't match. Operators
+  the SDK doesn't evaluate locally still fall back to `/flags`. Person keys
+  starting with `__posthog_person_metadata__` are ignored. Each list accepts strings or atoms
   and holds at most 1000 keys, counting duplicates and counting each group type
   separately. A longer list, or a value of the wrong type, returns
   `{:error, %PostHog.Error{}}` without evaluating or sending a request. Empty
