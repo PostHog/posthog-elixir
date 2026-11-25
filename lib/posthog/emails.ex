@@ -129,8 +129,9 @@ defmodule PostHog.Emails do
     within 24 hours of the key's first use, so it goes out once.
 
   A batch that PostHog refuses as a whole, such as a rate limit past its retries, returns
-  `{:error, %PostHog.Emails.BatchError{}}`, whose `:results` hold every recipient. After a 5xx or
-  `idempotency_key_in_flight` past its retries the recipients are `"unconfirmed"`. Once an answer
+  `{:error, %PostHog.Emails.BatchError{}}`, whose `:results` hold every recipient. After a 5xx,
+  `idempotency_key_in_flight` past its retries, or a 409 whose body the SDK can't read, the
+  recipients are `"unconfirmed"`. Once an answer
   is lost, a retry PostHog refuses can't show that the first try didn't queue the email, so those
   recipients stay `"unconfirmed"` too, with the error of the refusal. PostHog answers
   `content_too_large` in two cases. A 413 means the request is too large: split the recipients
@@ -199,8 +200,9 @@ defmodule PostHog.Emails do
   service `:email_request_max_retries` times (2 by default), waiting about 1 and then 2 seconds,
   or the server's `Retry-After` when it is longer. A `Retry-After` over 30 seconds fails at once
   with `:retry_after_ms` set. A monthly quota and the day's upload quota are never retried.
-  A send's retries stop an hour after its first attempt, whatever `:max_retries` says, so a
-  retry falls inside the 24 hours in which PostHog keeps an idempotency key unless the call
+  A send's retries stop an hour after its first attempt, whatever `:max_retries` says, timed on
+  both the monotonic and the system clock so a host suspension counts too. So a retry falls
+  inside the 24 hours in which PostHog keeps an idempotency key unless the call
   starts in the last hour of them. To rerun with a stored key that close to its 24 hours, pass
   `max_retries: 0`.
   The upload steps of a send with files and status reads retry the same way, without the hour
@@ -1422,7 +1424,14 @@ defmodule PostHog.Emails do
 
   @doc false
   def with_retries(connection, max_retries, state, attempt_once),
-    do: retry(connection, {max_retries, connection.monotonic_ms.()}, state, attempt_once, 0)
+    do:
+      retry(
+        connection,
+        {max_retries, {connection.monotonic_ms.(), connection.now.()}},
+        state,
+        attempt_once,
+        0
+      )
 
   defp retry(connection, {max_retries, started_at} = limits, state, attempt_once, attempt) do
     case attempt_once.(state, attempt) do
@@ -1460,8 +1469,15 @@ defmodule PostHog.Emails do
 
   defp past_retry_window?(_connection, nil, _delay_ms), do: false
 
-  defp past_retry_window?(connection, started_at, delay_ms),
-    do: connection.monotonic_ms.() - started_at + delay_ms >= @max_retry_window_ms
+  defp past_retry_window?(connection, {monotonic_at, wall_at}, delay_ms) do
+    elapsed_ms =
+      max(
+        connection.monotonic_ms.() - monotonic_at,
+        DateTime.diff(connection.now.(), wall_at, :millisecond)
+      )
+
+    elapsed_ms + delay_ms >= @max_retry_window_ms
+  end
 
   # A send carries an idempotency key, so a retry can't queue a second email. A status read changes nothing.
   # An upload writes the same bytes to the same key, and S3 asks clients to retry its 500s.

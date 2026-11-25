@@ -1911,12 +1911,12 @@ defmodule PostHog.EmailsTest do
       end
     end
 
-    test "keeps retrying when the wall clock jumps ahead during a retry", %{
+    test "keeps retrying when the wall clock jumps back during a retry", %{
       name: name,
       clock: clock
     } do
       expect(API.Mock, :request, fn _client, _method, _url, _opts ->
-        Agent.update(clock, &DateTime.add(&1, 2, :hour))
+        Agent.update(clock, &DateTime.add(&1, -2, :hour))
         refused(503, %{"code" => "service_unavailable"})
       end)
 
@@ -1924,6 +1924,21 @@ defmodule PostHog.EmailsTest do
 
       assert {:ok, %Emails.SendResult{}} =
                Emails.send(name, to: "user@example.com", template_id: @template_id)
+    end
+
+    test "sends no retry once the wall clock passes the hour, as after a host suspension", %{
+      name: name,
+      clock: clock
+    } do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        Agent.update(clock, &DateTime.add(&1, 25, :hour))
+        refused(503, %{"code" => "service_unavailable"})
+      end)
+
+      assert {:error, %Error{status_code: 503}} =
+               Emails.send(name, to: "user@example.com", template_id: @template_id)
+
+      refute_received {:slept, _ms}
     end
 
     test "a per-send max_retries of 0 makes one attempt", %{name: name} do

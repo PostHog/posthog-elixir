@@ -682,6 +682,19 @@ defmodule PostHog.EmailsBatchTest do
       assert_resend_with_same_key(results)
     end
 
+    for {label, body} <- [{"no body", nil}, {"a body that isn't JSON", "<html>Conflict</html>"}] do
+      test "a 409 with #{label} leaves each email to resend with its key", %{name: name} do
+        answers([{:ok, %{status: 409, headers: %{}, body: unquote(body)}}])
+
+        assert {:error, %BatchError{status_code: 409, results: results}} =
+                 batch(name, recipients(2))
+
+        assert length(requested()) == 1
+        assert statuses(results) == ["unconfirmed", "unconfirmed"]
+        assert_resend_with_same_key(results)
+      end
+    end
+
     @tag sleep_overruns_ms: 3_600_000
     test "sends no retry after a wait that overran the hour", %{name: name} do
       answers([whole_call(503, "delivery_unavailable")])
@@ -938,6 +951,16 @@ defmodule PostHog.EmailsBatchTest do
         end)
 
       assert length(String.split(log, "PostHog email warning sandbox_sender")) == 2
+    end
+
+    @tag capture_log: true
+    test "keep the order PostHog first named them in", %{name: name} do
+      codes = for index <- 1..2_000, do: "warning_#{index}"
+      repeated = Enum.flat_map(codes, &[%{"code" => &1}, %{"code" => "warning_1"}])
+      answers([ok([queued("m0")], %{"warnings" => repeated})])
+
+      assert {:ok, %Emails.BatchResult{warnings: warnings}} = batch(name, recipients(1))
+      assert Enum.map(warnings, & &1.code) == codes
     end
   end
 end

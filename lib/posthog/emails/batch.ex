@@ -328,12 +328,8 @@ defmodule PostHog.Emails.Batch do
         {:ok, status, request_fields(fields, status, map_size(run.members)), retry_after_ms}
       )
 
-    uncertain? =
-      status >= 500 or
-        (status != 429 and Emails.text(fields["code"]) in @unconfirmed_codes)
-
     cond do
-      uncertain? ->
+      uncertain?(status, Emails.text(fields["code"])) ->
         {:error, error, all(run, "unconfirmed", error)}
 
       run.lost? ->
@@ -346,6 +342,11 @@ defmodule PostHog.Emails.Batch do
         {:error, error, all(run, "failed", error)}
     end
   end
+
+  defp uncertain?(status, _code) when status >= 500, do: true
+  defp uncertain?(409, nil), do: true
+  defp uncertain?(429, _code), do: false
+  defp uncertain?(_status, code), do: code in @unconfirmed_codes
 
   defp request_fields(fields, status, recipients) do
     fields = Map.reject(fields, fn {_key, value} -> is_nil(value) or value == "" end)
@@ -486,11 +487,7 @@ defmodule PostHog.Emails.Batch do
     %{run | results: Map.put(run.results, index, result)}
   end
 
-  defp add_warnings(run, warnings) do
-    Enum.reduce(warnings, run, fn warning, run ->
-      if warning in run.warnings, do: run, else: %{run | warnings: run.warnings ++ [warning]}
-    end)
-  end
+  defp add_warnings(run, warnings), do: %{run | warnings: Enum.uniq(run.warnings ++ warnings)}
 
   defp finish({:ok, run}) do
     result = %BatchResult{results: outcome(run), warnings: run.warnings}
