@@ -1,4 +1,4 @@
-defmodule Posthog.LLMAnalyticsTest do
+defmodule PostHog.LLMAnalyticsTest do
   use PostHog.Case,
     async: Version.match?(System.version(), ">= 1.18.0"),
     group: PostHog

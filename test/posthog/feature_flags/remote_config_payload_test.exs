@@ -32,7 +32,7 @@ defmodule PostHog.FeatureFlags.RemoteConfigPayloadTest do
 
     expect(PostHog.API.Mock, :client, fn api_key, api_host ->
       default = PostHog.API.Client.client(api_key, api_host)
-      %{default | client: Req.merge(default.client, adapter: adapter)}
+      %{default | client: PostHog.API.FunAdapter.put(default.client, adapter)}
     end)
 
     :ok

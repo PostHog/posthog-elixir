@@ -73,6 +73,12 @@ jobs:
       - name: Install dependencies
         run: mix deps.get
 
+      # Same env as `mix test`, so the test run reuses this build instead of compiling again.
+      - name: Compile with warnings as errors
+        run: mix compile --warnings-as-errors
+        env:
+          MIX_ENV: test
+
       - name: Run tests
         run: mix test
 

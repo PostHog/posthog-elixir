@@ -95,6 +95,9 @@ defmodule PostHog.SenderTest do
       Sender.send("my_event", @supervisor_name)
 
       assert %{events: ["my_event"]} = :sys.get_state(pid)
+
+      expect(API.Mock, :request, fn _client, :post, "/batch", _opts -> {:ok, %{status: 200}} end)
+      assert :ok = stop_supervised(Sender)
     end
 
     test "immediately sends after reaching max_batch_events and cancels timer", %{
@@ -185,6 +188,49 @@ defmodule PostHog.SenderTest do
       assert_receive :done
       :sys.get_status(pid)
       [{^pid, :available}] = Registry.lookup(registry, {PostHog.Sender, 1})
+    end
+
+    test "ignores normal exits from linked processes", %{api_client: api_client} do
+      pid =
+        start_supervised!(
+          {Sender,
+           supervisor_name: @supervisor_name,
+           index: 1,
+           api_client: api_client,
+           max_batch_time_ms: 60_000,
+           max_batch_events: 100}
+        )
+
+      send(pid, {:EXIT, self(), :normal})
+
+      assert %{events: []} = :sys.get_state(pid)
+    end
+
+    test "flushes leftovers when a linked process exits abnormally", %{api_client: api_client} do
+      test_pid = self()
+
+      pid =
+        start_supervised!(
+          {Sender,
+           supervisor_name: @supervisor_name,
+           index: 1,
+           api_client: api_client,
+           max_batch_time_ms: 60_000,
+           max_batch_events: 100},
+          restart: :temporary
+        )
+
+      expect(API.Mock, :request, fn _client, :post, "/batch", opts ->
+        send(test_pid, {:flushed, opts[:json]})
+        {:ok, %{status: 200}}
+      end)
+
+      ref = Process.monitor(pid)
+      Sender.send("foo", @supervisor_name)
+      send(pid, {:EXIT, self(), :shutdown})
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, :shutdown}
+      assert_received {:flushed, %{batch: ["foo"]}}
     end
 
     test "sends leftovers on shutdown", %{api_client: api_client} do

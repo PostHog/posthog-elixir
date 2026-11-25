@@ -2,6 +2,7 @@ defmodule PostHog.API.ClientTest do
   use ExUnit.Case, async: true
 
   alias PostHog.API.Client
+  alias PostHog.API.FunAdapter
 
   test "client/2 sets the posthog-elixir User-Agent" do
     %Client{client: req} = Client.client("phc_test", "https://us.i.posthog.com")
@@ -43,17 +44,17 @@ defmodule PostHog.API.ClientTest do
     req =
       Req.new(
         body: [123_456],
-        compress_body: true,
-        adapter: fn req ->
-          send(
-            parent,
-            {:request, Req.Request.fetch_option(req, :compress_body),
-             Req.Request.get_header(req, "content-encoding"), req.body}
-          )
-
-          {req, Req.Response.new(status: 200, body: %{})}
-        end
+        compress_body: true
       )
+      |> FunAdapter.put(fn req ->
+        send(
+          parent,
+          {:request, Req.Request.fetch_option(req, :compress_body),
+           Req.Request.get_header(req, "content-encoding"), req.body}
+        )
+
+        {req, Req.Response.new(status: 200, body: %{})}
+      end)
 
     assert {:ok, %{status: 200}} = Client.request(req, :post, "/", [])
     assert_received {:request, {:ok, false}, [], [123_456]}
@@ -69,13 +70,13 @@ defmodule PostHog.API.ClientTest do
         retry: :transient,
         retry_delay: fn _ -> 0 end,
         max_retries: 2,
-        compress_body: true,
-        adapter: fn req ->
-          attempt = Agent.get_and_update(calls, fn calls -> {calls + 1, calls + 1} end)
-          send(parent, {:request, Req.Request.get_header(req, "content-encoding"), req.body})
-          {req, Req.Response.new(status: if(attempt <= 2, do: 503, else: 200), body: %{})}
-        end
+        compress_body: true
       )
+      |> FunAdapter.put(fn req ->
+        attempt = Agent.get_and_update(calls, fn calls -> {calls + 1, calls + 1} end)
+        send(parent, {:request, Req.Request.get_header(req, "content-encoding"), req.body})
+        {req, Req.Response.new(status: if(attempt <= 2, do: 503, else: 200), body: %{})}
+      end)
 
     assert {:ok, %{status: 200}} = Client.request(req, :post, "/", json: %{event: "test"})
     assert_received {:request, ["gzip"], first_body}
@@ -98,12 +99,12 @@ defmodule PostHog.API.ClientTest do
     req =
       Req.new(
         body: "ok",
-        compress_body: true,
-        adapter: fn _req ->
-          Agent.update(calls, &(&1 + 1))
-          raise RuntimeError, "request failed"
-        end
+        compress_body: true
       )
+      |> FunAdapter.put(fn _req ->
+        Agent.update(calls, &(&1 + 1))
+        raise RuntimeError, "request failed"
+      end)
 
     assert_raise RuntimeError, "request failed", fn ->
       Client.request(req, :post, "/", [])
@@ -118,12 +119,12 @@ defmodule PostHog.API.ClientTest do
     req =
       Req.new(
         body: "hello",
-        compress_body: true,
-        adapter: fn req ->
-          send(parent, {:request, Req.Request.get_header(req, "content-encoding"), req.body})
-          {req, Req.Response.new(status: 200, body: %{})}
-        end
+        compress_body: true
       )
+      |> FunAdapter.put(fn req ->
+        send(parent, {:request, Req.Request.get_header(req, "content-encoding"), req.body})
+        {req, Req.Response.new(status: 200, body: %{})}
+      end)
 
     assert {:ok, %{status: 200}} = Client.request(req, :post, "/", [])
     assert_received {:request, ["gzip"], gzipped_body}
@@ -142,12 +143,12 @@ defmodule PostHog.API.ClientTest do
 
       req =
         Req.merge(req,
-          retry_delay: fn _ -> 0 end,
-          adapter: fn req ->
-            send(parent, {:url, req.url})
-            {req, Req.Response.new(status: 503, body: %{})}
-          end
+          retry_delay: fn _ -> 0 end
         )
+        |> FunAdapter.put(fn req ->
+          send(parent, {:url, req.url})
+          {req, Req.Response.new(status: 503, body: %{})}
+        end)
 
       assert {:ok, %Req.Response{status: 503}, :raw} =
                PostHog.API.remote_config_payload(
@@ -165,16 +166,14 @@ defmodule PostHog.API.ClientTest do
 
     test "returns the raw body of a JSON response", %{req: req, secret: secret} do
       req =
-        Req.merge(req,
-          adapter: fn req ->
-            {req,
-             Req.Response.new(
-               status: 200,
-               headers: [{"content-type", "application/json"}],
-               body: ~s("x")
-             )}
-          end
-        )
+        FunAdapter.put(req, fn req ->
+          {req,
+           Req.Response.new(
+             status: 200,
+             headers: [{"content-type", "application/json"}],
+             body: ~s("x")
+           )}
+        end)
 
       assert {:ok, %Req.Response{status: 200, body: ~s("x")}, :raw} =
                PostHog.API.remote_config_payload(
