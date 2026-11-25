@@ -1091,4 +1091,298 @@ defmodule PostHog.Integrations.LLMAnalytics.ReqTest do
              }
            ] = all_captured(@supervisor_name)
   end
+
+  describe "cache token usage" do
+    test "captures Anthropic cache read and creation tokens", %{req: req} do
+      Req.Test.expect(@mock_module, fn conn ->
+        Req.Test.json(conn, %{
+          "content" => [%{"text" => "hi", "type" => "text"}],
+          "model" => "claude-haiku-4-5-20251001",
+          "usage" => %{
+            "cache_creation_input_tokens" => 30,
+            "cache_read_input_tokens" => 40,
+            "input_tokens" => 5,
+            "output_tokens" => 7
+          }
+        })
+      end)
+
+      Req.post!(req, url: "https://api.anthropic.com/v1/messages", json: %{messages: []})
+
+      assert [%{properties: properties}] = all_captured(@supervisor_name)
+      assert properties[:"$ai_input_tokens"] == 5
+      assert properties[:"$ai_cache_read_input_tokens"] == 40
+      assert properties[:"$ai_cache_creation_input_tokens"] == 30
+      refute Map.has_key?(properties, :"$ai_cache_reporting_exclusive")
+    end
+
+    test "omits cache properties when Anthropic reports zero", %{req: req} do
+      Req.Test.expect(@mock_module, fn conn ->
+        Req.Test.json(conn, %{
+          "content" => [],
+          "model" => "claude-haiku-4-5-20251001",
+          "usage" => %{
+            "cache_creation_input_tokens" => 0,
+            "cache_read_input_tokens" => 0,
+            "input_tokens" => 5,
+            "output_tokens" => 7
+          }
+        })
+      end)
+
+      Req.post!(req, url: "https://api.anthropic.com/v1/messages", json: %{messages: []})
+
+      assert [%{properties: properties}] = all_captured(@supervisor_name)
+      refute Map.has_key?(properties, :"$ai_cache_read_input_tokens")
+      refute Map.has_key?(properties, :"$ai_cache_creation_input_tokens")
+    end
+
+    test "captures OpenAI Chat Completions cached tokens", %{req: req} do
+      Req.Test.expect(@mock_module, fn conn ->
+        Req.Test.json(conn, %{
+          "choices" => [],
+          "model" => "gpt-5-mini",
+          "usage" => %{
+            "completion_tokens" => 9,
+            "prompt_tokens" => 100,
+            "prompt_tokens_details" => %{"cached_tokens" => 64}
+          }
+        })
+      end)
+
+      Req.post!(req, url: "https://api.openai.com/v1/chat/completions", json: %{messages: []})
+
+      assert [%{properties: properties}] = all_captured(@supervisor_name)
+      assert properties[:"$ai_input_tokens"] == 100
+      assert properties[:"$ai_cache_read_input_tokens"] == 64
+      assert properties[:"$ai_cache_reporting_exclusive"] == false
+    end
+
+    test "flags non-exclusive reporting for claude models via OpenAI-compatible chat", %{req: req} do
+      Req.Test.expect(@mock_module, fn conn ->
+        Req.Test.json(conn, %{
+          "choices" => [],
+          "model" => "anthropic/claude-sonnet-4",
+          "usage" => %{
+            "completion_tokens" => 9,
+            "prompt_tokens" => 100,
+            "prompt_tokens_details" => %{"cached_tokens" => 64, "cache_write_tokens" => 10}
+          }
+        })
+      end)
+
+      Req.post!(req, url: "https://openrouter.ai/api/v1/chat/completions", json: %{messages: []})
+
+      assert [%{properties: properties}] = all_captured(@supervisor_name)
+      assert properties[:"$ai_input_tokens"] == 100
+      assert properties[:"$ai_cache_read_input_tokens"] == 64
+      assert properties[:"$ai_cache_creation_input_tokens"] == 10
+      assert properties[:"$ai_cache_reporting_exclusive"] == false
+    end
+
+    test "captures OpenAI Responses cached tokens", %{req: req} do
+      Req.Test.expect(@mock_module, fn conn ->
+        Req.Test.json(conn, %{
+          "model" => "gpt-5-mini",
+          "output" => [],
+          "tools" => [],
+          "temperature" => 1.0,
+          "usage" => %{
+            "input_tokens" => 100,
+            "input_tokens_details" => %{"cached_tokens" => 64},
+            "output_tokens" => 9
+          }
+        })
+      end)
+
+      Req.post!(req, url: "https://api.openai.com/v1/responses", json: %{input: "hi"})
+
+      assert [%{properties: properties}] = all_captured(@supervisor_name)
+      assert properties[:"$ai_cache_read_input_tokens"] == 64
+      assert properties[:"$ai_cache_reporting_exclusive"] == false
+    end
+
+    for cached <- [0, nil] do
+      test "omits cache properties for OpenAI Chat Completions with cached_tokens #{inspect(cached)}",
+           %{req: req} do
+        Req.Test.expect(@mock_module, fn conn ->
+          Req.Test.json(conn, %{
+            "choices" => [],
+            "model" => "gpt-5-mini",
+            "usage" => %{
+              "completion_tokens" => 9,
+              "prompt_tokens" => 100,
+              "prompt_tokens_details" => %{"cached_tokens" => unquote(cached)}
+            }
+          })
+        end)
+
+        Req.post!(req, url: "https://api.openai.com/v1/chat/completions", json: %{messages: []})
+
+        assert [%{properties: properties}] = all_captured(@supervisor_name)
+        refute Map.has_key?(properties, :"$ai_cache_read_input_tokens")
+        refute Map.has_key?(properties, :"$ai_cache_creation_input_tokens")
+        refute Map.has_key?(properties, :"$ai_cache_reporting_exclusive")
+      end
+    end
+
+    test "omits cache properties for OpenAI Responses with zero cached tokens", %{req: req} do
+      Req.Test.expect(@mock_module, fn conn ->
+        Req.Test.json(conn, %{
+          "model" => "gpt-5-mini",
+          "output" => [],
+          "tools" => [],
+          "temperature" => 1.0,
+          "usage" => %{
+            "input_tokens" => 100,
+            "input_tokens_details" => %{"cached_tokens" => 0},
+            "output_tokens" => 9
+          }
+        })
+      end)
+
+      Req.post!(req, url: "https://api.openai.com/v1/responses", json: %{input: "hi"})
+
+      assert [%{properties: properties}] = all_captured(@supervisor_name)
+      refute Map.has_key?(properties, :"$ai_cache_read_input_tokens")
+      refute Map.has_key?(properties, :"$ai_cache_creation_input_tokens")
+      refute Map.has_key?(properties, :"$ai_cache_reporting_exclusive")
+    end
+
+    for {label, details} <- [
+          {"zero cached_tokens", %{"cached_tokens" => 0, "cache_write_tokens" => 10}},
+          {"absent cached_tokens", %{"cache_write_tokens" => 10}}
+        ] do
+      test "captures write-only cache usage in Chat Completions with #{label}", %{req: req} do
+        Req.Test.expect(@mock_module, fn conn ->
+          Req.Test.json(conn, %{
+            "choices" => [],
+            "model" => "anthropic/claude-sonnet-4",
+            "usage" => %{
+              "completion_tokens" => 9,
+              "prompt_tokens" => 100,
+              "prompt_tokens_details" => unquote(Macro.escape(details))
+            }
+          })
+        end)
+
+        Req.post!(req,
+          url: "https://openrouter.ai/api/v1/chat/completions",
+          json: %{messages: []}
+        )
+
+        assert [%{properties: properties}] = all_captured(@supervisor_name)
+        refute Map.has_key?(properties, :"$ai_cache_read_input_tokens")
+        assert properties[:"$ai_cache_creation_input_tokens"] == 10
+        assert properties[:"$ai_cache_reporting_exclusive"] == false
+      end
+
+      test "captures write-only cache usage in Responses with #{label}", %{req: req} do
+        Req.Test.expect(@mock_module, fn conn ->
+          Req.Test.json(conn, %{
+            "model" => "anthropic/claude-sonnet-4",
+            "output" => [],
+            "tools" => [],
+            "temperature" => 1.0,
+            "usage" => %{
+              "input_tokens" => 100,
+              "input_tokens_details" => unquote(Macro.escape(details)),
+              "output_tokens" => 9
+            }
+          })
+        end)
+
+        Req.post!(req, url: "https://openrouter.ai/api/v1/responses", json: %{input: "hi"})
+
+        assert [%{properties: properties}] = all_captured(@supervisor_name)
+        refute Map.has_key?(properties, :"$ai_cache_read_input_tokens")
+        assert properties[:"$ai_cache_creation_input_tokens"] == 10
+        assert properties[:"$ai_cache_reporting_exclusive"] == false
+      end
+    end
+
+    test "omits $ai_cache_reporting_exclusive when cache tokens exceed input tokens", %{req: req} do
+      Req.Test.expect(@mock_module, fn conn ->
+        Req.Test.json(conn, %{
+          "choices" => [],
+          "model" => "xiaomi/mimo-v2.5",
+          "usage" => %{
+            "completion_tokens" => 9,
+            "prompt_tokens" => 149,
+            "prompt_tokens_details" => %{"cached_tokens" => 23_104}
+          }
+        })
+      end)
+
+      Req.post!(req, url: "https://openrouter.ai/api/v1/chat/completions", json: %{messages: []})
+
+      assert [%{properties: properties}] = all_captured(@supervisor_name)
+      assert properties[:"$ai_input_tokens"] == 149
+      assert properties[:"$ai_cache_read_input_tokens"] == 23_104
+      refute Map.has_key?(properties, :"$ai_cache_reporting_exclusive")
+    end
+
+    test "preserves caller-supplied $ai_cache_reporting_exclusive from span", %{req: req} do
+      Req.Test.expect(@mock_module, fn conn ->
+        Req.Test.json(conn, %{
+          "choices" => [],
+          "model" => "custom-model",
+          "usage" => %{
+            "completion_tokens" => 9,
+            "prompt_tokens" => 100,
+            "prompt_tokens_details" => %{"cached_tokens" => 64}
+          }
+        })
+      end)
+
+      LLMAnalytics.start_span(@supervisor_name, %{"$ai_cache_reporting_exclusive": true})
+      Req.post!(req, url: "https://openrouter.ai/api/v1/chat/completions", json: %{messages: []})
+
+      assert [%{properties: properties}] = all_captured(@supervisor_name)
+      assert properties[:"$ai_cache_reporting_exclusive"] == true
+    end
+
+    test "preserves caller-supplied $ai_cache_reporting_exclusive from context", %{req: req} do
+      Req.Test.expect(@mock_module, fn conn ->
+        Req.Test.json(conn, %{
+          "choices" => [],
+          "model" => "custom-model",
+          "usage" => %{
+            "completion_tokens" => 9,
+            "prompt_tokens" => 100,
+            "prompt_tokens_details" => %{"cached_tokens" => 64}
+          }
+        })
+      end)
+
+      PostHog.set_context(@supervisor_name, %{"$ai_cache_reporting_exclusive": true})
+      Req.post!(req, url: "https://openrouter.ai/api/v1/chat/completions", json: %{messages: []})
+
+      assert [%{properties: properties}] = all_captured(@supervisor_name)
+      assert properties[:"$ai_cache_reporting_exclusive"] == true
+    end
+
+    test "preserves caller-supplied string-key $ai_cache_reporting_exclusive from span", %{
+      req: req
+    } do
+      Req.Test.expect(@mock_module, fn conn ->
+        Req.Test.json(conn, %{
+          "choices" => [],
+          "model" => "custom-model",
+          "usage" => %{
+            "completion_tokens" => 9,
+            "prompt_tokens" => 100,
+            "prompt_tokens_details" => %{"cached_tokens" => 64}
+          }
+        })
+      end)
+
+      LLMAnalytics.start_span(@supervisor_name, %{"$ai_cache_reporting_exclusive" => true})
+      Req.post!(req, url: "https://openrouter.ai/api/v1/chat/completions", json: %{messages: []})
+
+      assert [%{properties: properties}] = all_captured(@supervisor_name)
+      assert properties["$ai_cache_reporting_exclusive"] == true
+      refute Map.has_key?(properties, :"$ai_cache_reporting_exclusive")
+    end
+  end
 end
