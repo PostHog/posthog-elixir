@@ -83,8 +83,10 @@ defmodule PostHog.FeatureFlags.CalledCache do
   end
 
   defp normalize_groups(groups) when is_map(groups) do
-    groups
-    |> Enum.map(fn {group_type, group_key} -> {to_string(group_type), to_string(group_key)} end)
+    for {group_type, group_key} <- groups,
+        PostHog.FeatureFlags.LocalEvaluator.usable_group_key?(group_key) do
+      {to_string(group_type), to_string(group_key)}
+    end
     |> Enum.sort()
   end
 

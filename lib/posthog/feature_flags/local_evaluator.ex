@@ -381,11 +381,22 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
 
     cond do
       not is_binary(group_name) -> {:inconclusive, :unsupported_definition}
-      is_nil(group_key) -> :group_not_supplied
+      not usable_group_key?(group_key) -> :group_not_supplied
       not is_map(properties) -> {:inconclusive, :missing_context}
       true -> {:ok, properties, to_string(group_key)}
     end
   end
+
+  @doc """
+  Like the flags service, only a non-empty string or a number identifies a group. Any other
+  key counts as no group key. An atom other than nil or a boolean is sent as a string.
+  """
+  @spec usable_group_key?(term()) :: boolean()
+  def usable_group_key?(group_key) when is_binary(group_key), do: group_key != ""
+  def usable_group_key?(group_key) when is_number(group_key), do: true
+  def usable_group_key?(group_key) when is_boolean(group_key) or is_nil(group_key), do: false
+  def usable_group_key?(group_key) when is_atom(group_key), do: group_key != :""
+  def usable_group_key?(_group_key), do: false
 
   defp bucketing_value(flag, context) do
     filters = value(flag, "filters") || %{}
@@ -590,7 +601,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
             if is_binary(group_name), do: map_value(context.group_properties, group_name)
 
           cond do
-            is_nil(group_key) -> :skip
+            not usable_group_key?(group_key) -> :skip
             not is_map(group_props) -> {:inconclusive, :missing_context}
             true -> {:ok, group_props, to_string(group_key)}
           end

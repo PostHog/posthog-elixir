@@ -94,6 +94,9 @@ defmodule PostHog.FeatureFlags.KnownAbsentPropertyKeysTest do
     {"is_date_after", "not-a-date", false}
   ]
 
+  # A usable group key is a non-empty string or a number, as in the flags service.
+  @unusable_group_keys ["", nil, true, false, [], ["acme"], %{}, %{"id" => "acme"}]
+
   describe "local evaluation" do
     for {operator, value, expected} <- [
           {"is_not_set", nil, true},
@@ -638,6 +641,84 @@ defmodule PostHog.FeatureFlags.KnownAbsentPropertyKeysTest do
       assert local(definitions, context, "legacy-unset") == {:ok, true}
     end
 
+    test "an unusable group key counts as no group key" do
+      definitions =
+        snapshot([
+          flag("org", [], %{"aggregation_group_type_index" => 0}),
+          flag("org-tier", [group_filter("tier", "exact", "pro")], %{
+            "aggregation_group_type_index" => 0
+          }),
+          %{
+            flag("mixed", [])
+            | "filters" => %{
+                "groups" => [
+                  %{
+                    "properties" => [],
+                    "rollout_percentage" => 100,
+                    "aggregation_group_type_index" => 0
+                  },
+                  %{"properties" => [person_filter("exact", "pro")], "rollout_percentage" => 100}
+                ]
+              }
+          },
+          flag("person-child", [flag_dependency("org")])
+        ])
+
+      for group_key <- @unusable_group_keys do
+        context = %{
+          groups: %{organization: group_key},
+          group_properties: %{organization: %{"tier" => "pro"}}
+        }
+
+        assert local(definitions, context, "org") == {:ok, false}, inspect(group_key)
+        assert local(definitions, context, "org-tier") == {:ok, false}, inspect(group_key)
+        assert local(definitions, context, "person-child") == {:ok, false}, inspect(group_key)
+
+        # The group condition is skipped, so the person condition decides.
+        assert local(definitions, context, "mixed") == {:unresolved, :missing_context},
+               inspect(group_key)
+
+        for {plan, expected} <- [{"pro", true}, {"free", false}] do
+          context = Map.put(context, :person_properties, %{"plan" => plan})
+          assert local(definitions, context, "mixed") == {:ok, expected}, inspect(group_key)
+        end
+      end
+    end
+
+    test "a usable string or number group key still evaluates and buckets" do
+      rollout =
+        flag("org-rollout", [], %{"aggregation_group_type_index" => 0})
+        |> put_in(["filters", "groups", Access.at(0), "rollout_percentage"], 50)
+
+      definitions =
+        snapshot([
+          rollout,
+          flag("org-tier", [group_filter("tier", "exact", "pro")], %{
+            "aggregation_group_type_index" => 0
+          })
+        ])
+
+      for {group_key, bucketing} <- [
+            {"acme", "acme"},
+            {"a", "a"},
+            {:acme, "acme"},
+            {42, "42"},
+            {1.5, "1.5"}
+          ] do
+        context = %{groups: %{organization: group_key}}
+        in_rollout = LocalEvaluator.hash("org-rollout", bucketing) < 0.5
+
+        assert local(definitions, context, "org-rollout") == {:ok, in_rollout}
+        assert local(definitions, context, "org-tier") == {:unresolved, :missing_context}
+
+        context = Map.put(context, :group_properties, %{organization: %{"tier" => "pro"}})
+        assert local(definitions, context, "org-tier") == {:ok, true}
+      end
+
+      assert LocalEvaluator.hash("org-rollout", "a") < 0.5
+      refute LocalEvaluator.hash("org-rollout", "acme") < 0.5
+    end
+
     test "flag dependencies evaluate with the same listing" do
       base = flag("base", [person_filter("is_not_set")])
 
@@ -822,6 +903,63 @@ defmodule PostHog.FeatureFlags.KnownAbsentPropertyKeysTest do
         refute Map.has_key?(sent, :person_property_keys_known_absent)
         refute Map.has_key?(sent, :group_property_keys_known_absent)
       end
+    end
+
+    test "an unusable group key resolves false without a /flags request or a crash" do
+      name = __MODULE__.UnusableGroupKey
+
+      start_instance(name, [
+        flag("org", [], %{"aggregation_group_type_index" => 0}),
+        flag("person-child", [flag_dependency("org")])
+      ])
+
+      owner = self()
+
+      stub(PostHog.API.Mock, :request, fn :stub_client, :post, "/flags", opts ->
+        send(owner, {:flags_body, opts[:json]})
+        {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end)
+
+      for group_key <- @unusable_group_keys, only_local <- [true, false] do
+        body = %{
+          distinct_id: "user",
+          groups: %{organization: group_key},
+          only_evaluate_locally: only_local
+        }
+
+        assert {:ok, snapshot} = FeatureFlags.evaluate_flags(name, body), inspect(group_key)
+        refute snapshot.flags["org"].enabled
+        refute snapshot.flags["person-child"].enabled
+        refute PostHog.FeatureFlags.Evaluations.enabled?(snapshot, "org")
+
+        assert {:ok, snapshot} =
+                 FeatureFlags.evaluate_flags(name, Map.put(body, :flag_keys, ["org"]))
+
+        refute snapshot.flags["org"].enabled
+
+        for key <- ["org", "person-child"] do
+          assert {:ok, %{enabled: false}} =
+                   FeatureFlags.get_feature_flag_result(name, key, body)
+
+          assert {:ok, false} = FeatureFlags.check(name, key, body)
+        end
+
+        FeatureFlags.set_in_context(name, snapshot)
+        PostHog.capture(name, "page_viewed", %{distinct_id: "user"})
+
+        refute_received {:flags_body, _sent}
+      end
+
+      events = PostHog.Test.all_captured(name)
+
+      assert Enum.any?(
+               events,
+               &(&1.event == "page_viewed" and &1.properties["$feature/org"] == false)
+             )
+
+      called = for %{event: "$feature_flag_called", properties: props} <- events, do: props
+      assert called != []
+      assert Enum.all?(called, &(&1[:"$feature_flag_response"] == false))
     end
 
     test "context bodies carry the listed keys" do

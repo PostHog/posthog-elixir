@@ -258,7 +258,9 @@ defmodule PostHog.FeatureFlags do
   body unchanged:
 
   - `:distinct_id` (required, unless found in context)
-  - `:groups`
+  - `:groups` - map of group type to group key. Local evaluation treats a key
+    that is not a non-empty string or a number as no key, so a flag aggregated
+    on that group type resolves `false` without a `/flags` call.
   - `:person_properties`
   - `:group_properties`
   - `:device_id` - alternate bucketing identifier for device-bucketed flags
