@@ -1,5 +1,11 @@
 # posthog
 
+## 2.23.6 — 2026-11-25
+
+### Patch changes
+
+- [38cee4d](https://github.com/posthog/posthog-elixir/commit/38cee4de9a7ac97f47f3820b24519a6d45b95264) `PostHog.Sender` no longer crashes with a `FunctionClauseError` when a linked process exits. It ignores normal exits and stops cleanly on abnormal ones, still flushing queued events. — Thanks @marandaneto!
+
 ## 2.23.5 — 2026-11-24
 
 ### Patch changes
