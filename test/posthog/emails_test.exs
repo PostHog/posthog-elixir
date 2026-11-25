@@ -1930,7 +1930,10 @@ defmodule PostHog.EmailsTest do
       name: name,
       clock: clock
     } do
-      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+      test_pid = self()
+
+      expect(API.Mock, :request, fn _client, method, url, opts ->
+        send(test_pid, {:request, method, url, opts})
         Agent.update(clock, &DateTime.add(&1, 25, :hour))
         refused(503, %{"code" => "service_unavailable"})
       end)
@@ -1938,7 +1941,8 @@ defmodule PostHog.EmailsTest do
       assert {:error, %Error{status_code: 503}} =
                Emails.send(name, to: "user@example.com", template_id: @template_id)
 
-      refute_received {:slept, _ms}
+      assert_received {:request, :post, _url, _opts}
+      refute_received {:request, _method, _url, _opts}
     end
 
     test "a per-send max_retries of 0 makes one attempt", %{name: name} do
