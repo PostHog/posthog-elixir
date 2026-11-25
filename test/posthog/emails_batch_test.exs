@@ -643,6 +643,17 @@ defmodule PostHog.EmailsBatchTest do
       end
     end
 
+    test "a recipient answered api_error without a detail may still go out", %{name: name} do
+      slot = %{"message_id" => "m0", "error" => %{"code" => "api_error", "status" => 500}}
+      answers([ok([slot])])
+
+      assert {:ok, %Emails.BatchResult{results: [result]}} = batch(name, recipients(1))
+
+      assert result.status == "unconfirmed"
+      assert result.error.message =~ "may still go out"
+      refute result.error.message =~ "didn't queue"
+    end
+
     test "a recipient answered without a readable result is unconfirmed", %{name: name} do
       answers([ok(["not a result"])])
 

@@ -427,7 +427,7 @@ defmodule PostHog.Emails.Batch do
     code = Emails.text(error["code"]) || "api_error"
     status = if is_integer(error["status"]), do: error["status"]
 
-    Error.new(code, Emails.text(error["detail"]) || "PostHog didn't queue this email: #{code}.",
+    Error.new(code, Emails.text(error["detail"]) || slot_message(code),
       status_code: status,
       message_id: message_id
     )
@@ -440,6 +440,11 @@ defmodule PostHog.Emails.Batch do
       message_id: message_id
     )
   end
+
+  defp slot_message(code) when code in @unconfirmed_codes,
+    do: "PostHog couldn't confirm this email (#{code}), so it may still go out."
+
+  defp slot_message(code), do: "PostHog didn't queue this email: #{code}."
 
   defp refused_after_loss(error) do
     then_fix = if error.fix, do: " If PostHog refuses it again: #{error.fix}", else: ""
