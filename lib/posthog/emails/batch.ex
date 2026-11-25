@@ -350,9 +350,9 @@ defmodule PostHog.Emails.Batch do
   defp request_fields(fields, status, run) do
     fields = Map.reject(fields, fn {_key, value} -> is_nil(value) or value == "" end)
 
-    if status == 404 and Map.get(fields, "code", "not_found") in ["not_found", "api_error"] and
-         not is_map_key(fields, "attr"),
-       do: fields |> Map.delete("why") |> Map.merge(not_found(run.template?)),
+    if status == 404 and Emails.text(fields["code"]) in [nil, "not_found", "api_error"] and
+         Emails.text(fields["attr"]) == nil,
+       do: fields |> Map.delete("why") |> Map.merge(not_found(run.template?, run.lost?)),
        else: known_fields(fields, status, map_size(run.members))
   end
 
@@ -374,25 +374,26 @@ defmodule PostHog.Emails.Batch do
     end
   end
 
-  defp not_found(true) do
+  defp not_found(template?, lost?) do
+    {cause, fix} =
+      if template?,
+        do:
+          {"PostHog found no template with this template_id, or batch sends aren't available for this project",
+           "Check template_id. If it is right, send each recipient on its own"},
+        else:
+          {"Batch sends, or sending email from code, aren't available for this project",
+           "If the project can send email from code, send each recipient on its own"}
+
     %{
       "code" => "not_found",
-      "detail" =>
-        "PostHog found no template with this template_id, or batch sends aren't available for this project, so it sent no email of this request.",
+      "detail" => if(lost?, do: "#{cause}.", else: not_sent(cause, template?)),
       "fix" =>
-        "Check template_id. If it is right, send each recipient on its own with PostHog.Emails.send/2 and its idempotency_key until batch sends are available."
+        "#{fix} with PostHog.Emails.send/2 and its idempotency_key until batch sends are available."
     }
   end
 
-  defp not_found(false) do
-    %{
-      "code" => "not_found",
-      "detail" =>
-        "Batch sends from code aren't available for this project, so PostHog sent no email of this request.",
-      "fix" =>
-        "Send each recipient on its own with PostHog.Emails.send/2 and its idempotency_key until batch sends are available."
-    }
-  end
+  defp not_sent(cause, true), do: "#{cause}, so it sent no email of this request."
+  defp not_sent(cause, false), do: "#{cause}, so PostHog sent no email of this request."
 
   defp defaults(413, 1) do
     %{

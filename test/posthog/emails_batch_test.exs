@@ -765,7 +765,7 @@ defmodule PostHog.EmailsBatchTest do
                    "PostHog didn't confirm an earlier try, so the email may still go out."
 
           refute message =~ "was lost"
-          refute message =~ "no email was sent"
+          refute message =~ ~r/no email was sent|sent no email/
         end
 
         if code != "idempotency_key_in_flight", do: assert(error.fix == first.error.fix)
@@ -859,8 +859,8 @@ defmodule PostHog.EmailsBatchTest do
            "PostHog found no template with this template_id, or batch sends aren't available for this project, so it sent no email of this request.",
            "Check template_id. If it is right, send each recipient on its own with PostHog.Emails.send/2 and its idempotency_key until batch sends are available."},
           {"template_key", [template_id: nil, template_key: "k", subject: "s", html: "h"],
-           "Batch sends from code aren't available for this project, so PostHog sent no email of this request.",
-           "Send each recipient on its own with PostHog.Emails.send/2 and its idempotency_key until batch sends are available."}
+           "Batch sends, or sending email from code, aren't available for this project, so PostHog sent no email of this request.",
+           "If the project can send email from code, send each recipient on its own with PostHog.Emails.send/2 and its idempotency_key until batch sends are available."}
         ],
         body <- [
           nil,
@@ -870,7 +870,9 @@ defmodule PostHog.EmailsBatchTest do
             "code" => "not_found",
             "detail" => "Endpoint not found."
           },
-          %{"code" => "api_error", "attr" => nil}
+          %{"code" => "api_error", "attr" => nil},
+          %{"code" => 7},
+          %{"code" => "not_found", "attr" => []}
         ] do
       test "a 404 #{inspect(body)} with #{form_label} names the likely cause", %{name: name} do
         answers([{:ok, %{status: 404, headers: %{}, body: unquote(Macro.escape(body))}}])
