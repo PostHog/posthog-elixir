@@ -510,6 +510,9 @@ defmodule PostHog.EmailsTest do
         if context[:clock_follows_sleep],
           do: Agent.update(clock, &DateTime.add(&1, ms, :millisecond))
 
+        if context[:host_suspended_ms],
+          do: Agent.update(clock, &DateTime.add(&1, context[:host_suspended_ms], :millisecond))
+
         if context[:stop_instance_on_sleep], do: stop_supervised!(context.test)
       end)
       |> Map.put(
@@ -1937,6 +1940,17 @@ defmodule PostHog.EmailsTest do
         Agent.update(clock, &DateTime.add(&1, 25, :hour))
         refused(503, %{"code" => "service_unavailable"})
       end)
+
+      assert {:error, %Error{status_code: 503}} =
+               Emails.send(name, to: "user@example.com", template_id: @template_id)
+
+      assert_received {:request, :post, _url, _opts}
+      refute_received {:request, _method, _url, _opts}
+    end
+
+    @tag host_suspended_ms: 25 * 3_600_000
+    test "sends no retry after a host suspension during the wait", %{name: name} do
+      expect_reply(refused(503, %{"code" => "service_unavailable"}))
 
       assert {:error, %Error{status_code: 503}} =
                Emails.send(name, to: "user@example.com", template_id: @template_id)
