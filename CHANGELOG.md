@@ -1,17 +1,5 @@
 # posthog
 
-## 2.23.6 — 2026-11-25
-
-### Patch changes
-
-- [38cee4d](https://github.com/posthog/posthog-elixir/commit/38cee4de9a7ac97f47f3820b24519a6d45b95264) `PostHog.Sender` no longer crashes with a `FunctionClauseError` when a linked process exits. It ignores normal exits and stops cleanly on abnormal ones, still flushing queued events. — Thanks @marandaneto!
-
-## 2.23.5 — 2026-11-24
-
-### Patch changes
-
-- [01e8cb1](https://github.com/posthog/posthog-elixir/commit/01e8cb1e0769f2f0931bccd2b269a0e21252f6c1) LLM analytics events captured by the Req integration now include `$ai_cache_read_input_tokens` and `$ai_cache_creation_input_tokens` for Anthropic and OpenAI-compatible Chat Completions and Responses APIs (along with `$ai_cache_reporting_exclusive: false` for inclusive OpenAI-shaped responses, when input tokens include the cache tokens), so cached input tokens are priced correctly. — Thanks @pcbeingused333!
-
 ## 2.23.4 — 2026-11-20
 
 ### Patch changes
