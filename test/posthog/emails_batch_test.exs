@@ -854,21 +854,43 @@ defmodule PostHog.EmailsBatchTest do
       assert statuses(results) == ["failed", "failed"]
     end
 
-    for body <- [
+    for {form_label, form, message, fix} <- [
+          {"template_id", [],
+           "PostHog found no template with this template_id, or batch sends aren't available for this project, so it sent no email of this request.",
+           "Check template_id. If it is right, send each recipient on its own with PostHog.Emails.send/2 and its idempotency_key until batch sends are available."},
+          {"template_key", [template_id: nil, template_key: "k", subject: "s", html: "h"],
+           "Batch sends from code aren't available for this project, so PostHog sent no email of this request.",
+           "Send each recipient on its own with PostHog.Emails.send/2 and its idempotency_key until batch sends are available."}
+        ],
+        body <- [
           nil,
-          %{"type" => "invalid_request", "code" => "not_found", "detail" => "Not found."}
+          %{"type" => "invalid_request", "code" => "not_found", "detail" => "Not found."},
+          %{
+            "type" => "invalid_request",
+            "code" => "not_found",
+            "detail" => "Endpoint not found."
+          },
+          %{"code" => "api_error", "attr" => nil}
         ] do
-      test "a 404 says batch sends are unavailable, answered #{inspect(body)}", %{name: name} do
+      test "a 404 #{inspect(body)} with #{form_label} names the likely cause", %{name: name} do
         answers([{:ok, %{status: 404, headers: %{}, body: unquote(Macro.escape(body))}}])
 
-        assert {:error, %BatchError{code: "not_found", name: :not_found} = error} =
-                 batch(name, recipients(1))
+        assert {:error, %BatchError{code: "not_found", status_code: 404} = error} =
+                 batch(name, recipients(2), unquote(form))
 
-        assert error.why =~ "batch sends"
-
-        assert error.fix ==
-                 "Check template_id, or send each email the batch didn't queue with PostHog.Emails.send/2 and its recipient's idempotency_key."
+        assert {error.message, error.fix} == {unquote(message), unquote(fix)}
+        refute inspect(error) =~ ~r/server|version|update/i
+        assert statuses(error.results) == ["failed", "failed"]
+        assert length(requested()) == 1
       end
+    end
+
+    test "a 404 that names a field keeps PostHog's words", %{name: name} do
+      body = %{"code" => "not_found", "attr" => "template_id", "detail" => "No such template."}
+      answers([{:ok, %{status: 404, headers: %{}, body: body}}])
+
+      assert {:error, %BatchError{code: "not_found", message: "No such template."}} =
+               batch(name, recipients(1))
     end
 
     test "names the recipient field PostHog refused", %{name: name} do

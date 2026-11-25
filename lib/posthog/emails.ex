@@ -137,8 +137,9 @@ defmodule PostHog.Emails do
   `content_too_large` in two cases. A 413 means the request is too large: split the recipients
   into smaller batches, or make the email smaller when the batch has one recipient. A 400 means the content or `:template_data` shared by every recipient is
   too large, which splitting doesn't help: send those emails one at a time with `send/2`. The code `batch_unavailable` (409) means the project can't send batches yet,
-  and a 404 that the template doesn't exist or batch sends are off for the project: send each
-  email the batch didn't queue with `send/2` and its recipient's `:idempotency_key`. A batch takes
+  and a 404 that names no field that the template ID is wrong or batch sends aren't available for
+  the project: send each email the batch didn't queue with `send/2` and its recipient's
+  `:idempotency_key`. A batch takes
   no `:cc`, `:bcc`, `:attachments` or `:scheduled_at`.
 
       {:ok, %PostHog.Emails.BatchResult{results: results}} =

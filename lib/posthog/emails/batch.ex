@@ -44,7 +44,7 @@ defmodule PostHog.Emails.Batch do
          {:ok, shared} <- Emails.content(Map.drop(options, [:recipients, :max_retries])),
          {:ok, shared} <- Emails.encode(shared, options),
          {:ok, members} <- members(recipients, options) do
-      {:ok, run(members, shared, max_retries)}
+      {:ok, run(members, shared, max_retries, is_map_key(options, :template_id))}
     end
   end
 
@@ -234,7 +234,7 @@ defmodule PostHog.Emails.Batch do
 
   defp invalid(code, message, field), do: {:error, Error.new(code, message, field: field)}
 
-  defp run(members, shared, max_retries) do
+  defp run(members, shared, max_retries, template?) do
     head = binary_part(shared, 0, byte_size(shared) - 1) <> ~s(,"recipients":[)
 
     %{
@@ -243,6 +243,7 @@ defmodule PostHog.Emails.Batch do
       results: %{},
       warnings: [],
       max_retries: max_retries,
+      template?: template?,
       lost?: false
     }
   end
@@ -323,10 +324,8 @@ defmodule PostHog.Emails.Batch do
   end
 
   defp answer(run, _attempt, {:ok, status, fields, retry_after_ms}) do
-    {:error, error} =
-      Emails.reply_error(
-        {:ok, status, request_fields(fields, status, map_size(run.members)), retry_after_ms}
-      )
+    fields = request_fields(fields, status, run)
+    {:error, error} = Emails.reply_error({:ok, status, fields, retry_after_ms})
 
     cond do
       uncertain?(status, Emails.text(fields["code"])) ->
@@ -348,9 +347,16 @@ defmodule PostHog.Emails.Batch do
   defp uncertain?(429, _code), do: false
   defp uncertain?(_status, code), do: code in @unconfirmed_codes
 
-  defp request_fields(fields, status, recipients) do
+  defp request_fields(fields, status, run) do
     fields = Map.reject(fields, fn {_key, value} -> is_nil(value) or value == "" end)
 
+    if status == 404 and Map.get(fields, "code", "not_found") in ["not_found", "api_error"] and
+         not is_map_key(fields, "attr"),
+       do: fields |> Map.delete("why") |> Map.merge(not_found(run.template?)),
+       else: known_fields(fields, status, map_size(run.members))
+  end
+
+  defp known_fields(fields, status, recipients) do
     fields =
       Map.merge(defaults(status, recipients), fields, fn _key, default, value ->
         if is_binary(value), do: value, else: default
@@ -368,13 +374,23 @@ defmodule PostHog.Emails.Batch do
     end
   end
 
-  defp defaults(404, _recipients) do
+  defp not_found(true) do
     %{
       "code" => "not_found",
-      "detail" => "PostHog found no batch send for this request.",
-      "why" =>
-        "The template doesn't exist, or batch sends are off for this project or this PostHog version.",
-      "fix" => "Check template_id, or #{@send_each}"
+      "detail" =>
+        "PostHog found no template with this template_id, or batch sends aren't available for this project, so it sent no email of this request.",
+      "fix" =>
+        "Check template_id. If it is right, send each recipient on its own with PostHog.Emails.send/2 and its idempotency_key until batch sends are available."
+    }
+  end
+
+  defp not_found(false) do
+    %{
+      "code" => "not_found",
+      "detail" =>
+        "Batch sends from code aren't available for this project, so PostHog sent no email of this request.",
+      "fix" =>
+        "Send each recipient on its own with PostHog.Emails.send/2 and its idempotency_key until batch sends are available."
     }
   end
 
