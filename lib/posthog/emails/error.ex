@@ -86,7 +86,7 @@ defmodule PostHog.Emails.Error do
   defp name(nil, "invalid_" <> _), do: :validation_error
 
   defp name(nil, code)
-       when code in ["too_many_attachments", "message_too_large", "scheduling_requires_cloud"],
+       when code in ["too_many_attachments", "message_too_large"],
        do: :validation_error
 
   defp name(nil, _code), do: :application_error
