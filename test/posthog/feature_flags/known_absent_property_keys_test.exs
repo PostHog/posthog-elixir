@@ -94,6 +94,9 @@ defmodule PostHog.FeatureFlags.KnownAbsentPropertyKeysTest do
     {"is_date_after", "not-a-date", false}
   ]
 
+  # Operators that read the condition value, so a listed key needs one to resolve.
+  @value_operators ["exact", "is_not", "icontains", "gt", "is_date_before"]
+
   # A usable group key is a non-empty string or a number, as in the flags service.
   @unusable_group_keys ["", nil, true, false, [], ["acme"], %{}, %{"id" => "acme"}]
 
@@ -311,6 +314,54 @@ defmodule PostHog.FeatureFlags.KnownAbsentPropertyKeysTest do
 
         assert local(definitions, context, "f") == {:unresolved, :unsupported_definition},
                inspect(filter)
+      end
+    end
+
+    test "an omitted or null condition value on a listed and supplied key stays inconclusive" do
+      for operator <- @value_operators,
+          filter <- [person_filter(operator), Map.put(person_filter(operator), "value", nil)],
+          context <- [
+            %{person_property_keys_known_absent: ["plan"]},
+            %{person_properties: %{"plan" => "pro"}, person_property_keys_known_absent: ["plan"]},
+            %{
+              person_properties: %{plan: "2020-01-01"},
+              person_property_keys_known_absent: [:plan]
+            }
+          ] do
+        definitions = snapshot([flag("f", [filter])])
+
+        assert local(definitions, context, "f") == {:unresolved, :unsupported_definition},
+               inspect({filter, context})
+      end
+    end
+
+    test "is_set and is_not_set without a condition value on a listed and supplied key resolve" do
+      for {operator, expected} <- [{"is_not_set", true}, {"is_set", false}],
+          filter <- [person_filter(operator), Map.put(person_filter(operator), "value", nil)],
+          context <- [
+            %{person_property_keys_known_absent: ["plan"]},
+            %{person_properties: %{"plan" => "pro"}, person_property_keys_known_absent: ["plan"]}
+          ] do
+        definitions = snapshot([flag("f", [filter])])
+
+        assert local(definitions, context, "f") == {:ok, expected}, inspect({filter, context})
+      end
+    end
+
+    test "an omitted or null condition value on a supplied key that is not listed keeps its result" do
+      context = %{person_properties: %{"plan" => "pro"}}
+
+      for {operator, expected} <- [
+            {"exact", {:ok, false}},
+            {"is_not", {:ok, true}},
+            {"icontains", {:ok, true}},
+            {"gt", {:unresolved, :unsupported_definition}},
+            {"is_date_before", {:unresolved, :unsupported_definition}}
+          ],
+          filter <- [person_filter(operator), Map.put(person_filter(operator), "value", nil)] do
+        definitions = snapshot([flag("f", [filter])])
+
+        assert local(definitions, context, "f") == expected, inspect(filter)
       end
     end
 
@@ -828,6 +879,11 @@ defmodule PostHog.FeatureFlags.KnownAbsentPropertyKeysTest do
       start_supervised!({PostHog.Supervisor, config})
     end
 
+    defp null_value_filters(operator) do
+      omitted = person_filter(operator)
+      [{"omitted", omitted}, {"null", Map.put(omitted, "value", nil)}]
+    end
+
     defp expect_flags_request(owner) do
       expect(PostHog.API.Mock, :request, fn :stub_client, :post, "/flags", opts ->
         send(owner, {:flags_body, opts[:json]})
@@ -936,6 +992,38 @@ defmodule PostHog.FeatureFlags.KnownAbsentPropertyKeysTest do
 
         assert {:ok, %{enabled: false}} =
                  FeatureFlags.get_feature_flag_result(name, key, body, send_event: false)
+
+        assert_received {:flags_body, %{person_property_keys_known_absent: ["plan"]}}, key
+      end
+    end
+
+    test "an omitted or null condition value on a listed and supplied key falls back to /flags" do
+      name = __MODULE__.NullValueSuppliedFallback
+
+      flags =
+        for operator <- @value_operators, {suffix, filter} <- null_value_filters(operator) do
+          flag("#{operator}-#{suffix}", [filter])
+        end
+
+      start_instance(name, flags)
+
+      body = %{
+        distinct_id: "user",
+        person_properties: %{"plan" => "pro"},
+        person_property_keys_known_absent: ["plan"]
+      }
+
+      owner = self()
+
+      for %{"key" => key} <- flags do
+        expect(PostHog.API.Mock, :request, fn :stub_client, :post, "/flags", opts ->
+          send(owner, {:flags_body, opts[:json]})
+          {:ok, %{status: 200, body: %{"flags" => %{key => %{"enabled" => false}}}}}
+        end)
+
+        assert {:ok, %{enabled: false, locally_evaluated: false}} =
+                 FeatureFlags.get_feature_flag_result(name, key, body, send_event: false),
+               key
 
         assert_received {:flags_body, %{person_property_keys_known_absent: ["plan"]}}, key
       end
