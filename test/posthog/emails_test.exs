@@ -2423,7 +2423,7 @@ defmodule PostHog.EmailsTest do
                   %Error{
                     code: "scheduling_requires_cloud",
                     field: "scheduled_at",
-                    name: :validation_error
+                    name: :application_error
                   } = error} = Emails.send(name, form ++ [scheduled_at: "2026-12-01T09:00:00Z"])
 
           assert error.message =~ host
