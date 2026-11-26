@@ -347,13 +347,15 @@ defmodule PostHog.Emails.Batch do
   defp uncertain?(_status, code), do: code in @unconfirmed_codes
 
   defp request_fields(fields, status, run) do
-    fields = Map.reject(fields, fn {_key, value} -> is_nil(value) or value == "" end)
+    fields = Map.reject(fields, fn {_key, value} -> blank?(value) end)
 
     if status == 404 and Emails.text(fields["code"]) in [nil, "not_found", "api_error"] and
          Emails.text(fields["attr"]) == nil,
        do: fields |> Map.delete("why") |> Map.merge(not_found(run.template?)),
        else: known_fields(fields, status, map_size(run.members))
   end
+
+  defp blank?(value), do: is_nil(value) or (is_binary(value) and String.trim(value) == "")
 
   defp known_fields(fields, status, recipients) do
     fields =
@@ -430,7 +432,9 @@ defmodule PostHog.Emails.Batch do
   end
 
   defp slot_error(%{} = error, message_id) do
-    code = Emails.text(error["code"]) || "api_error"
+    code =
+      if blank?(error["code"]), do: "api_error", else: Emails.text(error["code"]) || "api_error"
+
     status = if is_integer(error["status"]), do: error["status"]
 
     Error.new(code, Emails.text(error["detail"]) || slot_message(code),

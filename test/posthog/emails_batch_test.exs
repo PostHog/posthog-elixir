@@ -467,6 +467,10 @@ defmodule PostHog.EmailsBatchTest do
           {"with a code and fix that aren't text", %{"code" => 13, "fix" => false},
            "Split the recipients into smaller batches, and keep each email and its idempotency_key unchanged."},
           {"with an empty code and fix", %{"code" => "", "fix" => ""},
+           "Split the recipients into smaller batches, and keep each email and its idempotency_key unchanged."},
+          {"with a blank code", %{"code" => " "},
+           "Split the recipients into smaller batches, and keep each email and its idempotency_key unchanged."},
+          {"whose body isn't JSON", "<html>413 Request Entity Too Large</html>",
            "Split the recipients into smaller batches, and keep each email and its idempotency_key unchanged."}
         ] do
       test "a 413 #{label} comes back as the error, with a fix to split the batch", %{name: name} do
@@ -647,6 +651,23 @@ defmodule PostHog.EmailsBatchTest do
 
         assert {result.status, result.message_id} == {"unconfirmed", "m0"}
         assert %Error{code: unquote(code), status_code: unquote(status)} = result.error
+      end
+    end
+
+    for {label, error} <- [
+          {"no code", %{"status" => 400, "detail" => "The recipient can't be sent to."}},
+          {"a null code", %{"code" => nil, "status" => 422, "detail" => "Unprocessable."}},
+          {"an empty code", %{"code" => "", "status" => 503}},
+          {"a blank code", %{"code" => " ", "status" => 400, "detail" => "Not queued."}}
+        ] do
+      test "a recipient error with #{label} is unconfirmed with its key", %{name: name} do
+        slot = %{"status" => "error", "error" => unquote(Macro.escape(error))}
+        answers([ok([queued("m0"), slot])])
+
+        assert {:ok, %Emails.BatchResult{results: [_first, result]}} = batch(name, recipients(2))
+
+        assert {result.status, result.idempotency_key} == {"unconfirmed", "key-1"}
+        assert_resend_with_same_key([result])
       end
     end
 
