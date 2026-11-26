@@ -179,6 +179,23 @@ defmodule PostHog.FeatureFlags.KnownAbsentPropertyKeysTest do
              ) == {:ok, true}
     end
 
+    test "person keys apply to person filters with an omitted, nil or empty type" do
+      for filter <- [
+            %{"key" => "plan", "operator" => "is_not_set"},
+            %{"key" => "plan", "type" => nil, "operator" => "is_not_set"},
+            %{"key" => "plan", "type" => "", "operator" => "is_not_set"}
+          ] do
+        definitions = snapshot([flag("f", [filter])])
+
+        context = %{
+          person_properties: %{"plan" => "pro"},
+          person_property_keys_known_absent: ["plan"]
+        }
+
+        assert local(definitions, context, "f") == {:ok, true}, inspect(filter)
+      end
+    end
+
     test "an omitted key that is not listed stays inconclusive" do
       definitions = snapshot([flag("f", [person_filter("is_not_set")])])
 

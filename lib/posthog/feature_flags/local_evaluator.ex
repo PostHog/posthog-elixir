@@ -1021,11 +1021,11 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
     _exception -> {:inconclusive, property_reason(property, now, cohort?)}
   end
 
-  # Person keys apply only to person filters (an untyped filter is a person filter) and group
+  # Person keys apply only to person filters (an omitted, nil or "" type is a person filter) and group
   # keys only to group filters of their own group type. Other types, such as person_metadata,
   # never resolve from a listing.
   defp known_absent_scope?(property, :person, _definitions),
-    do: value(property, "type") in ["person", nil]
+    do: value(property, "type") in ["person", nil, ""]
 
   # A group filter is matched against the properties of the group being evaluated, so one
   # without a group_type_index belongs to that group type.
