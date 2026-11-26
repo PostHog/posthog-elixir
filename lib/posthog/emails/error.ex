@@ -1,6 +1,7 @@
 defmodule PostHog.Emails.Error do
   @moduledoc """
-  PostHog did not queue the email or return its status, or the SDK could not tell whether it did.
+  PostHog did not queue the email or return its status, the SDK could not tell whether it did, or
+  PostHog took a scheduled email without confirming its time.
 
   Branch on `:code`, PostHog's stable error code, or on `:name`, a coarse category of the
   failure. The message never contains the secret key or the request body.
@@ -13,8 +14,10 @@ defmodule PostHog.Emails.Error do
     `"client_closed"`, `"network_error"`, `"api_error"` (an answer without a code),
     `"unexpected_error"`, `"too_many_attachments"` or `"message_too_large"` for files that
     make the email too large, which the SDK checks before any request and PostHog checks again,
-    `"attachment_upload_failed"` when the storage refused an upload, or an `"invalid_*"` code
-    for an option the SDK refused before any request.
+    `"attachment_upload_failed"` when the storage refused an upload, `"scheduling_requires_cloud"`
+    for a send with `:scheduled_at` to a host that is not PostHog Cloud, `"schedule_not_confirmed"`
+    when PostHog accepted a send with `:scheduled_at` without confirming its time, or an
+    `"invalid_*"` code for an option the SDK refused before any request.
   - `:message` - human-readable message.
   - `:status_code` - the HTTP status, when PostHog answered, or the storage's for
     `"attachment_upload_failed"`.
@@ -23,6 +26,8 @@ defmodule PostHog.Emails.Error do
   - `:field` - the option the error is about, such as `"to"`.
   - `:retry_after_ms` - how long PostHog, or the storage, asked the client to wait before it
     sends again.
+  - `:message_id` - the message ID of an email PostHog accepted, when the error is about that
+    email, as for `"schedule_not_confirmed"`.
   """
 
   @typedoc "A coarse category of the failure."
@@ -48,7 +53,8 @@ defmodule PostHog.Emails.Error do
           fix: String.t() | nil,
           docs_url: String.t() | nil,
           field: String.t() | nil,
-          retry_after_ms: non_neg_integer() | nil
+          retry_after_ms: non_neg_integer() | nil,
+          message_id: String.t() | nil
         }
 
   defexception [
@@ -60,7 +66,8 @@ defmodule PostHog.Emails.Error do
     :fix,
     :docs_url,
     :field,
-    :retry_after_ms
+    :retry_after_ms,
+    :message_id
   ]
 
   @doc false
@@ -77,8 +84,9 @@ defmodule PostHog.Emails.Error do
   defp name(nil, "network_error"), do: :service_unavailable
   defp name(nil, "invalid_" <> _), do: :validation_error
 
-  defp name(nil, code) when code in ["too_many_attachments", "message_too_large"],
-    do: :validation_error
+  defp name(nil, code)
+       when code in ["too_many_attachments", "message_too_large"],
+       do: :validation_error
 
   defp name(nil, _code), do: :application_error
   defp name(400, _code), do: :validation_error

@@ -118,6 +118,9 @@ defmodule PostHog.EmailsTest.FakePostHog do
   """
   def fail_next(fake, route, reply), do: script(fake, route, {:reply, reply})
 
+  @doc "Adds `fields` to the send route's answer when it accepts its next email."
+  def confirm_next(fake, fields), do: script(fake, :send, {:confirm, fields})
+
   @doc "Makes the route take `ms` longer to answer its next request."
   def delay_next(fake, route, ms), do: script(fake, route, {:delay, ms})
 
@@ -205,13 +208,16 @@ defmodule PostHog.EmailsTest.FakePostHog do
       {{:reply, {status, reply}}, _test} ->
         json(conn, status, reply)
 
+      {{:confirm, fields}, _test} ->
+        answer(conn, route, request, fake, fields)
+
       {step, test} ->
         run_step(step, route, test)
-        answer(conn, route, request, fake)
+        answer(conn, route, request, fake, %{})
     end
   end
 
-  defp answer(conn, route, request, fake) do
+  defp answer(conn, route, request, fake, answer) do
     cond do
       Plug.Conn.get_req_header(conn, "authorization") != ["Bearer #{@secret_key}"] ->
         json(conn, 401, refusal("authentication_failed", "Invalid secret API key.", nil))
@@ -220,7 +226,7 @@ defmodule PostHog.EmailsTest.FakePostHog do
         sign_uploads(conn, request, fake)
 
       true ->
-        accept(conn, request, fake)
+        accept(conn, request, fake, answer)
     end
   end
 
@@ -248,7 +254,7 @@ defmodule PostHog.EmailsTest.FakePostHog do
     end
   end
 
-  defp accept(conn, email, fake) do
+  defp accept(conn, email, fake, answer) do
     files = files(fake)
 
     missing =
@@ -275,7 +281,7 @@ defmodule PostHog.EmailsTest.FakePostHog do
           "attr" => nil
         })
       else
-        json(conn, 202, %{"message_id" => record_message(fake, email)})
+        json(conn, 202, Map.put(answer, "message_id", record_message(fake, email)))
       end
     end
   end
@@ -439,6 +445,22 @@ defmodule PostHog.EmailsTest.FakePostHog do
   defp checksum(sha256), do: sha256 |> Base.decode16!(case: :lower) |> Base.encode64()
 end
 
+defmodule PostHog.EmailsTest.ShiftedCalendar do
+  @moduledoc false
+
+  def naive_datetime_to_iso_days(year, month, day, hour, minute, second, microsecond) do
+    Calendar.ISO.naive_datetime_to_iso_days(
+      year + 2026,
+      month,
+      day,
+      hour,
+      minute,
+      second,
+      microsecond
+    )
+  end
+end
+
 defmodule PostHog.EmailsTest do
   use ExUnit.Case, async: true
 
@@ -460,6 +482,13 @@ defmodule PostHog.EmailsTest do
     Mox.stub_with(API.Mock, API.Stub)
     test_pid = self()
 
+    stub(API.Mock, :request, fn client, method, url, opts ->
+      send(test_pid, {:request, method, url, opts})
+      API.Stub.request(client, method, url, opts)
+    end)
+
+    clock = start_supervised!({Agent, fn -> context[:now] || ~U[2026-11-24 12:00:00.000000Z] end})
+
     config =
       [
         api_host: "https://us.i.posthog.com",
@@ -471,8 +500,13 @@ defmodule PostHog.EmailsTest do
       ]
       |> Keyword.merge(context[:config] || [])
       |> PostHog.Config.validate!()
+      |> Map.put(:email_now, fn -> Agent.get(clock, & &1) end)
       |> Map.put(:email_sleep, fn ms ->
         send(test_pid, {:slept, ms})
+
+        if context[:clock_follows_sleep],
+          do: Agent.update(clock, &DateTime.add(&1, ms, :millisecond))
+
         if context[:stop_instance_on_sleep], do: stop_supervised!(context.test)
       end)
       |> Map.put(
@@ -481,7 +515,7 @@ defmodule PostHog.EmailsTest do
       )
 
     start_link_supervised!({PostHog.Supervisor, config})
-    %{name: context.test}
+    %{name: context.test, clock: clock}
   end
 
   defp expect_reply(times \\ 1, reply) do
@@ -509,6 +543,15 @@ defmodule PostHog.EmailsTest do
   end
 
   defp refute_requested, do: refute_received({:request, _, _, _})
+
+  defp record_any_further_request do
+    test_pid = self()
+
+    stub(API.Mock, :request, fn _client, method, url, opts ->
+      send(test_pid, {:request, method, url, opts})
+      accepted()
+    end)
+  end
 
   describe "send/2 with a template made in PostHog" do
     test "posts the flat template body to the app host", %{name: name} do
@@ -913,6 +956,30 @@ defmodule PostHog.EmailsTest do
                },
                %{"sha256" => sha256(@logo), "filename" => "logo.png", "content_id" => "logo"}
              ]
+    end
+
+    test "uploads the files, then schedules the email that names them", %{name: name, fake: fake} do
+      FakePostHog.confirm_next(fake, %{
+        "status" => "scheduled",
+        "scheduled_at" => "2026-12-01T09:00:00.000Z"
+      })
+
+      assert {:ok,
+              %Emails.SendResult{
+                id: id,
+                status: "scheduled",
+                scheduled_at: ~U[2026-12-01 09:00:00.000Z]
+              }} =
+               Emails.send(
+                 name,
+                 with_files([%{filename: "invoice.pdf", content: @pdf}]) ++
+                   [scheduled_at: "2026-12-01T09:00:00Z"]
+               )
+
+      assert [{^id, email}] = FakePostHog.messages(fake)
+      assert email["scheduled_at"] == "2026-12-01T09:00:00.000Z"
+      assert [%{"sha256" => sha256}] = email["attachments"]
+      assert FakePostHog.files(fake)[sha256] == @pdf
     end
 
     # The storage refuses a second credential, such as the client's authorization.
@@ -2115,6 +2182,536 @@ defmodule PostHog.EmailsTest do
     end
   end
 
+  describe "send/2 with scheduled_at" do
+    @template_send [to: "user@example.com", template_id: @template_id]
+    @code_form [to: "user@example.com", template_key: "receipt", subject: "Hi", html: "<p/>"]
+
+    defp scheduled(scheduled_at, extra \\ %{}),
+      do:
+        accepted(
+          Map.merge(
+            %{
+              "message_id" => @message_id,
+              "status" => "scheduled",
+              "scheduled_at" => scheduled_at
+            },
+            extra
+          )
+        )
+
+    test "sends a template at a time rounded up to the next millisecond", %{name: name} do
+      expect_reply(scheduled("2026-12-01T09:00:00.124Z"))
+
+      assert {:ok, %Emails.SendResult{} = result} =
+               Emails.send(
+                 name,
+                 @template_send ++ [scheduled_at: ~U[2026-12-01 09:00:00.123001Z]]
+               )
+
+      assert result.status == "scheduled"
+      assert result.scheduled_at == ~U[2026-12-01 09:00:00.124Z]
+      assert sent_body()["scheduled_at"] == "2026-12-01T09:00:00.124Z"
+    end
+
+    test "sends code content at a time given as a string with another offset", %{name: name} do
+      expect_reply(scheduled("2026-12-01T07:00:00.124Z"))
+
+      assert {:ok, %Emails.SendResult{status: "scheduled", scheduled_at: scheduled_at}} =
+               Emails.send(name, @code_form ++ [scheduled_at: "2026-12-01T09:00:00.1235+02:00"])
+
+      assert scheduled_at == ~U[2026-12-01 07:00:00.124Z]
+      assert sent_body()["scheduled_at"] == "2026-12-01T07:00:00.124Z"
+    end
+
+    for {given, sent} <- [
+          {"2026-12-01T09:00:00.1230000001Z", "2026-12-01T09:00:00.124Z"},
+          {"2026-12-01T09:00:00.123000000Z", "2026-12-01T09:00:00.123Z"},
+          {"2026-12-01T09:00:00Z", "2026-12-01T09:00:00.000Z"},
+          {"2026-11-25T09:00Z", "2026-11-25T09:00:00.000Z"},
+          {"2026-11-25T10:30+01:30", "2026-11-25T09:00:00.000Z"},
+          {"2026-11-25T09:00:00-00:00", "2026-11-25T09:00:00.000Z"}
+        ] do
+      test "sends #{given} as #{sent}", %{name: name} do
+        expect_reply(scheduled(unquote(sent)))
+
+        assert {:ok, %Emails.SendResult{status: "scheduled"}} =
+                 Emails.send(name, @template_send ++ [scheduled_at: unquote(given)])
+
+        assert sent_body()["scheduled_at"] == unquote(sent)
+      end
+    end
+
+    @tag now: ~U[2026-12-30 12:00:00.000000Z]
+    test "carries a rounded time into the next year", %{name: name} do
+      expect_reply(scheduled("2027-01-01T01:00:00.000Z"))
+
+      assert {:ok, %Emails.SendResult{status: "scheduled"}} =
+               Emails.send(
+                 name,
+                 @template_send ++ [scheduled_at: "2026-12-31T23:59:59.9999-01:00"]
+               )
+
+      assert sent_body()["scheduled_at"] == "2027-01-01T01:00:00.000Z"
+    end
+
+    for answer <- [
+          "2026-12-01T09:00:00.000Z",
+          "2026-12-01T09:00Z",
+          "2026-12-01T10:30+01:30",
+          "2026-12-01T04:00:00.000000-05:00",
+          "2026-12-01T09:00:00-00:00"
+        ] do
+      test "takes #{answer} as confirming 09:00 UTC", %{name: name} do
+        expect_reply(scheduled(unquote(answer)))
+
+        assert {:ok,
+                %Emails.SendResult{
+                  status: "scheduled",
+                  scheduled_at: ~U[2026-12-01 09:00:00.000Z]
+                }} =
+                 Emails.send(name, @template_send ++ [scheduled_at: "2026-12-01T09:00:00Z"])
+      end
+    end
+
+    test "takes a DateTime in a zone other than UTC", %{name: name} do
+      expect_reply(scheduled("2026-12-01T08:00:00.000Z"))
+
+      berlin = %DateTime{
+        year: 2026,
+        month: 12,
+        day: 1,
+        hour: 9,
+        minute: 0,
+        second: 0,
+        microsecond: {0, 0},
+        time_zone: "Europe/Berlin",
+        zone_abbr: "CET",
+        utc_offset: 3600,
+        std_offset: 0
+      }
+
+      assert {:ok, %Emails.SendResult{scheduled_at: ~U[2026-12-01 08:00:00.000Z]}} =
+               Emails.send(name, @template_send ++ [scheduled_at: berlin])
+
+      assert sent_body()["scheduled_at"] == "2026-12-01T08:00:00.000Z"
+    end
+
+    test "takes a DateTime from a calendar whose year 0 is 2026", %{name: name} do
+      expect_reply(scheduled("2026-12-01T09:00:00.000Z"))
+
+      shifted = %DateTime{
+        calendar: PostHog.EmailsTest.ShiftedCalendar,
+        year: 0,
+        month: 12,
+        day: 1,
+        hour: 9,
+        minute: 0,
+        second: 0,
+        microsecond: {0, 0},
+        time_zone: "Etc/UTC",
+        zone_abbr: "UTC",
+        utc_offset: 0,
+        std_offset: 0
+      }
+
+      assert {:ok, %Emails.SendResult{scheduled_at: ~U[2026-12-01 09:00:00.000Z]}} =
+               Emails.send(name, @template_send ++ [scheduled_at: shifted])
+
+      assert sent_body()["scheduled_at"] == "2026-12-01T09:00:00.000Z"
+    end
+
+    for {label, value} <- [
+          {"a NaiveDateTime", quote(do: ~N[2026-12-01 09:00:00])},
+          {"a string without an offset", "2026-12-01T09:00:00"},
+          {"a string that is not a time", "tomorrow"},
+          {"an offset with a malformed minute", "2026-12-01T09:00:00-05:-5"},
+          {"an offset past 59 minutes", "2026-12-01T09:00:00+01:60"},
+          {"the basic ISO 8601 form", "20261201T090000+0200"},
+          {"a space for the T", "2026-12-01 09:00:00Z"},
+          {"a lowercase z", "2026-12-01T09:00:00z"},
+          {"a Unix time", 1_796_115_600},
+          {"a Date", quote(do: ~D[2026-12-01])},
+          {"year zero, which PostHog refuses, also when its offset carries it into year one",
+           "0000-12-31T23:30:00-01:00"},
+          {"a DateTime in year zero", quote(do: %{~U[2026-12-01 09:00:00Z] | year: 0})},
+          {"a string whose offset carries it back into year zero", "0001-01-01T00:30:00+01:00"},
+          {"a string in year zero that rounding would carry into year one",
+           "0001-01-01T00:59:59.9999+01:00"},
+          {"a DateTime past the last time Unix time can hold",
+           quote(do: %{~U[2026-12-01 09:00:00Z] | year: 9_999_999})}
+        ] do
+      test "refuses #{label} before any request", %{name: name} do
+        for form <- [@template_send, @code_form] do
+          assert {:error,
+                  %Error{
+                    code: "invalid_scheduled_at",
+                    field: "scheduled_at",
+                    name: :validation_error
+                  } =
+                    error} = Emails.send(name, form ++ [scheduled_at: unquote(value)])
+
+          assert error.message =~ "offset"
+        end
+
+        refute_requested()
+      end
+    end
+
+    test "counts a nil scheduled_at as left out", %{name: name} do
+      expect_reply(accepted())
+
+      assert {:ok, %Emails.SendResult{status: "queued", scheduled_at: nil}} =
+               Emails.send(name, @template_send ++ [scheduled_at: nil])
+
+      refute Map.has_key?(sent_body(), "scheduled_at")
+    end
+
+    test "a send without scheduled_at reads as queued", %{name: name} do
+      expect_reply(accepted())
+
+      assert {:ok, %Emails.SendResult{status: "queued", scheduled_at: nil}} =
+               Emails.send(name, @template_send)
+    end
+
+    test "sends the same time on every retry", %{name: name} do
+      expect_reply(refused(503, %{"code" => "service_unavailable"}))
+      expect_reply(scheduled("2026-12-01T09:00:00.124Z"))
+
+      assert {:ok, %Emails.SendResult{status: "scheduled"}} =
+               Emails.send(
+                 name,
+                 @template_send ++ [scheduled_at: ~U[2026-12-01 09:00:00.123001Z]]
+               )
+
+      assert_received {:request, :post, _, first}
+      assert_received {:request, :post, _, second}
+      assert first[:body] == second[:body]
+      assert Jason.decode!(second[:body])["scheduled_at"] == "2026-12-01T09:00:00.124Z"
+    end
+
+    @tag config: [api_host: "https://eu.i.posthog.com"]
+    test "schedules on the EU app host", %{name: name} do
+      expect_reply(scheduled("2026-12-01T09:00:00.000Z"))
+
+      assert {:ok, %Emails.SendResult{status: "scheduled"}} =
+               Emails.send(name, @template_send ++ [scheduled_at: "2026-12-01T09:00:00Z"])
+
+      assert_received {:request, :post, "https://eu.posthog.com/api/messaging/send/email/", _}
+    end
+
+    for {label, config} <- [
+          {"a self-hosted app host",
+           [api_host: "https://proxy.example.com", app_host: "https://posthog.example.com"]},
+          {"an app host with a port",
+           [api_host: "https://proxy.example.com", app_host: "https://posthog.example.com:8443"]},
+          {"PostHog Cloud with its default port", [app_host: "https://us.posthog.com:443"]},
+          {"an IPv6 app host", [app_host: "http://[::1]:8010"]},
+          {"a Docker service app host", [app_host: "http://posthog_dev:8010"]},
+          {"a plain-HTTP app host", [app_host: "http://localhost:8010"]},
+          {"a proxy in front of PostHog Cloud",
+           [api_host: "https://proxy.example.com", app_host: "https://ph.example.com"]}
+        ] do
+      @tag config: config
+      test "refuses to schedule through #{label} before any request", %{name: name} do
+        host = String.trim_trailing(Keyword.fetch!(unquote(config), :app_host), "/")
+
+        for form <- [
+              @template_send,
+              @code_form ++ [attachments: [%{filename: "a.txt", content: "a"}]]
+            ] do
+          assert {:error,
+                  %Error{
+                    code: "scheduling_requires_cloud",
+                    field: "scheduled_at",
+                    name: :application_error
+                  } = error} = Emails.send(name, form ++ [scheduled_at: "2026-12-01T09:00:00Z"])
+
+          assert error.message =~ host
+          assert error.fix =~ "without scheduled_at"
+        end
+
+        refute_requested()
+      end
+    end
+
+    for {app_host, label, named} <- [
+          {"https://user:SECRET-1@SECRET-2@posthog.example.com:8443/", "an @",
+           "https://posthog.example.com:8443,"},
+          {"https://user:SECRET-1/SECRET-2@posthog.example.com:8443/", "a slash",
+           "the configured app_host,"},
+          {"https://user:SECRET-1?SECRET-2@posthog.example.com:8443/", "a question mark",
+           "the configured app_host,"},
+          {"https://user:SECRET-1#SECRET-2@posthog.example.com:8443/", "a hash",
+           "the configured app_host,"},
+          {"https://user:SECRET-1@SECRET-2/SECRET-3@posthog.example.com:8443/",
+           "an @ before a slash", "the configured app_host,"}
+        ] do
+      @tag config: [api_host: "https://proxy.example.com", app_host: app_host]
+      test "names an app host without its credentials when the password holds #{label}",
+           %{name: name} do
+        assert {:error, %Error{code: "scheduling_requires_cloud"} = error} =
+                 Emails.send(name, @template_send ++ [scheduled_at: "2026-12-01T09:00:00Z"])
+
+        assert error.message =~ unquote(named)
+        refute inspect(error) =~ "SECRET"
+        refute inspect(error) =~ "user"
+        refute_requested()
+      end
+    end
+
+    @tag config: [
+           api_host: "https://proxy.example.com",
+           app_host: "https://proxy.example.com/tenant@staging"
+         ]
+    test "names no host it can't tell from a path", %{name: name} do
+      assert {:error, %Error{code: "scheduling_requires_cloud"} = error} =
+               Emails.send(name, @template_send ++ [scheduled_at: "2026-12-01T09:00:00Z"])
+
+      assert error.message =~ "the configured app_host,"
+      refute error.message =~ "https://staging"
+    end
+
+    @tag config: [api_host: "https://proxy.example.com", app_host: "https://posthog.example.com"]
+    test "a self-hosted app host still sends without scheduled_at", %{name: name} do
+      expect_reply(accepted())
+
+      assert {:ok, %Emails.SendResult{status: "queued"}} = Emails.send(name, @template_send)
+    end
+
+    test "accepts a time that had passed as queued without a time", %{name: name} do
+      expect_reply(
+        accepted(%{"message_id" => @message_id, "status" => "queued", "scheduled_at" => nil})
+      )
+
+      assert {:ok, %Emails.SendResult{id: @message_id, status: "queued", scheduled_at: nil}} =
+               Emails.send(name, @code_form ++ [scheduled_at: "2026-11-01T09:00:00Z"])
+    end
+
+    test "accepts a time at most 60 seconds ahead as queued without a time", %{name: name} do
+      expect_reply(
+        accepted(%{"message_id" => @message_id, "status" => "queued", "scheduled_at" => nil})
+      )
+
+      assert {:ok, %Emails.SendResult{status: "queued", scheduled_at: nil}} =
+               Emails.send(name, @code_form ++ [scheduled_at: "2026-11-24T12:01:00.000Z"])
+    end
+
+    @tag now: ~U[2026-11-24 11:59:59.999500Z]
+    test "refuses to call a time less than a millisecond past 60 seconds ahead sent now",
+         %{name: name} do
+      expect_reply(
+        accepted(%{"message_id" => @message_id, "status" => "queued", "scheduled_at" => nil})
+      )
+
+      assert {:error, %Error{code: "schedule_not_confirmed", message_id: @message_id}} =
+               Emails.send(name, @code_form ++ [scheduled_at: "2026-11-24T12:01:00.000Z"])
+    end
+
+    test "refuses to call a time more than 60 seconds ahead sent now", %{name: name} do
+      expect_reply(
+        accepted(%{"message_id" => @message_id, "status" => "queued", "scheduled_at" => nil})
+      )
+
+      record_any_further_request()
+
+      assert {:error,
+              %Error{
+                code: "schedule_not_confirmed",
+                message_id: @message_id,
+                status_code: 202
+              }} = Emails.send(name, @code_form ++ [scheduled_at: "2026-11-24T12:01:00.001Z"])
+
+      assert_received {:request, :post, @send_url, _}
+      refute_requested()
+    end
+
+    for {scheduled_at, slow_s} <- [{"2026-11-24T12:01:05Z", 10}, {"2026-11-24T12:01:02Z", 3}] do
+      test "reads the clock before the request, so an answer #{slow_s} s later can't turn #{scheduled_at} into on time",
+           %{name: name, clock: clock} do
+        test_pid = self()
+
+        expect(API.Mock, :request, fn _client, method, url, opts ->
+          send(test_pid, {:request, method, url, opts})
+          Agent.update(clock, &DateTime.add(&1, unquote(slow_s), :second))
+          accepted(%{"message_id" => @message_id, "status" => "queued", "scheduled_at" => nil})
+        end)
+
+        assert {:error, %Error{code: "schedule_not_confirmed", message_id: @message_id}} =
+                 Emails.send(name, @code_form ++ [scheduled_at: unquote(scheduled_at)])
+      end
+    end
+
+    for {label, refusals, scheduled_at, outcome} <- [
+          {"keeps the first attempt's clock reading after a 503", [{503, "service_unavailable"}],
+           "2026-11-24T12:01:05Z", :error},
+          {"keeps the first attempt's clock reading after a 429", [{429, "rate_limited"}],
+           "2026-11-24T12:01:05Z", :error},
+          {"keeps the first attempt's clock reading through a 429 that follows a 503",
+           [{503, "service_unavailable"}, {429, "rate_limited"}], "2026-11-24T12:01:05Z", :error},
+          {"takes a time 58 seconds ahead of the first attempt as sent now after 30 seconds of retries",
+           [{503, "service_unavailable"}, {429, "rate_limited"}, {503, "service_unavailable"}],
+           "2026-11-24T12:00:58Z", :ok}
+        ] do
+      test "#{label}", %{name: name, clock: clock} do
+        test_pid = self()
+
+        for {status, code} <- unquote(refusals) do
+          expect(API.Mock, :request, fn _client, method, url, opts ->
+            send(test_pid, {:request, method, url, opts})
+            Agent.update(clock, &DateTime.add(&1, 10, :second))
+            refused(status, %{"code" => code})
+          end)
+        end
+
+        expect_reply(
+          accepted(%{"message_id" => @message_id, "status" => "queued", "scheduled_at" => nil})
+        )
+
+        result =
+          Emails.send(name, @code_form ++ [scheduled_at: unquote(scheduled_at), max_retries: 3])
+
+        case unquote(outcome) do
+          :error ->
+            assert {:error, %Error{code: "schedule_not_confirmed", message_id: @message_id}} =
+                     result
+
+          :ok ->
+            assert {:ok, %Emails.SendResult{id: @message_id, status: "queued"}} = result
+        end
+      end
+    end
+
+    test "refuses a queued answer without the scheduled_at key, also inside 60 seconds",
+         %{name: name} do
+      expect_reply(accepted(%{"message_id" => @message_id, "status" => "queued"}))
+
+      assert {:error, %Error{code: "schedule_not_confirmed", message_id: @message_id}} =
+               Emails.send(name, @code_form ++ [scheduled_at: "2026-11-24T12:00:30Z"])
+    end
+
+    test "returns a replayed schedule", %{name: name} do
+      expect_reply(scheduled("2026-12-01T09:00:00.000Z", %{"replayed" => true}))
+
+      assert {:ok, %Emails.SendResult{replayed: true, status: "scheduled"}} =
+               Emails.send(name, @template_send ++ [scheduled_at: "2026-12-01T09:00:00Z"])
+    end
+
+    for {label, reply} <- [
+          {"without the scheduled_at key", %{"message_id" => @message_id}},
+          {"queued without the scheduled_at key",
+           %{"message_id" => @message_id, "status" => "queued"}},
+          {"queued without a time while the time is days ahead",
+           %{"message_id" => @message_id, "status" => "queued", "scheduled_at" => nil}},
+          {"with another time",
+           %{
+             "message_id" => @message_id,
+             "status" => "scheduled",
+             "scheduled_at" => "2026-12-01T09:00:00.001Z"
+           }},
+          {"with the time a microsecond off",
+           %{
+             "message_id" => @message_id,
+             "status" => "scheduled",
+             "scheduled_at" => "2026-12-01T09:00:00.000001Z"
+           }},
+          {"with the time less than a microsecond off",
+           %{
+             "message_id" => @message_id,
+             "status" => "scheduled",
+             "scheduled_at" => "2026-12-01T09:00:00.0000001Z"
+           }},
+          {"with a time that is not a time",
+           %{"message_id" => @message_id, "status" => "scheduled", "scheduled_at" => "soon"}},
+          {"with the time in a malformed offset",
+           %{
+             "message_id" => @message_id,
+             "status" => "scheduled",
+             "scheduled_at" => "2026-12-01T04:05:00-05:-5"
+           }},
+          {"scheduled without a time",
+           %{"message_id" => @message_id, "status" => "scheduled", "scheduled_at" => nil}},
+          {"queued with a time",
+           %{
+             "message_id" => @message_id,
+             "status" => "queued",
+             "scheduled_at" => "2026-12-01T09:00:00.000Z"
+           }},
+          {"without a status",
+           %{"message_id" => @message_id, "scheduled_at" => "2026-12-01T09:00:00.000Z"}},
+          {"without a status and without a time",
+           %{"message_id" => @message_id, "scheduled_at" => nil}}
+        ] do
+      test "an acceptance #{label} is an unconfirmed schedule, not retried", %{name: name} do
+        expect_reply(accepted(unquote(Macro.escape(reply))))
+        record_any_further_request()
+
+        assert {:error,
+                %Error{
+                  code: "schedule_not_confirmed",
+                  message_id: @message_id,
+                  status_code: 202,
+                  field: "scheduled_at",
+                  name: :application_error
+                } = error} =
+                 Emails.send(name, @template_send ++ [scheduled_at: "2026-12-01T09:00:00Z"])
+
+        assert error.message =~ @message_id
+        assert error.fix =~ "Emails.get"
+        assert_received {:request, :post, @send_url, _}
+        refute_requested()
+      end
+    end
+
+    test "logs the warnings of an acceptance that doesn't confirm the schedule", %{name: name} do
+      expect_reply(
+        accepted(%{
+          "message_id" => @message_id,
+          "status" => "queued",
+          "scheduled_at" => "2026-12-01T09:00:00.000Z",
+          "warnings" => [%{"code" => "no_text", "detail" => "No text part."}]
+        })
+      )
+
+      log =
+        capture_log(fn ->
+          assert {:error, %Error{code: "schedule_not_confirmed"}} =
+                   Emails.send(name, @template_send ++ [scheduled_at: "2026-12-01T09:00:00Z"])
+        end)
+
+      assert log =~ "PostHog email warning no_text: No text part."
+    end
+
+    test "returns a refusal of scheduled_at and never sends without it", %{name: name} do
+      expect_reply(
+        refused(400, %{
+          "type" => "validation_error",
+          "code" => "scheduled_too_far",
+          "detail" =>
+            "`scheduled_at` is more than 7 days away, so PostHog didn't send the email.",
+          "attr" => "scheduled_at",
+          "why" => "PostHog holds a scheduled email for at most 7 days after the request.",
+          "fix" => "Pick a time within 7 days, or send the email closer to the time."
+        })
+      )
+
+      record_any_further_request()
+
+      assert {:error,
+              %Error{
+                code: "scheduled_too_far",
+                field: "scheduled_at",
+                status_code: 400,
+                name: :validation_error,
+                why: "PostHog holds a scheduled email for at most 7 days after the request.",
+                fix: "Pick a time within 7 days, or send the email closer to the time.",
+                message_id: nil
+              }} = Emails.send(name, @code_form ++ [scheduled_at: "2026-12-31T09:00:00Z"])
+
+      assert sent_body()["scheduled_at"] == "2026-12-31T09:00:00.000Z"
+      refute_requested()
+    end
+  end
+
   describe "get/2" do
     test "reads the status of a sent email", %{name: name} do
       expect_reply(
@@ -2178,6 +2775,38 @@ defmodule PostHog.EmailsTest do
 
       assert {:error, %Error{code: "not_found", name: :not_found}} = Emails.get(name, @message_id)
       refute_received {:slept, _}
+    end
+
+    @tag clock_follows_sleep: true
+    test "retries a 503 and reads the status on the next request", %{name: name, clock: clock} do
+      test_pid = self()
+
+      reply_at = fn reply ->
+        expect(API.Mock, :request, fn _client, :get, url, _opts ->
+          send(test_pid, {:read_at, url, Agent.get(clock, & &1)})
+          reply
+        end)
+      end
+
+      reply_at.(refused(503, %{"code" => "service_unavailable"}, %{"retry-after" => ["3"]}))
+
+      reply_at.(
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "id" => @message_id,
+             "status" => "delivered",
+             "created_at" => "2026-10-28T16:27:44Z",
+             "status_at" => "2026-10-28T16:27:46Z"
+           }
+         }}
+      )
+
+      assert {:ok, %Emails.Status{status: "delivered"}} = Emails.get(name, @message_id)
+      assert_received {:read_at, url, first}
+      assert_received {:read_at, ^url, second}
+      assert DateTime.diff(second, first, :millisecond) == 3_000
     end
 
     test "refuses an ID that is not a UUID", %{name: name} do
