@@ -69,7 +69,8 @@ defmodule PostHog.FeatureFlags.Evaluations do
     `distinct_id` could be resolved; events are short-circuited in that case.
   - `:flags` - map of flag key to `t:PostHog.FeatureFlags.Result.t/0`.
   - `:groups` - normalized group type/key context used for evaluation and
-    `$feature_flag_called` deduplication.
+    `$feature_flag_called` deduplication. A group whose key is not a non-empty
+    string or a number is left out.
   - `:request_id` - request ID returned when remote fallback was used.
   - `:evaluated_at` - server-side evaluation timestamp when remote fallback was used.
   - `:errors_while_computing` - whether the response signaled
@@ -117,9 +118,9 @@ defmodule PostHog.FeatureFlags.Evaluations do
     the SDK.
   - `:unresolved_dependency` - a flag this flag depends on has a loaded
     definition but was not resolved.
-  - `:missing_context` - the call did not pass a property, group key, group
-    property, or device id the flag needs, or passed it in a form local
-    evaluation cannot use.
+  - `:missing_context` - the call did not pass a property, group property, or
+    device id the flag needs, or passed it in a form local evaluation cannot
+    use. A group flag whose group is not passed resolves as `false`.
 
   When several causes apply, the reason is the first in this list.
   """
@@ -404,9 +405,10 @@ defmodule PostHog.FeatureFlags.Evaluations do
   end
 
   defp normalize_groups(groups) when is_map(groups) do
-    Map.new(groups, fn {group_type, group_key} ->
-      {to_string(group_type), to_string(group_key)}
-    end)
+    for {group_type, group_key} <- groups,
+        PostHog.FeatureFlags.LocalEvaluator.usable_group_key?(group_key),
+        into: %{},
+        do: {to_string(group_type), to_string(group_key)}
   end
 
   defp normalize_groups(_groups), do: %{}
