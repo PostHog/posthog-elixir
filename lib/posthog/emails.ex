@@ -98,7 +98,7 @@ defmodule PostHog.Emails do
   `"queued"` and its `:scheduled_at` is `nil`. When PostHog accepts the email without confirming
   the time, the send returns `schedule_not_confirmed` with the email's `:message_id`. That
   includes an answer that sends the email now while the time was more than 60 seconds ahead of
-  this machine's clock at the first attempt PostHog didn't refuse with a 429. The 60 seconds only
+  this machine's clock at the send's first attempt, retries included. The 60 seconds only
   decide when the SDK takes such an answer as success. The SDK reads the answer after PostHog took
   the email, so `schedule_not_confirmed` can come back for an email that already went out early,
   and a clock that runs behind can return it for an email that went out as asked. Read its status with `get/2` before you send it again. `get/2` reads `"scheduled"` until the email goes
@@ -607,16 +607,23 @@ defmodule PostHog.Emails do
       | headers(connection)
     ]
 
-    attempt_once = fn since, _attempt ->
-      sent_at = since || connection.now.()
+    attempt_once = fn state, _attempt ->
+      {sent_at, unconfirmed?} = state || {connection.now.(), false}
 
       case connection
            |> request(:post, @send_path, headers, prepared.body)
            |> parse_send_reply(prepared.scheduled_at, sent_at) do
-        {:error, %Error{status_code: 429} = error} when is_nil(since) -> {:error, error, nil}
-        {:error, %Error{code: "client_closed"} = error} -> {:error, error, since}
-        {:error, error} -> {:error, error, sent_at}
-        {:ok, result} -> {:ok, result}
+        {:error, %Error{status_code: 429} = error} ->
+          {:error, error, {sent_at, unconfirmed?}}
+
+        {:error, %Error{code: "client_closed"} = error} ->
+          {:error, error, {sent_at, unconfirmed?}}
+
+        {:error, error} ->
+          {:error, error, {sent_at, true}}
+
+        {:ok, result} ->
+          {:ok, result}
       end
     end
 
@@ -626,16 +633,15 @@ defmodule PostHog.Emails do
            nil,
            attempt_once
          ) do
-      {:error, error, since} ->
-        {:error, closed_after_try(error, since, connection, prepared.idempotency_key)}
+      {:error, error, state} ->
+        {:error, closed_after_try(error, state, connection, prepared.idempotency_key)}
 
       {:ok, result} ->
         {:ok, result}
     end
   end
 
-  defp closed_after_try(%Error{code: "client_closed"} = error, since, connection, key)
-       when not is_nil(since) do
+  defp closed_after_try(%Error{code: "client_closed"} = error, {_sent_at, true}, connection, key) do
     %{
       error
       | message:
@@ -645,7 +651,7 @@ defmodule PostHog.Emails do
     }
   end
 
-  defp closed_after_try(error, _since, _connection, _key), do: error
+  defp closed_after_try(error, _state, _connection, _key), do: error
 
   defp upload(_connection, %{files: []}), do: :ok
 
