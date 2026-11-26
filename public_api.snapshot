@@ -108,10 +108,33 @@ PostHog.Config
 PostHog.Emails
   module_doc: documented
   functions:
+    batch/1 doc: none
+    batch/2 doc: documented
     get/1 doc: none
     get/2 doc: documented
     send/1 doc: none
     send/2 doc: documented
+  macros:
+    (none)
+
+PostHog.Emails.BatchEmailResult
+  module_doc: documented
+  functions:
+    (none)
+  macros:
+    (none)
+
+PostHog.Emails.BatchError
+  module_doc: documented
+  functions:
+    (none)
+  macros:
+    (none)
+
+PostHog.Emails.BatchResult
+  module_doc: documented
+  functions:
+    (none)
   macros:
     (none)
 

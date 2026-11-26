@@ -488,6 +488,7 @@ defmodule PostHog.EmailsTest do
     end)
 
     clock = start_supervised!({Agent, fn -> context[:now] || ~U[2026-11-24 12:00:00.000000Z] end})
+    monotonic = start_supervised!(Supervisor.child_spec({Agent, fn -> 0 end}, id: :monotonic))
 
     config =
       [
@@ -501,11 +502,16 @@ defmodule PostHog.EmailsTest do
       |> Keyword.merge(context[:config] || [])
       |> PostHog.Config.validate!()
       |> Map.put(:email_now, fn -> Agent.get(clock, & &1) end)
+      |> Map.put(:email_monotonic_ms, fn -> Agent.get(monotonic, & &1) end)
       |> Map.put(:email_sleep, fn ms ->
         send(test_pid, {:slept, ms})
+        Agent.update(monotonic, &(&1 + ms + (context[:sleep_overruns_ms] || 0)))
 
         if context[:clock_follows_sleep],
           do: Agent.update(clock, &DateTime.add(&1, ms, :millisecond))
+
+        if context[:host_suspended_ms],
+          do: Agent.update(clock, &DateTime.add(&1, context[:host_suspended_ms], :millisecond))
 
         if context[:stop_instance_on_sleep], do: stop_supervised!(context.test)
       end)
@@ -515,7 +521,7 @@ defmodule PostHog.EmailsTest do
       )
 
     start_link_supervised!({PostHog.Supervisor, config})
-    %{name: context.test, clock: clock}
+    %{name: context.test, clock: clock, monotonic: monotonic}
   end
 
   defp expect_reply(times \\ 1, reply) do
@@ -1859,6 +1865,100 @@ defmodule PostHog.EmailsTest do
       assert second in 1600..2400
     end
 
+    test "stops retrying an hour after the first attempt, whatever max_retries says", %{
+      name: name,
+      monotonic: monotonic
+    } do
+      test_pid = self()
+
+      expect(API.Mock, :request, 6, fn _client, _method, _url, _opts ->
+        send(test_pid, {:request_at, Agent.get(monotonic, & &1)})
+        Agent.update(monotonic, &(&1 + 600_000))
+        refused(503, %{"code" => "service_unavailable"})
+      end)
+
+      assert {:error, %Error{status_code: 503}} =
+               Emails.send(name,
+                 to: "user@example.com",
+                 template_id: @template_id,
+                 max_retries: 100
+               )
+
+      request_times =
+        for _attempt <- 1..6 do
+          assert_received {:request_at, at}
+          at
+        end
+
+      refute_received {:request_at, _at}
+      assert List.last(request_times) < 3_600_000
+    end
+
+    for {label, overrun_ms, headers} <- [
+          {"overran the hour", 3_600_000, %{}},
+          {"ended exactly at the hour", 3_598_000, %{"retry-after" => ["2"]}}
+        ] do
+      @tag sleep_overruns_ms: overrun_ms
+      test "sends no retry after a wait that #{label}", %{name: name} do
+        expect_reply(
+          refused(503, %{"code" => "service_unavailable"}, unquote(Macro.escape(headers)))
+        )
+
+        assert {:error, %Error{status_code: 503}} =
+                 Emails.send(name, to: "user@example.com", template_id: @template_id)
+
+        assert_received {:slept, slept_ms}
+        assert slept_ms + unquote(overrun_ms) >= 3_600_000
+        assert_received {:request, :post, _url, _opts}
+        refute_received {:request, _method, _url, _opts}
+      end
+    end
+
+    test "keeps retrying when the wall clock jumps back during a retry", %{
+      name: name,
+      clock: clock
+    } do
+      expect(API.Mock, :request, fn _client, _method, _url, _opts ->
+        Agent.update(clock, &DateTime.add(&1, -2, :hour))
+        refused(503, %{"code" => "service_unavailable"})
+      end)
+
+      expect_reply(accepted())
+
+      assert {:ok, %Emails.SendResult{}} =
+               Emails.send(name, to: "user@example.com", template_id: @template_id)
+    end
+
+    test "sends no retry once the wall clock passes the hour, as after a host suspension", %{
+      name: name,
+      clock: clock
+    } do
+      test_pid = self()
+
+      expect(API.Mock, :request, fn _client, method, url, opts ->
+        send(test_pid, {:request, method, url, opts})
+        Agent.update(clock, &DateTime.add(&1, 25, :hour))
+        refused(503, %{"code" => "service_unavailable"})
+      end)
+
+      assert {:error, %Error{status_code: 503}} =
+               Emails.send(name, to: "user@example.com", template_id: @template_id)
+
+      assert_received {:request, :post, _url, _opts}
+      refute_received {:request, _method, _url, _opts}
+    end
+
+    @tag host_suspended_ms: 25 * 3_600_000
+    test "sends no retry after a host suspension during the wait", %{name: name} do
+      expect_reply(refused(503, %{"code" => "service_unavailable"}))
+
+      assert {:error, %Error{status_code: 503}} =
+               Emails.send(name, to: "user@example.com", template_id: @template_id)
+
+      assert_received {:request, :post, _url, _opts}
+      refute_received {:request, _method, _url, _opts}
+    end
+
     test "a per-send max_retries of 0 makes one attempt", %{name: name} do
       expect_reply(refused(503, %{"code" => "service_unavailable"}))
 
@@ -2000,14 +2100,38 @@ defmodule PostHog.EmailsTest do
       assert_received {:slept, _}
     end
 
-    @tag stop_instance_on_sleep: true
-    test "sends no retry after the instance stops", %{name: name} do
-      expect_reply(refused(503, %{"code" => "service_unavailable"}))
+    for {label, overrun_ms} <- [{"", 0}, {" during a wait that overran the hour", 3_600_000}] do
+      @tag stop_instance_on_sleep: true, sleep_overruns_ms: overrun_ms
+      test "sends no retry after the instance stops#{label}", %{name: name} do
+        expect_reply(refused(429, %{"code" => "throttled"}))
 
-      assert {:error, %Error{code: "client_closed"}} =
-               Emails.send(name, to: "user@example.com", template_id: @template_id)
+        assert {:error, %Error{code: "client_closed"} = error} =
+                 Emails.send(name, to: "user@example.com", template_id: @template_id)
 
-      assert_received {:slept, _}
+        assert error.message =~ "no email was sent"
+        assert_received {:request, :post, _url, _opts}
+        refute_received {:request, _method, _url, _opts}
+      end
+    end
+
+    for {label, reply} <- [
+          {"a 503",
+           Macro.escape({:ok, %{status: 503, headers: %{}, body: %{"code" => "api_error"}}})},
+          {"a lost answer", Macro.escape({:error, %Req.TransportError{reason: :timeout}})}
+        ] do
+      @tag stop_instance_on_sleep: true
+      test "a stop after #{label} says the email may still go out", %{name: name} do
+        expect_reply(unquote(reply))
+
+        assert {:error, %Error{code: "client_closed"} = error} =
+                 Emails.send(name, to: "user@example.com", template_id: @template_id)
+
+        refute error.message =~ "no email was sent"
+        assert error.message =~ "may still go out"
+        assert_received {:request, :post, _url, opts}
+        assert error.fix =~ ~s(idempotency_key "#{header(opts, "idempotency-key")}")
+        refute_received {:request, _method, _url, _opts}
+      end
     end
 
     @tag capture_log: true
@@ -2807,6 +2931,28 @@ defmodule PostHog.EmailsTest do
       assert_received {:read_at, url, first}
       assert_received {:read_at, ^url, second}
       assert DateTime.diff(second, first, :millisecond) == 3_000
+    end
+
+    @tag sleep_overruns_ms: 3_600_000
+    test "a status read retries past the hour a send stops at", %{name: name} do
+      expect_reply(refused(503, %{"code" => "service_unavailable"}))
+
+      expect_reply(
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "id" => @message_id,
+             "status" => "delivered",
+             "created_at" => "2026-10-28T16:27:44Z",
+             "status_at" => "2026-10-28T16:27:46Z"
+           }
+         }}
+      )
+
+      assert {:ok, %Emails.Status{status: "delivered"}} = Emails.get(name, @message_id)
+      assert_received {:request, :get, url, _opts}
+      assert_received {:request, :get, ^url, _opts}
     end
 
     test "refuses an ID that is not a UUID", %{name: name} do
