@@ -330,12 +330,14 @@ defmodule PostHog.Emails.Batch do
     fields = request_fields(fields, status, run)
     {:error, error} = Emails.reply_error({:ok, status, fields, retry_after_ms})
 
+    code = Emails.text(fields["code"])
+
     cond do
-      uncertain?(status, Emails.text(fields["code"])) ->
+      run.lost? and status < 500 and code != "idempotency_key_in_flight" ->
+        error = refused_after_loss(error)
         {:error, error, all(run, "unconfirmed", error)}
 
-      run.lost? ->
-        error = refused_after_loss(error)
+      uncertain?(status, code) ->
         {:error, error, all(run, "unconfirmed", error)}
 
       true ->

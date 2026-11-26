@@ -770,6 +770,8 @@ defmodule PostHog.EmailsBatchTest do
           {"a 413 content_too_large", 413, "content_too_large", [:lost]},
           {"a 404 without a body", 404, nil, [:lost]},
           {"a 409 batch_unavailable", 409, "batch_unavailable", [:lost]},
+          {"a 409 conflict", 409, "conflict", [:lost]},
+          {"a 400 api_error", 400, "api_error", [:lost]},
           {"a 429 after a 503", 429, "throttled", [:lost, 503]},
           {"a 429 after a 409 in flight", 429, "throttled", [409]}
         ] do
