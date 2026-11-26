@@ -17,6 +17,16 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   # Filter types matched against caller-supplied properties. Older definitions omit the type,
   # or send nil or "", for person filters.
   @property_filter_types ["person", "group", nil, ""]
+  @known_absent_matching_operators ~w(is_not_set is_not not_icontains not_starts_with not_ends_with not_regex)
+  @local_property_operators ~w(exact is_not is_set is_not_set regex not_regex gt gte lt lte is_date_before is_date_after) ++
+                              @search_operators ++ @semver_operators
+  @person_metadata_prefix "__posthog_person_metadata__"
+
+  # Tags the value of a property the caller listed as known absent, as
+  # `{@known_absent, scope, original}`. Property maps double as the present-key tables, so the
+  # marker overrides any supplied or default value for filters of the listing's scope (`:person`
+  # or a group type name). Filters of any other type read `original` as if nothing was listed.
+  @known_absent {__MODULE__, :known_absent}
 
   @type reason :: PostHog.FeatureFlags.Evaluations.unresolved_reason()
 
@@ -221,9 +231,17 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
       |> context_value(:person_properties)
       |> Kernel.||(%{})
       |> put_default_property("distinct_id", distinct_id)
+      |> mark_known_absent(
+        context
+        |> context_value(:person_property_keys_known_absent)
+        |> known_absent_keys()
+        |> Enum.reject(&String.starts_with?(&1, @person_metadata_prefix)),
+        :person
+      )
 
     group_properties =
-      Enum.reduce(groups, context_value(context, :group_properties) || %{}, fn
+      groups
+      |> Enum.reduce(context_value(context, :group_properties) || %{}, fn
         {group_type, group_key}, properties when is_map(properties) ->
           group_type = to_string(group_type)
           focused = map_value(properties, group_type) || %{}
@@ -232,6 +250,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
         _group, properties ->
           properties
       end)
+      |> mark_known_absent_groups(context_value(context, :group_property_keys_known_absent))
 
     %{
       distinct_id: distinct_id,
@@ -251,6 +270,40 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   end
 
   defp put_default_property(_properties, key, value), do: %{key => value}
+
+  defp mark_known_absent(properties, keys, scope) when is_map(properties) do
+    Enum.reduce(keys, properties, fn key, properties ->
+      case map_fetch(properties, key) do
+        # A key listed more than once keeps the value from before the first listing.
+        {:ok, {@known_absent, _scope, _original}} -> properties
+        original -> Map.put(properties, key, {@known_absent, scope, original})
+      end
+    end)
+  end
+
+  defp mark_known_absent(properties, _keys, _scope), do: properties
+
+  defp mark_known_absent_groups(group_properties, known_absent)
+       when is_map(group_properties) and is_map(known_absent) do
+    Enum.reduce(known_absent, group_properties, fn {group_type, keys}, group_properties ->
+      group_type = to_string(group_type)
+      focused = map_value(group_properties, group_type) || %{}
+      marked = mark_known_absent(focused, known_absent_keys(keys), group_type)
+      Map.put(group_properties, group_type, marked)
+    end)
+  end
+
+  defp mark_known_absent_groups(group_properties, _known_absent), do: group_properties
+
+  defp known_absent_keys(keys) when is_list(keys),
+    do:
+      for(
+        key <- keys,
+        is_binary(key) or (is_atom(key) and not is_nil(key) and not is_boolean(key)),
+        do: to_string(key)
+      )
+
+  defp known_absent_keys(_keys), do: []
 
   defp context_value(context, key),
     do: Map.get(context, key, Map.get(context, Atom.to_string(key)))
@@ -294,29 +347,70 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
     filters = value(flag, "filters")
     aggregation = value(filters, "aggregation_group_type_index")
 
-    with {:ok, properties, bucketing} <-
-           evaluation_target(aggregation, flag, definitions, context) do
-      conditions = value(filters, "groups") || []
-
-      if is_list(conditions) do
-        evaluate_conditions(
-          conditions,
+    case evaluation_target(aggregation, flag, definitions, context) do
+      {:ok, properties, bucketing} ->
+        evaluate_filter_groups(
           flag,
           aggregation,
           properties,
           bucketing,
           definitions,
           context,
-          cache,
-          nil
+          cache
         )
-      else
-        {{:inconclusive, :unsupported_definition}, cache}
-      end
-    else
+
+      # Like the flags service, each condition on the flag's group is skipped, and a condition
+      # with its own aggregation still runs. The flags service hashes an empty identifier for
+      # a holdout, so only it can decide a flag with one.
+      :group_not_supplied ->
+        if holdout?(filters) do
+          {{:inconclusive, with_definition_reason(:missing_context, flag, definitions)}, cache}
+        else
+          evaluate_filter_groups(flag, aggregation, nil, nil, definitions, context, cache)
+        end
+
       # No condition can be checked, so a cause in the definition outranks the missing context.
       {:inconclusive, reason} ->
         {{:inconclusive, with_definition_reason(reason, flag, definitions)}, cache}
+    end
+  end
+
+  defp evaluate_filter_groups(
+         flag,
+         aggregation,
+         properties,
+         bucketing,
+         definitions,
+         context,
+         cache
+       ) do
+    conditions = value(value(flag, "filters"), "groups") || []
+
+    if is_list(conditions) do
+      evaluate_conditions(
+        conditions,
+        flag,
+        aggregation,
+        properties,
+        bucketing,
+        definitions,
+        context,
+        cache,
+        nil
+      )
+    else
+      {{:inconclusive, :unsupported_definition}, cache}
+    end
+  end
+
+  defp holdout?(filters) do
+    case value(filters, "holdout") do
+      holdout when is_map(holdout) ->
+        percentage = value(holdout, "exclusion_percentage")
+        is_number(percentage) and percentage > 0
+
+      _holdout ->
+        false
     end
   end
 
@@ -334,10 +428,22 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
 
     cond do
       not is_binary(group_name) -> {:inconclusive, :unsupported_definition}
-      is_nil(group_key) or not is_map(properties) -> {:inconclusive, :missing_context}
+      not usable_group_key?(group_key) -> :group_not_supplied
+      not is_map(properties) -> {:inconclusive, :missing_context}
       true -> {:ok, properties, to_string(group_key)}
     end
   end
+
+  @doc """
+  Like the flags service, only a non-empty string or a number identifies a group. Any other
+  key counts as no group key. An atom other than nil or a boolean is sent as a string.
+  """
+  @spec usable_group_key?(term()) :: boolean()
+  def usable_group_key?(group_key) when is_binary(group_key), do: group_key != ""
+  def usable_group_key?(group_key) when is_number(group_key), do: true
+  def usable_group_key?(group_key) when is_boolean(group_key) or is_nil(group_key), do: false
+  def usable_group_key?(group_key) when is_atom(group_key), do: group_key != :""
+  def usable_group_key?(_group_key), do: false
 
   defp bucketing_value(flag, context) do
     filters = value(flag, "filters") || %{}
@@ -524,29 +630,35 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
         aggregation
       end
 
-    if condition_aggregation == aggregation do
-      {:ok, properties, bucketing}
-    else
-      case condition_aggregation do
-        nil ->
-          case bucketing_value(flag, context) do
-            {:ok, person_bucketing} -> {:ok, context.person_properties, person_bucketing}
-            :error -> {:inconclusive, :missing_context}
-          end
+    cond do
+      # The flag's group has no usable key, so a condition on it is skipped.
+      condition_aggregation == aggregation and is_nil(bucketing) ->
+        :skip
 
-        index ->
-          group_name = group_name(definitions, index)
-          group_key = if is_binary(group_name), do: map_value(context.groups, group_name)
+      condition_aggregation == aggregation ->
+        {:ok, properties, bucketing}
 
-          group_props =
-            if is_binary(group_name), do: map_value(context.group_properties, group_name)
+      true ->
+        case condition_aggregation do
+          nil ->
+            case bucketing_value(flag, context) do
+              {:ok, person_bucketing} -> {:ok, context.person_properties, person_bucketing}
+              :error -> {:inconclusive, :missing_context}
+            end
 
-          cond do
-            is_nil(group_key) -> :skip
-            not is_map(group_props) -> {:inconclusive, :missing_context}
-            true -> {:ok, group_props, to_string(group_key)}
-          end
-      end
+          index ->
+            group_name = group_name(definitions, index)
+            group_key = if is_binary(group_name), do: map_value(context.groups, group_name)
+
+            group_props =
+              if is_binary(group_name), do: map_value(context.group_properties, group_name)
+
+            cond do
+              not usable_group_key?(group_key) -> :skip
+              not is_map(group_props) -> {:inconclusive, :missing_context}
+              true -> {:ok, group_props, to_string(group_key)}
+            end
+        end
     end
   end
 
@@ -667,7 +779,8 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
              property_values,
              context.now,
              Map.get(definitions, :property_matching_version, 1),
-             cohort?
+             cohort?,
+             definitions
            ), cache}
 
         # Other types, such as person_metadata, read data the caller's properties don't hold.
@@ -852,14 +965,35 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
     end
   end
 
-  defp match_property(property, property_values, now, property_matching_version, cohort?) do
+  defp match_property(
+         property,
+         property_values,
+         now,
+         property_matching_version,
+         cohort?,
+         definitions
+       ) do
     key = value(property, "key")
     operator = value(property, "operator") || "exact"
     filter_value = value(property, "value")
 
-    case map_fetch(property_values, key) do
+    fetched =
+      case map_fetch(property_values, key) do
+        {:ok, {@known_absent, scope, original}} ->
+          if known_absent_scope?(property, scope, definitions),
+            do: :known_absent,
+            else: original
+
+        fetched ->
+          fetched
+      end
+
+    case fetched do
       :error ->
         {:inconclusive, property_reason(property, now, cohort?)}
+
+      :known_absent ->
+        known_absent_result(operator, filter_value)
 
       {:ok, property_value} when operator in ["exact", "is_not"] ->
         match = exact_match?(property_value, filter_value, property_matching_version)
@@ -885,6 +1019,37 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   rescue
     # Unsupported comparisons must not prevent later conditions from matching.
     _exception -> {:inconclusive, property_reason(property, now, cohort?)}
+  end
+
+  # Person keys apply only to person filters (an untyped filter is a person filter) and group
+  # keys only to group filters of their own group type. Other types, such as person_metadata,
+  # never resolve from a listing.
+  defp known_absent_scope?(property, :person, _definitions),
+    do: value(property, "type") in ["person", nil]
+
+  # A group filter is matched against the properties of the group being evaluated, so one
+  # without a group_type_index belongs to that group type.
+  defp known_absent_scope?(property, group_type, definitions) do
+    index = value(property, "group_type_index")
+
+    value(property, "type") == "group" and
+      (is_nil(index) or group_name(definitions, index) == group_type)
+  end
+
+  # Like the service, a listed key resolves without parsing, compiling or validating a present
+  # condition value. Operators not evaluated locally stay inconclusive, and the service reads
+  # a null condition value as omitted, so value-requiring operators without one do too.
+  defp known_absent_result(operator, filter_value) do
+    cond do
+      operator not in @local_property_operators ->
+        {:inconclusive, :unsupported_definition}
+
+      is_nil(filter_value) and operator not in ["is_set", "is_not_set"] ->
+        {:inconclusive, :unsupported_definition}
+
+      true ->
+        boolean_result(operator in @known_absent_matching_operators)
+    end
   end
 
   # A filter that local evaluation can't use outranks missing or unusable context, so the
@@ -1607,9 +1772,12 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   defp known_atom("dependency_chain"), do: :dependency_chain
   defp known_atom("ensure_experience_continuity"), do: :ensure_experience_continuity
   defp known_atom("early_exit"), do: :early_exit
+  defp known_atom("exclusion_percentage"), do: :exclusion_percentage
   defp known_atom("filters"), do: :filters
+  defp known_atom("group_type_index"), do: :group_type_index
   defp known_atom("groups"), do: :groups
   defp known_atom("has_experiment"), do: :has_experiment
+  defp known_atom("holdout"), do: :holdout
   defp known_atom("id"), do: :id
   defp known_atom("key"), do: :key
   defp known_atom("multivariate"), do: :multivariate
