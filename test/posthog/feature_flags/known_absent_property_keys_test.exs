@@ -179,6 +179,23 @@ defmodule PostHog.FeatureFlags.KnownAbsentPropertyKeysTest do
              ) == {:ok, true}
     end
 
+    test "person keys apply to person filters with an omitted, nil or empty type" do
+      for filter <- [
+            %{"key" => "plan", "operator" => "is_not_set"},
+            %{"key" => "plan", "type" => nil, "operator" => "is_not_set"},
+            %{"key" => "plan", "type" => "", "operator" => "is_not_set"}
+          ] do
+        definitions = snapshot([flag("f", [filter])])
+
+        context = %{
+          person_properties: %{"plan" => "pro"},
+          person_property_keys_known_absent: ["plan"]
+        }
+
+        assert local(definitions, context, "f") == {:ok, true}, inspect(filter)
+      end
+    end
+
     test "an omitted key that is not listed stays inconclusive" do
       definitions = snapshot([flag("f", [person_filter("is_not_set")])])
 
@@ -461,22 +478,17 @@ defmodule PostHog.FeatureFlags.KnownAbsentPropertyKeysTest do
 
       listed = %{person_property_keys_known_absent: ["created_at"]}
 
+      # person_metadata is an unsupported filter type, so neither a listing nor a supplied
+      # created_at resolves it locally.
       for context <- [
             listed,
-            %{person_property_keys_known_absent: ["created_at", :created_at, "created_at"]}
+            %{person_property_keys_known_absent: ["created_at", :created_at, "created_at"]},
+            Map.put(listed, :person_properties, %{"created_at" => "2024-01-01"})
           ],
           key <- ["date", "not_set", "cohort_date", "cohort_not_set"] do
-        assert local(definitions, context, key) == {:unresolved, :missing_context},
+        assert local(definitions, context, key) == {:unresolved, :unsupported_definition},
                inspect({context, key})
       end
-
-      # A supplied value resolves as if the key were not listed.
-      supplied = Map.put(listed, :person_properties, %{"created_at" => "2024-01-01"})
-
-      assert local(definitions, supplied, "date") == {:ok, true}
-      assert local(definitions, supplied, "not_set") == {:ok, false}
-      assert local(definitions, supplied, "cohort_date") == {:ok, true}
-      assert local(definitions, supplied, "cohort_not_set") == {:ok, false}
     end
 
     test "group keys apply only to group filters of their own group type" do

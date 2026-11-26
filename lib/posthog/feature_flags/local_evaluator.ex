@@ -14,6 +14,9 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   @semver_range_operators ~w(semver_tilde semver_caret semver_wildcard)
   @search_operators ~w(icontains not_icontains starts_with not_starts_with ends_with not_ends_with)
   @cohort_operators ~w(exact in not_in)
+  # Filter types matched against caller-supplied properties. Older definitions omit the type,
+  # or send nil or "", for person filters.
+  @property_filter_types ["person", "group", nil, ""]
   @known_absent_matching_operators ~w(is_not_set is_not not_icontains not_starts_with not_ends_with not_regex)
   @local_property_operators ~w(exact is_not is_set is_not_set regex not_regex gt gte lt lte is_date_before is_date_after) ++
                               @search_operators ++ @semver_operators
@@ -143,9 +146,17 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   defp unsupported_property?(property, definitions, cohort?, visited, now)
        when is_map(property) do
     case value(property, "type") do
-      "flag" -> {dependency_filter(property, definitions) == :unsupported, visited}
-      "cohort" -> unsupported_cohort?(property, definitions, visited, now)
-      _ -> {not filter_supported?(property, now, cohort?), visited}
+      "flag" ->
+        {dependency_filter(property, definitions) == :unsupported, visited}
+
+      "cohort" ->
+        unsupported_cohort?(property, definitions, visited, now)
+
+      type when type in @property_filter_types ->
+        {not filter_supported?(property, now, cohort?), visited}
+
+      _type ->
+        {true, visited}
     end
   end
 
@@ -762,7 +773,7 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
         "flag" ->
           match_dependency(property, definitions, context, cache)
 
-        _ ->
+        type when type in @property_filter_types ->
           {match_property(
              property,
              property_values,
@@ -771,6 +782,10 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
              cohort?,
              definitions
            ), cache}
+
+        # Other types, such as person_metadata, read data the caller's properties don't hold.
+        _type ->
+          {{:inconclusive, :unsupported_definition}, cache}
       end
 
     if result == :invalid_regex do
@@ -1006,11 +1021,11 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
     _exception -> {:inconclusive, property_reason(property, now, cohort?)}
   end
 
-  # Person keys apply only to person filters (an untyped filter is a person filter) and group
+  # Person keys apply only to person filters (an omitted, nil or "" type is a person filter) and group
   # keys only to group filters of their own group type. Other types, such as person_metadata,
   # never resolve from a listing.
   defp known_absent_scope?(property, :person, _definitions),
-    do: value(property, "type") in ["person", nil]
+    do: value(property, "type") in ["person", nil, ""]
 
   # A group filter is matched against the properties of the group being evaluated, so one
   # without a group_type_index belongs to that group type.
