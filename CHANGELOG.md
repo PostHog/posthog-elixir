@@ -1,5 +1,18 @@
 # posthog
 
+## 2.24.0 — 2026-11-26
+
+### Minor changes
+
+- [8df258f](https://github.com/posthog/posthog-elixir/commit/8df258fba3233dbc3c8d080df9ce7fd0cf26e86c) Feature flag evaluation accepts `:person_property_keys_known_absent` and `:group_property_keys_known_absent` to list property keys the caller knows are absent. Local evaluation resolves `is_not_set`, `is_set` and the other supported operators on those keys without calling `/flags`, and remote requests send the lists so `/flags` gets the same result. A list longer than 1000 keys returns `{:error, %PostHog.Error{}}` without sending a request. — Thanks @marandaneto!
+
+### Patch changes
+
+- [8df258f](https://github.com/posthog/posthog-elixir/commit/8df258fba3233dbc3c8d080df9ce7fd0cf26e86c) Local evaluation now resolves a group-aggregated flag when its group is not passed, as `/flags` does, instead of falling back to `/flags`. Conditions on that group don't match, so a flag with only those conditions returns `false`. This also applies to a flag that another flag depends on. — Thanks @marandaneto!
+- [8df258f](https://github.com/posthog/posthog-elixir/commit/8df258fba3233dbc3c8d080df9ce7fd0cf26e86c) Local evaluation now treats a group key that is not a non-empty string or a number, such as `""`, a boolean, a list or a map, as no group key, as `/flags` does. A flag aggregated on that group type resolves `false` without calling `/flags`, a group condition on it in a person flag is skipped, and such a key no longer buckets the flag or raises when a snapshot is built. — Thanks @marandaneto!
+- [05555f5](https://github.com/posthog/posthog-elixir/commit/05555f57c4e3b96e7b1ea2252225636c19dc6b17) Local feature flag evaluation no longer matches filters of an unsupported type, such as `person_metadata`, against caller-supplied properties with the same key. Those filters are now inconclusive with the `:unsupported_definition` reason, and the flag falls back to remote evaluation unless another filter or condition decides it. — Thanks @marandaneto!
+- [8df258f](https://github.com/posthog/posthog-elixir/commit/8df258fba3233dbc3c8d080df9ce7fd0cf26e86c) Local evaluation of a group-aggregated flag without a usable group key now skips only the conditions on that group, as `/flags` does. A condition with its own person aggregation still runs and can match, directly or as a dependency. A flag with a holdout above 0% falls back to `/flags` in that case, because only `/flags` can decide the holdout. — Thanks @marandaneto!
+
 ## 2.23.5 — 2026-11-25
 
 ### Patch changes
