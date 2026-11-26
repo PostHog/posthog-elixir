@@ -1298,4 +1298,191 @@ defmodule PostHog.FeatureFlags.LocalEvaluatorTest do
         do: assert({name, MapSet.member?(result.unresolved, "checkout")} == {name, true})
     end
   end
+
+  describe "unsupported property-filter types" do
+    @first_seen %{"key" => "created_at", "operator" => "is_date_after", "value" => "2025-01-01"}
+    @plan_pro %{"type" => "person", "key" => "plan", "operator" => "exact", "value" => "pro"}
+
+    defp first_seen(type), do: Map.put(@first_seen, "type", type)
+
+    defp in_cohort(operator \\ "in"),
+      do: %{"type" => "cohort", "key" => "id", "value" => 7, "operator" => operator}
+
+    defp cohort_snapshot(flags, values, type \\ "AND"),
+      do: snapshot(flags, %{cohorts: %{"7" => %{"type" => type, "values" => values}}})
+
+    defp evaluate_with(definitions, key, person_properties) do
+      LocalEvaluator.evaluate(
+        definitions,
+        %{distinct_id: "user", person_properties: person_properties},
+        [key]
+      )
+    end
+
+    for {name, filter} <- [
+          {"type person", %{"type" => "person"}},
+          {"the type field omitted", %{}},
+          {"a nil type", %{"type" => nil}},
+          {"an empty-string type", %{"type" => ""}}
+        ] do
+      @type_filter filter
+      test "a filter with #{name} matches caller person properties" do
+        created_at = flag("created", [Map.merge(@first_seen, @type_filter)])
+        result = evaluate_with(snapshot([created_at]), "created", %{"created_at" => "2026-06-01"})
+
+        assert result.results["created"].enabled
+      end
+    end
+
+    for type <- ["person_metadata", "future_type"] do
+      @unsupported_type type
+      test "a #{type} condition filter is inconclusive and never matches a caller property" do
+        unsupported = flag("first-seen", [first_seen(@unsupported_type)])
+
+        for created_at <- ["2026-06-01", "2020-06-01"] do
+          result =
+            evaluate_with(snapshot([unsupported]), "first-seen", %{"created_at" => created_at})
+
+          assert result.results == %{}
+          assert result.reasons == %{"first-seen" => :unsupported_definition}
+        end
+      end
+    end
+
+    test "a person_metadata cohort leaf is inconclusive regardless of caller properties" do
+      definitions =
+        cohort_snapshot([flag("first-seen", [in_cohort()])], [first_seen("person_metadata")])
+
+      for properties <- [%{"created_at" => "2026-06-01"}, %{"created_at" => "2020-06-01"}, %{}] do
+        result = evaluate_with(definitions, "first-seen", properties)
+
+        assert result.results == %{}
+        assert result.reasons == %{"first-seen" => :unsupported_definition}
+      end
+    end
+
+    test "leaf negation and an outer not_in do not turn an unsupported leaf into a match" do
+      negated_leaf = Map.put(first_seen("person_metadata"), "negation", true)
+
+      for definitions <- [
+            cohort_snapshot([flag("first-seen", [in_cohort()])], [negated_leaf]),
+            cohort_snapshot([flag("first-seen", [in_cohort("not_in")])], [
+              first_seen("person_metadata")
+            ])
+          ] do
+        result = evaluate_with(definitions, "first-seen", %{"created_at" => "2020-06-01"})
+
+        assert result.results == %{}
+        assert result.reasons == %{"first-seen" => :unsupported_definition}
+      end
+    end
+
+    test "another cohort leaf still decides an AND or OR group" do
+      leaves = [first_seen("person_metadata"), @plan_pro]
+      cohort_flag = flag("first-seen-pro", [in_cohort()])
+
+      and_result =
+        evaluate_with(cohort_snapshot([cohort_flag], leaves), "first-seen-pro", %{
+          "plan" => "free"
+        })
+
+      assert %Result{enabled: false} = and_result.results["first-seen-pro"]
+      assert and_result.unresolved == MapSet.new()
+
+      or_result =
+        evaluate_with(
+          cohort_snapshot([cohort_flag], leaves, "OR"),
+          "first-seen-pro",
+          %{"plan" => "pro"}
+        )
+
+      assert %Result{enabled: true} = or_result.results["first-seen-pro"]
+    end
+
+    test "a definitively false filter decides a condition with an unsupported filter" do
+      region = %{
+        "type" => "future_type",
+        "key" => "region",
+        "operator" => "exact",
+        "value" => "eu"
+      }
+
+      unsupported = flag("future-type-plan", [region, @plan_pro])
+
+      result =
+        evaluate_with(snapshot([unsupported]), "future-type-plan", %{
+          "plan" => "free",
+          "region" => "eu"
+        })
+
+      assert %Result{enabled: false} = result.results["future-type-plan"]
+      assert result.unresolved == MapSet.new()
+    end
+
+    test "a later condition still matches and early exit does not hide the inconclusive one" do
+      unsupported = %{
+        "properties" => [first_seen("person_metadata")],
+        "rollout_percentage" => 100
+      }
+
+      recovered =
+        put_in(flag("first-seen"), ["filters", "groups"], [
+          unsupported,
+          %{"properties" => [], "rollout_percentage" => 100}
+        ])
+
+      result = evaluate_with(snapshot([recovered]), "first-seen", %{"created_at" => "2026-06-01"})
+      assert result.results["first-seen"].enabled
+
+      early_exit =
+        flag("first-seen")
+        |> put_in(["filters", "early_exit"], true)
+        |> put_in(["filters", "groups"], [
+          unsupported,
+          %{"properties" => [], "rollout_percentage" => 0}
+        ])
+
+      result =
+        evaluate_with(snapshot([early_exit]), "first-seen", %{"created_at" => "2026-06-01"})
+
+      assert result.reasons == %{"first-seen" => :unsupported_definition}
+    end
+
+    test "an unsupported filter type defers only the flag that uses it" do
+      future_plan = %{
+        "type" => "future_type",
+        "key" => "plan",
+        "operator" => "exact",
+        "value" => "pro"
+      }
+
+      definitions = snapshot([flag("future-type", [future_plan]), flag("beta-ui")])
+
+      result =
+        LocalEvaluator.evaluate(definitions, %{
+          distinct_id: "user-123",
+          person_properties: %{"plan" => "pro"}
+        })
+
+      assert result.reasons == %{"future-type" => :unsupported_definition}
+      assert result.results["beta-ui"].enabled
+    end
+
+    test "the definition check reports unsupported_definition, including inside cohorts" do
+      definitions =
+        cohort_snapshot(
+          [
+            flag("condition", [first_seen("person_metadata")]),
+            flag("cohort", [in_cohort()]),
+            flag("person", [first_seen("person")])
+          ],
+          [first_seen("person_metadata")]
+        )
+
+      assert LocalEvaluator.definition_reasons(definitions) == %{
+               "condition" => :unsupported_definition,
+               "cohort" => :unsupported_definition
+             }
+    end
+  end
 end
