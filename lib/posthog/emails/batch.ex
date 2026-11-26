@@ -14,6 +14,8 @@ defmodule PostHog.Emails.Batch do
   @recipient_fields [:to, :distinct_id, :idempotency_key, :template_data]
   @per_recipient_fields [:to, :distinct_id, :idempotency_key]
   @excluded_fields [:scheduled_at, :cc, :bcc, :attachments]
+  @no_result "PostHog didn't confirm this email: its answer had no readable result, so it may still go out."
+  @no_answer "PostHog didn't confirm this email, so it may still go out."
   @resend_same_key "Send this email again, unchanged, with the same idempotency_key within 24 hours of the key's first use, so it goes out once."
   @resend_each "Send each recipient again, unchanged, with the same idempotency_key within 24 hours of the key's first use, so each email goes out once."
   @send_each "send each email the batch didn't queue with PostHog.Emails.send/2 and its recipient's idempotency_key."
@@ -444,11 +446,7 @@ defmodule PostHog.Emails.Batch do
   end
 
   defp slot_error(_error, message_id) do
-    Error.new(
-      "api_error",
-      "PostHog didn't confirm this email: its answer had no readable result, so it may still go out.",
-      message_id: message_id
-    )
+    Error.new("api_error", @no_result, message_id: message_id)
   end
 
   defp slot_message(code) when code in @unconfirmed_codes, do: not_confirmed(code)
@@ -471,7 +469,7 @@ defmodule PostHog.Emails.Batch do
   defp unconfirmed do
     Error.new(
       "delivery_unavailable",
-      "PostHog didn't confirm this email, so it may still go out.",
+      @no_answer,
       name: :service_unavailable
     )
   end
@@ -486,7 +484,7 @@ defmodule PostHog.Emails.Batch do
 
   defp as_unconfirmed(error) do
     message =
-      if String.starts_with?(error.message, "PostHog didn't confirm this email"),
+      if error.message in [@no_result, @no_answer],
         do: error.message,
         else: not_confirmed(error.code)
 

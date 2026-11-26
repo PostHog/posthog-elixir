@@ -658,7 +658,13 @@ defmodule PostHog.EmailsBatchTest do
           {"no code", %{"status" => 400, "detail" => "The recipient can't be sent to."}},
           {"a null code", %{"code" => nil, "status" => 422, "detail" => "Unprocessable."}},
           {"an empty code", %{"code" => "", "status" => 503}},
-          {"a blank code", %{"code" => " ", "status" => 400, "detail" => "Not queued."}}
+          {"a blank code", %{"code" => " ", "status" => 400, "detail" => "Not queued."}},
+          {"a detail that says it wasn't sent",
+           %{
+             "code" => "delivery_unavailable",
+             "status" => 503,
+             "detail" => "PostHog didn't confirm this email, and it wasn't sent."
+           }}
         ] do
       test "a recipient error with #{label} is unconfirmed with its key", %{name: name} do
         slot = %{"status" => "error", "error" => unquote(Macro.escape(error))}
