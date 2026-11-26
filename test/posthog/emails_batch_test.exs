@@ -88,6 +88,11 @@ defmodule PostHog.EmailsBatchTest do
     for %{status: "unconfirmed", error: error} <- results do
       assert error.fix =~
                "unchanged, with the same idempotency_key within 24 hours of the key's first use"
+
+      assert error.message =~
+               ~r/^PostHog didn't confirm this email\b.*, so it may still go out\.$/
+
+      refute error.message =~ ~r/not queued|didn't queue|not sent|wasn't sent|failed/i
     end
   end
 
@@ -517,7 +522,8 @@ defmodule PostHog.EmailsBatchTest do
       end
     end
 
-    test "after a lost answer, a 400 content_too_large keeps PostHog's words", %{name: name} do
+    test "after a lost answer, a 400 content_too_large says some emails may have gone out",
+         %{name: name} do
       detail = "The content shared by every recipient can be at most 256 KiB."
 
       answers([
@@ -533,9 +539,10 @@ defmodule PostHog.EmailsBatchTest do
       assert {:error, %BatchError{code: "content_too_large", results: [first, _second]} = error} =
                batch(name, recipients(2), max_retries: 1)
 
-      assert error.message =~ detail
-      assert first.error.message =~ detail
+      assert error.message =~ "some of its emails may have gone out"
+      refute error.message =~ "one at a time"
       assert first.status == "unconfirmed"
+      assert_resend_with_same_key([first])
     end
 
     test "a 400 content_too_large for shared content keeps PostHog's words and no split advice",
@@ -728,15 +735,16 @@ defmodule PostHog.EmailsBatchTest do
       assert_resend_with_same_key(results)
     end
 
-    for {label, status, code, earlier, then_fix} <- [
-          {"a 429", 429, "throttled", [:lost], nil},
-          {"a 409 in flight", 409, "idempotency_key_in_flight", [:lost], nil},
-          {"a 400", 400, "invalid_form", [:lost], nil},
-          {"a 413 without a body", 413, nil, [:lost], "Split the recipients"},
-          {"a 404 without a body", 404, nil, [:lost], "PostHog.Emails.send/2"},
-          {"a 409 batch_unavailable", 409, "batch_unavailable", [:lost], "PostHog.Emails.send/2"},
-          {"a 429 after a 503", 429, "throttled", [:lost, 503], nil},
-          {"a 429 after a 409 in flight", 429, "throttled", [409], nil}
+    for {label, status, code, earlier} <- [
+          {"a 429", 429, "throttled", [:lost]},
+          {"a 409 in flight", 409, "idempotency_key_in_flight", [:lost]},
+          {"a 400", 400, "invalid_form", [:lost]},
+          {"a 413 without a body", 413, nil, [:lost]},
+          {"a 413 content_too_large", 413, "content_too_large", [:lost]},
+          {"a 404 without a body", 404, nil, [:lost]},
+          {"a 409 batch_unavailable", 409, "batch_unavailable", [:lost]},
+          {"a 429 after a 503", 429, "throttled", [:lost, 503]},
+          {"a 429 after a 409 in flight", 429, "throttled", [409]}
         ] do
       test "#{label} to a retry after a lost answer leaves the recipients unconfirmed",
            %{name: name} do
@@ -757,25 +765,15 @@ defmodule PostHog.EmailsBatchTest do
         assert statuses(results) == ["unconfirmed", "unconfirmed"]
         assert %Error{code: ^code, status_code: unquote(status)} = first.error
 
-        for message <- [error.message, first.error.message],
-            code != "idempotency_key_in_flight" do
-          assert message =~ "PostHog refused a retry: "
+        if code != "idempotency_key_in_flight" do
+          assert error.message ==
+                   "PostHog refused a retry of this request with #{code}. An earlier attempt got no answer, so some of its emails may have gone out: read each recipient's result."
 
-          assert message =~
-                   "PostHog didn't confirm an earlier try, so the email may still go out."
-
-          refute message =~ "was lost"
-          refute message =~ ~r/no email was sent|sent no email/
+          assert error.fix ==
+                   "Send each recipient again, unchanged, with the same idempotency_key within 24 hours of the key's first use, so each email goes out once."
         end
 
-        if code != "idempotency_key_in_flight", do: assert(error.fix == first.error.fix)
-
-        for fragment <- List.wrap(unquote(then_fix)) do
-          assert error.fix =~ "If PostHog refuses it again: "
-          assert error.fix =~ fragment
-        end
-
-        refute (error.fix || "") =~ "content smaller"
+        refute (error.fix || "") =~ ~r/split|smaller|send\/2|on its own|new key/i
 
         assert_resend_with_same_key(results)
       end
@@ -815,8 +813,14 @@ defmodule PostHog.EmailsBatchTest do
       assert_resend_with_same_key(results)
     end
 
-    for {status, code} <- [{409, "idempotency_key_in_flight"}, {400, "api_error"}] do
-      test "a request answered #{code} as a whole leaves it unconfirmed", %{name: name} do
+    for {status, code} <- [
+          {409, "idempotency_key_in_flight"},
+          {409, "api_error"},
+          {409, "conflict"},
+          {400, "api_error"}
+        ] do
+      test "a request answered #{status} #{code} as a whole leaves it unconfirmed",
+           %{name: name} do
         answers([whole_call(unquote(status), unquote(code))])
 
         assert {:error, %BatchError{code: unquote(code), results: results}} =

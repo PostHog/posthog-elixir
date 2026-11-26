@@ -129,11 +129,11 @@ defmodule PostHog.Emails do
     within 24 hours of the key's first use, so it goes out once.
 
   A batch that PostHog refuses as a whole, such as a rate limit past its retries, returns
-  `{:error, %PostHog.Emails.BatchError{}}`, whose `:results` hold every recipient. After a 5xx,
-  `idempotency_key_in_flight` past its retries, or a 409 whose body the SDK can't read, the
-  recipients are `"unconfirmed"`. Once an answer
-  is lost, a retry PostHog refuses can't show that the first try didn't queue the email, so those
-  recipients stay `"unconfirmed"` too, with the error of the refusal. PostHog answers
+  `{:error, %PostHog.Emails.BatchError{}}`, whose `:results` hold every recipient. After a 5xx
+  or any 409 but `batch_unavailable`, the recipients are `"unconfirmed"`. Once an answer is lost,
+  a retry PostHog refuses can't show that the first try didn't queue the emails, so those
+  recipients stay `"unconfirmed"` too: the error says some emails may have gone out, and its
+  `:fix` says to send each recipient again with the same `:idempotency_key`. PostHog answers
   `content_too_large` in two cases. A 413 means the request is too large: split the recipients
   into smaller batches, or make the email smaller when the batch has one recipient. A 400 means the content or `:template_data` shared by every recipient is
   too large, which splitting doesn't help: send those emails one at a time with `send/2`. The code `batch_unavailable` (409) means the project can't send batches yet,

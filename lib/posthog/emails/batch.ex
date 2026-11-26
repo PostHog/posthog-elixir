@@ -15,6 +15,7 @@ defmodule PostHog.Emails.Batch do
   @per_recipient_fields [:to, :distinct_id, :idempotency_key]
   @excluded_fields [:scheduled_at, :cc, :bcc, :attachments]
   @resend_same_key "Send this email again, unchanged, with the same idempotency_key within 24 hours of the key's first use, so it goes out once."
+  @resend_each "Send each recipient again, unchanged, with the same idempotency_key within 24 hours of the key's first use, so each email goes out once."
   @send_each "send each email the batch didn't queue with PostHog.Emails.send/2 and its recipient's idempotency_key."
 
   @spec batch(PostHog.supervisor_name(), [Emails.batch_option()] | map()) ::
@@ -332,10 +333,8 @@ defmodule PostHog.Emails.Batch do
         {:error, error, all(run, "unconfirmed", error)}
 
       run.lost? ->
-        error =
-          if status == 413 and map_size(run.members) == 1, do: %{error | fix: nil}, else: error
-
-        {:error, refused_after_loss(error), all(run, "unconfirmed", refused_after_loss(error))}
+        error = refused_after_loss(error)
+        {:error, error, all(run, "unconfirmed", error)}
 
       true ->
         {:error, error, all(run, "failed", error)}
@@ -343,7 +342,7 @@ defmodule PostHog.Emails.Batch do
   end
 
   defp uncertain?(status, _code) when status >= 500, do: true
-  defp uncertain?(409, nil), do: true
+  defp uncertain?(409, code), do: code != "batch_unavailable"
   defp uncertain?(429, _code), do: false
   defp uncertain?(_status, code), do: code in @unconfirmed_codes
 
@@ -352,7 +351,7 @@ defmodule PostHog.Emails.Batch do
 
     if status == 404 and Emails.text(fields["code"]) in [nil, "not_found", "api_error"] and
          Emails.text(fields["attr"]) == nil,
-       do: fields |> Map.delete("why") |> Map.merge(not_found(run.template?, run.lost?)),
+       do: fields |> Map.delete("why") |> Map.merge(not_found(run.template?)),
        else: known_fields(fields, status, map_size(run.members))
   end
 
@@ -374,7 +373,7 @@ defmodule PostHog.Emails.Batch do
     end
   end
 
-  defp not_found(template?, lost?) do
+  defp not_found(template?) do
     {cause, fix} =
       if template?,
         do:
@@ -386,7 +385,7 @@ defmodule PostHog.Emails.Batch do
 
     %{
       "code" => "not_found",
-      "detail" => if(lost?, do: "#{cause}.", else: not_sent(cause, template?)),
+      "detail" => not_sent(cause, template?),
       "fix" =>
         "#{fix} with PostHog.Emails.send/2 and its idempotency_key until batch sends are available."
     }
@@ -424,19 +423,9 @@ defmodule PostHog.Emails.Batch do
     else
       answer = slot_error(slot["error"], message_id)
 
-      cond do
-        answer.code in @unconfirmed_codes ->
-          set(run, index, "unconfirmed", message_id: message_id, error: answer)
-
-        run.lost? ->
-          set(run, index, "unconfirmed",
-            message_id: message_id,
-            error: refused_after_loss(answer)
-          )
-
-        true ->
-          set(run, index, "failed", message_id: message_id, error: answer)
-      end
+      if answer.code in @unconfirmed_codes or run.lost?,
+        do: set(run, index, "unconfirmed", message_id: message_id, error: answer),
+        else: set(run, index, "failed", message_id: message_id, error: answer)
     end
   end
 
@@ -453,26 +442,27 @@ defmodule PostHog.Emails.Batch do
   defp slot_error(_error, message_id) do
     Error.new(
       "api_error",
-      "PostHog answered without a readable result for this email, so it may still go out.",
+      "PostHog didn't confirm this email: its answer had no readable result, so it may still go out.",
       message_id: message_id
     )
   end
 
-  defp slot_message(code) when code in @unconfirmed_codes,
-    do: "PostHog couldn't confirm this email (#{code}), so it may still go out."
+  defp slot_message(code) when code in @unconfirmed_codes, do: not_confirmed(code)
 
   defp slot_message(code), do: "PostHog didn't queue this email: #{code}."
 
   defp refused_after_loss(error) do
-    then_fix = if error.fix, do: " If PostHog refuses it again: #{error.fix}", else: ""
-
     %{
       error
       | message:
-          "PostHog refused a retry: #{error.message} PostHog didn't confirm an earlier try, so the email may still go out.",
-        fix: @resend_same_key <> then_fix
+          "PostHog refused a retry of this request with #{error.code}. An earlier attempt got no answer, so some of its emails may have gone out: read each recipient's result.",
+        why: nil,
+        fix: @resend_each
     }
   end
+
+  defp not_confirmed(code),
+    do: "PostHog didn't confirm this email (#{code}), so it may still go out."
 
   defp unconfirmed do
     Error.new(
@@ -486,14 +476,22 @@ defmodule PostHog.Emails.Batch do
     do: Enum.reduce(Map.keys(run.members), run, &set(&2, &1, status, error: error))
 
   defp set(run, index, "unconfirmed", fields),
-    do: put_result(run, index, "unconfirmed", Keyword.update!(fields, :error, &resend_same_key/1))
+    do: put_result(run, index, "unconfirmed", Keyword.update!(fields, :error, &as_unconfirmed/1))
 
   defp set(run, index, status, fields), do: put_result(run, index, status, fields)
 
-  defp resend_same_key(error) do
-    if String.starts_with?(error.fix || "", @resend_same_key),
-      do: error,
-      else: %{error | fix: @resend_same_key}
+  defp as_unconfirmed(error) do
+    message =
+      if String.starts_with?(error.message, "PostHog didn't confirm this email"),
+        do: error.message,
+        else: not_confirmed(error.code)
+
+    fix =
+      if String.starts_with?(error.fix || "", @resend_same_key),
+        do: error.fix,
+        else: @resend_same_key
+
+    %{error | message: message, fix: fix}
   end
 
   defp put_result(run, index, status, fields) do
