@@ -98,7 +98,7 @@ defmodule PostHog.Emails do
   `"queued"` and its `:scheduled_at` is `nil`. When PostHog accepts the email without confirming
   the time, the send returns `schedule_not_confirmed` with the email's `:message_id`. That
   includes an answer that sends the email now while the time was more than 60 seconds ahead of
-  this machine's clock at the first attempt PostHog didn't refuse with a 429. The 60 seconds only
+  this machine's clock at the send's first attempt, retries included. The 60 seconds only
   decide when the SDK takes such an answer as success. The SDK reads the answer after PostHog took
   the email, so `schedule_not_confirmed` can come back for an email that already went out early,
   and a clock that runs behind can return it for an email that went out as asked. Read its status with `get/2` before you send it again. `get/2` reads `"scheduled"` until the email goes
@@ -452,7 +452,6 @@ defmodule PostHog.Emails do
       case connection
            |> request(:post, @send_path, headers, prepared.body)
            |> parse_send_reply(prepared.scheduled_at, sent_at) do
-        {:error, %Error{status_code: 429} = error} when is_nil(since) -> {:error, error, nil}
         {:error, error} -> {:error, error, sent_at}
         {:ok, result} -> {:ok, result}
       end

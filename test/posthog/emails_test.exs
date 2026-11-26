@@ -2525,27 +2525,32 @@ defmodule PostHog.EmailsTest do
       refute_requested()
     end
 
-    test "reads the clock before the request, so a slow answer can't turn early into on time",
-         %{name: name, clock: clock} do
-      test_pid = self()
+    for {scheduled_at, slow_s} <- [{"2026-11-24T12:01:05Z", 10}, {"2026-11-24T12:01:02Z", 3}] do
+      test "reads the clock before the request, so an answer #{slow_s} s later can't turn #{scheduled_at} into on time",
+           %{name: name, clock: clock} do
+        test_pid = self()
 
-      expect(API.Mock, :request, fn _client, method, url, opts ->
-        send(test_pid, {:request, method, url, opts})
-        Agent.update(clock, &DateTime.add(&1, 10, :second))
-        accepted(%{"message_id" => @message_id, "status" => "queued", "scheduled_at" => nil})
-      end)
+        expect(API.Mock, :request, fn _client, method, url, opts ->
+          send(test_pid, {:request, method, url, opts})
+          Agent.update(clock, &DateTime.add(&1, unquote(slow_s), :second))
+          accepted(%{"message_id" => @message_id, "status" => "queued", "scheduled_at" => nil})
+        end)
 
-      assert {:error, %Error{code: "schedule_not_confirmed", message_id: @message_id}} =
-               Emails.send(name, @code_form ++ [scheduled_at: "2026-11-24T12:01:05Z"])
+        assert {:error, %Error{code: "schedule_not_confirmed", message_id: @message_id}} =
+                 Emails.send(name, @code_form ++ [scheduled_at: unquote(scheduled_at)])
+      end
     end
 
-    for {label, refusals, outcome} <- [
-          {"keeps the first clock reading after a 503, which PostHog may have taken",
-           [{503, "service_unavailable"}], :error},
-          {"reads the clock again after a 429, which PostHog refused", [{429, "rate_limited"}],
-           :ok},
-          {"keeps the first clock reading through a 429 that follows a 503",
-           [{503, "service_unavailable"}, {429, "rate_limited"}], :error}
+    for {label, refusals, scheduled_at, outcome} <- [
+          {"keeps the first attempt's clock reading after a 503", [{503, "service_unavailable"}],
+           "2026-11-24T12:01:05Z", :error},
+          {"keeps the first attempt's clock reading after a 429", [{429, "rate_limited"}],
+           "2026-11-24T12:01:05Z", :error},
+          {"keeps the first attempt's clock reading through a 429 that follows a 503",
+           [{503, "service_unavailable"}, {429, "rate_limited"}], "2026-11-24T12:01:05Z", :error},
+          {"takes a time 58 seconds ahead of the first attempt as sent now after 30 seconds of retries",
+           [{503, "service_unavailable"}, {429, "rate_limited"}, {503, "service_unavailable"}],
+           "2026-11-24T12:00:58Z", :ok}
         ] do
       test "#{label}", %{name: name, clock: clock} do
         test_pid = self()
@@ -2562,7 +2567,8 @@ defmodule PostHog.EmailsTest do
           accepted(%{"message_id" => @message_id, "status" => "queued", "scheduled_at" => nil})
         )
 
-        result = Emails.send(name, @code_form ++ [scheduled_at: "2026-11-24T12:01:05Z"])
+        result =
+          Emails.send(name, @code_form ++ [scheduled_at: unquote(scheduled_at), max_retries: 3])
 
         case unquote(outcome) do
           :error ->
