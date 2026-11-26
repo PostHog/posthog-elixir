@@ -336,34 +336,70 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
     filters = value(flag, "filters")
     aggregation = value(filters, "aggregation_group_type_index")
 
-    with {:ok, properties, bucketing} <-
-           evaluation_target(aggregation, flag, definitions, context) do
-      conditions = value(filters, "groups") || []
-
-      if is_list(conditions) do
-        evaluate_conditions(
-          conditions,
+    case evaluation_target(aggregation, flag, definitions, context) do
+      {:ok, properties, bucketing} ->
+        evaluate_filter_groups(
           flag,
           aggregation,
           properties,
           bucketing,
           definitions,
           context,
-          cache,
-          nil
+          cache
         )
-      else
-        {{:inconclusive, :unsupported_definition}, cache}
-      end
-    else
-      # Like the flags service, a group flag is false when its group is not passed, directly
-      # or as a dependency.
+
+      # Like the flags service, each condition on the flag's group is skipped, and a condition
+      # with its own aggregation still runs. The flags service hashes an empty identifier for
+      # a holdout, so only it can decide a flag with one.
       :group_not_supplied ->
-        {{:ok, false}, cache}
+        if holdout?(filters) do
+          {{:inconclusive, with_definition_reason(:missing_context, flag, definitions)}, cache}
+        else
+          evaluate_filter_groups(flag, aggregation, nil, nil, definitions, context, cache)
+        end
 
       # No condition can be checked, so a cause in the definition outranks the missing context.
       {:inconclusive, reason} ->
         {{:inconclusive, with_definition_reason(reason, flag, definitions)}, cache}
+    end
+  end
+
+  defp evaluate_filter_groups(
+         flag,
+         aggregation,
+         properties,
+         bucketing,
+         definitions,
+         context,
+         cache
+       ) do
+    conditions = value(value(flag, "filters"), "groups") || []
+
+    if is_list(conditions) do
+      evaluate_conditions(
+        conditions,
+        flag,
+        aggregation,
+        properties,
+        bucketing,
+        definitions,
+        context,
+        cache,
+        nil
+      )
+    else
+      {{:inconclusive, :unsupported_definition}, cache}
+    end
+  end
+
+  defp holdout?(filters) do
+    case value(filters, "holdout") do
+      holdout when is_map(holdout) ->
+        percentage = value(holdout, "exclusion_percentage")
+        is_number(percentage) and percentage > 0
+
+      _holdout ->
+        false
     end
   end
 
@@ -583,29 +619,35 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
         aggregation
       end
 
-    if condition_aggregation == aggregation do
-      {:ok, properties, bucketing}
-    else
-      case condition_aggregation do
-        nil ->
-          case bucketing_value(flag, context) do
-            {:ok, person_bucketing} -> {:ok, context.person_properties, person_bucketing}
-            :error -> {:inconclusive, :missing_context}
-          end
+    cond do
+      # The flag's group has no usable key, so a condition on it is skipped.
+      condition_aggregation == aggregation and is_nil(bucketing) ->
+        :skip
 
-        index ->
-          group_name = group_name(definitions, index)
-          group_key = if is_binary(group_name), do: map_value(context.groups, group_name)
+      condition_aggregation == aggregation ->
+        {:ok, properties, bucketing}
 
-          group_props =
-            if is_binary(group_name), do: map_value(context.group_properties, group_name)
+      true ->
+        case condition_aggregation do
+          nil ->
+            case bucketing_value(flag, context) do
+              {:ok, person_bucketing} -> {:ok, context.person_properties, person_bucketing}
+              :error -> {:inconclusive, :missing_context}
+            end
 
-          cond do
-            not usable_group_key?(group_key) -> :skip
-            not is_map(group_props) -> {:inconclusive, :missing_context}
-            true -> {:ok, group_props, to_string(group_key)}
-          end
-      end
+          index ->
+            group_name = group_name(definitions, index)
+            group_key = if is_binary(group_name), do: map_value(context.groups, group_name)
+
+            group_props =
+              if is_binary(group_name), do: map_value(context.group_properties, group_name)
+
+            cond do
+              not usable_group_key?(group_key) -> :skip
+              not is_map(group_props) -> {:inconclusive, :missing_context}
+              true -> {:ok, group_props, to_string(group_key)}
+            end
+        end
     end
   end
 
@@ -1715,10 +1757,12 @@ defmodule PostHog.FeatureFlags.LocalEvaluator do
   defp known_atom("dependency_chain"), do: :dependency_chain
   defp known_atom("ensure_experience_continuity"), do: :ensure_experience_continuity
   defp known_atom("early_exit"), do: :early_exit
+  defp known_atom("exclusion_percentage"), do: :exclusion_percentage
   defp known_atom("filters"), do: :filters
   defp known_atom("group_type_index"), do: :group_type_index
   defp known_atom("groups"), do: :groups
   defp known_atom("has_experiment"), do: :has_experiment
+  defp known_atom("holdout"), do: :holdout
   defp known_atom("id"), do: :id
   defp known_atom("key"), do: :key
   defp known_atom("multivariate"), do: :multivariate

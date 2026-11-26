@@ -685,6 +685,68 @@ defmodule PostHog.FeatureFlags.KnownAbsentPropertyKeysTest do
       end
     end
 
+    test "a person condition in a group flag runs without the group key" do
+      group_condition = %{"properties" => [], "rollout_percentage" => 100}
+
+      person_condition = %{
+        "properties" => [person_filter("exact", "pro")],
+        "rollout_percentage" => 100,
+        "aggregation_group_type_index" => nil
+      }
+
+      group_flag = fn key, conditions ->
+        %{
+          flag(key, [])
+          | "filters" => %{"aggregation_group_type_index" => 0, "groups" => conditions}
+        }
+      end
+
+      definitions =
+        snapshot([
+          group_flag.("org-person", [person_condition]),
+          group_flag.("org-mixed", [group_condition, person_condition]),
+          flag("person-child", [flag_dependency("org-person")])
+        ])
+
+      for groups <- [%{}, %{organization: ""}],
+          {plan, expected} <- [{"pro", true}, {"free", false}] do
+        context = %{groups: groups, person_properties: %{"plan" => plan}}
+
+        for key <- ["org-person", "org-mixed", "person-child"] do
+          assert local(definitions, context, key) == {:ok, expected}, inspect({key, groups, plan})
+        end
+      end
+    end
+
+    test "a group flag with a holdout and no usable group key is inconclusive" do
+      holdout_flag = fn key, percentage ->
+        flag(key, [], %{
+          "aggregation_group_type_index" => 0,
+          "holdout" => %{"id" => 7, "exclusion_percentage" => percentage}
+        })
+      end
+
+      definitions =
+        snapshot([
+          holdout_flag.("org-holdout", 50),
+          holdout_flag.("org-no-holdout", 0),
+          flag("person-child", [flag_dependency("org-holdout")])
+        ])
+
+      for groups <- [%{}, %{organization: ""}] do
+        context = %{groups: groups}
+        assert local(definitions, context, "org-holdout") == {:unresolved, :missing_context}
+        assert local(definitions, context, "org-no-holdout") == {:ok, false}
+
+        assert local(definitions, context, "person-child") ==
+                 {:unresolved, :unresolved_dependency}
+      end
+
+      context = %{groups: %{organization: "acme"}}
+      assert local(definitions, context, "org-holdout") == {:ok, true}
+      assert local(definitions, context, "org-no-holdout") == {:ok, true}
+    end
+
     test "a usable string or number group key still evaluates and buckets" do
       rollout =
         flag("org-rollout", [], %{"aggregation_group_type_index" => 0})
@@ -960,6 +1022,86 @@ defmodule PostHog.FeatureFlags.KnownAbsentPropertyKeysTest do
       called = for %{event: "$feature_flag_called", properties: props} <- events, do: props
       assert called != []
       assert Enum.all?(called, &(&1[:"$feature_flag_response"] == false))
+    end
+
+    test "a person condition in a group flag decides without the group key or a /flags request" do
+      name = __MODULE__.GroupFlagPersonCondition
+
+      person_flag =
+        %{
+          flag("org-person", [])
+          | "filters" => %{
+              "aggregation_group_type_index" => 0,
+              "groups" => [
+                %{"properties" => [], "rollout_percentage" => 100},
+                %{
+                  "properties" => [person_filter("exact", "pro")],
+                  "rollout_percentage" => 100,
+                  "aggregation_group_type_index" => nil
+                }
+              ]
+            }
+        }
+
+      start_instance(name, [person_flag, flag("person-child", [flag_dependency("org-person")])])
+      owner = self()
+
+      stub(PostHog.API.Mock, :request, fn :stub_client, :post, "/flags", opts ->
+        send(owner, {:flags_body, opts[:json]})
+        {:ok, %{status: 200, body: %{"flags" => %{}}}}
+      end)
+
+      for groups <- [%{}, %{organization: ""}],
+          {plan, expected} <- [{"pro", true}, {"free", false}] do
+        body = %{distinct_id: "user", groups: groups, person_properties: %{"plan" => plan}}
+
+        assert {:ok, snapshot} = FeatureFlags.evaluate_flags(name, body)
+        assert snapshot.flags["org-person"].enabled == expected
+        assert snapshot.flags["person-child"].enabled == expected
+
+        for key <- ["org-person", "person-child"] do
+          assert {:ok, %{enabled: ^expected}} =
+                   FeatureFlags.get_feature_flag_result(name, key, body, send_event: false)
+        end
+
+        refute_received {:flags_body, _sent}
+      end
+    end
+
+    test "a group flag with a holdout and no usable group key falls back to /flags" do
+      name = __MODULE__.GroupHoldout
+
+      holdout_flag =
+        flag("org-holdout", [], %{
+          "aggregation_group_type_index" => 0,
+          "holdout" => %{"id" => 7, "exclusion_percentage" => 50}
+        })
+
+      start_instance(name, [holdout_flag])
+      owner = self()
+
+      stub(PostHog.API.Mock, :request, fn :stub_client, :post, "/flags", opts ->
+        send(owner, {:flags_body, opts[:json]})
+
+        {:ok,
+         %{
+           status: 200,
+           body: %{"flags" => %{"org-holdout" => %{"enabled" => true, "variant" => "holdout-7"}}}
+         }}
+      end)
+
+      body = %{distinct_id: "user", groups: %{organization: ""}}
+
+      assert {:ok, %{enabled: true, variant: "holdout-7"}} =
+               FeatureFlags.get_feature_flag_result(name, "org-holdout", body, send_event: false)
+
+      assert_received {:flags_body, _sent}
+
+      assert {:ok, snapshot} =
+               FeatureFlags.evaluate_flags(name, Map.put(body, :only_evaluate_locally, true))
+
+      refute Map.has_key?(snapshot.flags, "org-holdout")
+      refute_received {:flags_body, _sent}
     end
 
     test "context bodies carry the listed keys" do
