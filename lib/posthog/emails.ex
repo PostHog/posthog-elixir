@@ -1,6 +1,6 @@
 defmodule PostHog.Emails do
   @moduledoc """
-  Send transactional email, such as a password reset or a receipt, and read its status.
+  Send email, such as a password reset, a receipt or a product update, and read its status.
 
   An email goes out in one of two forms:
 
@@ -73,6 +73,24 @@ defmodule PostHog.Emails do
 
   `{:ok, result}` means PostHog queued the email. Delivery happens later: read it with `get/2`,
   or in the template's workflow in PostHog.
+
+  ## Message categories
+
+  A send with `:template_key` can name a `:category`: the key of one of the project's message
+  categories, such as `"newsletter"`. A marketing category skips recipients who opted out of it
+  or of all marketing email, fills `{{ unsubscribe_url }}` in `:html` and `:text` with the
+  recipient's preferences link, and adds List-Unsubscribe headers. A marketing email can't have
+  `:cc` or `:bcc`. A transactional category only files the email. A skipped recipient doesn't
+  fail the send: `get/2` reports the email as `failed` with the reason `recipient_opted_out`.
+
+      PostHog.Emails.send(
+        to: "user@example.com",
+        template_key: "newsletter-2026-11",
+        subject: "What's new",
+        html: ~s(<p>What's new.</p><p><a href="{{ unsubscribe_url }}">Unsubscribe</a></p>),
+        category: "newsletter",
+        distinct_id: "user_123"
+      )
 
   ## Where requests go
 
@@ -147,6 +165,17 @@ defmodule PostHog.Emails do
     nothing.
   - `client_closed`: the PostHog instance stopped during a call, so the call made no further
     request, and a send sent no email.
+  - `marketing_template` (400): the template that `:template_id` names is in a marketing
+    category. PostHog sends only transactional templates.
+
+  A send with `:category` can also return:
+
+  - `category_not_found` (400): the project has no category with that key, or it is deleted.
+  - `marketing_copies_unsupported` (400): a marketing email has `:cc` or `:bcc`. The error's
+    `:field` names which.
+  - `sandbox_fields_unsupported` (400): a marketing category while the project has no verified
+    sending domain, so the email would go out from the PostHog test sender.
+  - `workflow_can_wait` (400): a marketing email carries `:attachments`.
 
   A send with files can also return:
 
@@ -211,7 +240,8 @@ defmodule PostHog.Emails do
                    :attachments,
                    :sensitive,
                    :tracking,
-                   :capture_engagement
+                   :capture_engagement,
+                   :category
                  ]
   @address_fields [:reply_to, :cc, :bcc]
 
@@ -271,6 +301,11 @@ defmodule PostHog.Emails do
   - `:capture_engagement` - deprecated: use `tracking: %{engagement: false}` instead. Whether
     PostHog captures the email's engagement events. It still works, but a send can't set both.
     Sent only when you set it.
+  - `:category` - the key of one of the project's message categories, such as `"newsletter"`.
+    A marketing category skips recipients who opted out of it or of all marketing email, fills
+    `{{ unsubscribe_url }}` with the recipient's preferences link, and adds List-Unsubscribe
+    headers. A marketing email can't have `:cc` or `:bcc`. See "Message categories" in
+    `PostHog.Emails`. Sent only when you set it, and needs a PostHog version that takes it.
 
   An option set to `nil` counts as left out, and so does an empty `:reply_to`, `:cc`, `:bcc` or
   `:attachments` list. A PostHog version that doesn't take a field yet, such as `:attachments`,
@@ -296,6 +331,7 @@ defmodule PostHog.Emails do
           | {:sensitive, boolean() | nil}
           | {:tracking, tracking() | nil}
           | {:capture_engagement, boolean() | nil}
+          | {:category, String.t() | nil}
 
   @typedoc """
   A file sent with the email. `:content` is the file's raw bytes, such as `File.read!/1`
@@ -562,7 +598,8 @@ defmodule PostHog.Emails do
          :text,
          :from,
          :capture_engagement,
-         :sensitive
+         :sensitive,
+         :category
        ])
        |> put_tracking(options)
        |> put_addresses(options)}
@@ -586,8 +623,9 @@ defmodule PostHog.Emails do
   end
 
   defp check_code_fields(options) do
-    with :ok <- check_content(options) do
-      check_sender(options)
+    with :ok <- check_content(options),
+         :ok <- check_sender(options) do
+      check_category(options)
     end
   end
 
@@ -636,6 +674,12 @@ defmodule PostHog.Emails do
       true ->
         :ok
     end
+  end
+
+  defp check_category(options) do
+    if not_string?(options, :category),
+      do: invalid("invalid_form", "category must be a string.", "category"),
+      else: :ok
   end
 
   defp not_string?(options, field),
@@ -691,7 +735,7 @@ defmodule PostHog.Emails do
       {why, how} =
         case form do
           :template ->
-            {"A template made in PostHog sets its own sender, copies, subject, content, attachments, tracking and sensitive setting, and follows the project's engagement setting.",
+            {"A template made in PostHog sets its own sender, copies, subject, content, attachments, tracking, sensitive setting and category, and follows the project's engagement setting.",
              "send content from your code with template_key"}
 
           :code ->

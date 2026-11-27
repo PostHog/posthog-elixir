@@ -550,7 +550,12 @@ defmodule PostHog.EmailsTest do
       refute Map.has_key?(sent_body(), "distinct_id")
     end
 
-    for {field, value} <- [subject: "Hi", tracking: false, sensitive: true] do
+    for {field, value} <- [
+          subject: "Hi",
+          tracking: false,
+          sensitive: true,
+          category: "newsletter"
+        ] do
       test "refuses the code form field #{field}", %{name: name} do
         field_name = Atom.to_string(unquote(field))
 
@@ -638,7 +643,8 @@ defmodule PostHog.EmailsTest do
                  text: "Thanks",
                  reply_to: ["a@example.com", "b@example.com"],
                  capture_engagement: false,
-                 html: nil
+                 html: nil,
+                 category: nil
                )
 
       assert sent_body() == %{
@@ -763,6 +769,42 @@ defmodule PostHog.EmailsTest do
       refute_requested()
     end
 
+    test "sends category as the key string", %{name: name} do
+      expect_reply(accepted())
+
+      assert {:ok, _} =
+               Emails.send(name,
+                 to: "user@example.com",
+                 template_key: "newsletter-2026-11",
+                 subject: "What's new",
+                 html: "<p>What's new.</p>",
+                 category: "newsletter"
+               )
+
+      assert sent_body() == %{
+               "to" => "user@example.com",
+               "template_key" => "newsletter-2026-11",
+               "subject" => "What's new",
+               "html" => "<p>What's new.</p>",
+               "category" => "newsletter"
+             }
+    end
+
+    test "refuses a category that is not a string", %{name: name} do
+      for category <- [:newsletter, %{key: "newsletter"}] do
+        assert {:error, %Error{code: "invalid_form", field: "category"}} =
+                 Emails.send(name,
+                   to: "user@example.com",
+                   template_key: "receipt",
+                   subject: "Hi",
+                   html: "<p/>",
+                   category: category
+                 )
+      end
+
+      refute_requested()
+    end
+
     test "refuses a reply_to that is not addresses", %{name: name} do
       assert {:error, %Error{code: "invalid_form", field: "reply_to"}} =
                Emails.send(name,
@@ -853,7 +895,7 @@ defmodule PostHog.EmailsTest do
         assert field_name == to_string(field)
 
         assert error.why =~
-                 "sets its own sender, copies, subject, content, attachments, tracking and sensitive setting"
+                 "sets its own sender, copies, subject, content, attachments, tracking, sensitive setting and category"
 
         assert error.fix =~ "template_key"
       end
