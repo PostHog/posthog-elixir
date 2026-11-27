@@ -15,174 +15,6 @@ defmodule PostHog.EmailsTest.ReqTestClient do
   defdelegate request(client, method, url, opts), to: Client
 end
 
-defmodule PostHog.EmailsTest.FakeSendEndpoint do
-  @moduledoc false
-  import Plug.Conn
-
-  @send_path "/api/messaging/send/email/"
-  @code_keys ~w(to distinct_id template_key subject html text from reply_to cc bcc attachments sensitive tracking capture_engagement category)
-  @category_keys ~w(key type name description)
-  @message_id "01a18356-c56c-0001-e494-7666bc915188"
-  @html_comment_pattern ~r/<!--.*?-->/s
-  @clickable_unsubscribe_pattern ~r/<(?i:a)(?:\s+[^>]*?)?\s+(?i:href)\s*=\s*(?:"\s*\{\{\s*unsubscribe_url\s*\}\}(?:\?[^"#]*)?(?:#[^"]*)?\s*"|'\s*\{\{\s*unsubscribe_url\s*\}\}(?:\?[^'#]*)?(?:#[^']*)?\s*')[^>]*>/
-  @unsubscribe_placeholder_pattern ~r/\{\{\s*unsubscribe_url\s*\}\}/
-
-  def start(req_test_name, categories \\ %{}, templates \\ %{}) do
-    {:ok, store} =
-      Agent.start_link(fn ->
-        %{
-          categories: categories,
-          templates: templates,
-          sends: 0,
-          requests: [],
-          queued: []
-        }
-      end)
-
-    Req.Test.stub(req_test_name, &serve(&1, store))
-    store
-  end
-
-  def categories(store), do: Agent.get(store, & &1.categories)
-
-  def sends(store), do: Agent.get(store, & &1.sends)
-
-  @doc "The decoded JSON request bodies received, oldest first."
-  def requests(store), do: Agent.get(store, &Enum.reverse(&1.requests))
-
-  @doc "The category key of each queued email, oldest first: nil for one with no category."
-  def queued(store), do: Agent.get(store, &Enum.reverse(&1.queued))
-
-  defp serve(%{request_path: @send_path} = conn, store) do
-    {:ok, raw, conn} = read_body(conn)
-    body = Jason.decode!(raw)
-    Agent.update(store, &%{&1 | sends: &1.sends + 1, requests: [body | &1.requests]})
-    {status, reply} = answer(body, store)
-
-    conn
-    |> put_resp_content_type("application/json")
-    |> send_resp(status, Jason.encode!(reply))
-  end
-
-  defp serve(conn, _store) do
-    conn
-    |> put_resp_content_type("application/json")
-    |> send_resp(404, Jason.encode!(%{"code" => "not_found", "detail" => "Not found."}))
-  end
-
-  defp answer(body, store) do
-    category = body["category"]
-    templates = Agent.get(store, & &1.templates)
-
-    cond do
-      Map.keys(body) -- @code_keys != [] ->
-        refuse("invalid_input", nil)
-
-      category not in [nil, "transactional"] and not well_formed?(category) ->
-        refuse("invalid_input", "category")
-
-      Map.has_key?(templates, body["template_key"]) ->
-        send_for_template(store, body, templates)
-
-      category in [nil, "transactional"] ->
-        queue(store, nil)
-
-      true ->
-        send_with_defined_category(store, body, category)
-    end
-  end
-
-  defp send_for_template(store, %{"template_key" => template_key} = body, templates) do
-    %{category_key: key, transactional: transactional?} = templates[template_key]
-    category = body["category"]
-
-    cond do
-      not transactional? -> refuse("template_not_transactional", nil)
-      marketing_category?(store, key) -> refuse("marketing_template", nil)
-      template_category_matches?(store, key, category) -> queue(store, key)
-      true -> refuse("category_mismatch", "category")
-    end
-  end
-
-  defp marketing_category?(_store, nil), do: false
-  defp marketing_category?(store, key), do: categories(store)[key]["type"] == "marketing"
-
-  defp template_category_matches?(_store, nil, category), do: category in [nil, "transactional"]
-  defp template_category_matches?(_store, _key, nil), do: true
-
-  defp template_category_matches?(store, key, %{"key" => key, "type" => type}),
-    do: categories(store)[key]["type"] == type
-
-  defp template_category_matches?(_store, _key, _category), do: false
-
-  defp send_with_defined_category(store, body, %{"type" => "marketing"} = category) do
-    cond do
-      not has_unsubscribe_link?(body["html"], body["text"]) ->
-        attr = if present_string?(body["html"]), do: "html", else: "text"
-        refuse("unsubscribe_link_required", attr)
-
-      has_copies?(body) ->
-        refuse("copies_not_allowed", nil)
-
-      true ->
-        create_or_keep(store, category)
-    end
-  end
-
-  defp send_with_defined_category(store, _body, category),
-    do: create_or_keep(store, category)
-
-  defp has_unsubscribe_link?(html, text) do
-    if present_string?(html) do
-      stripped = Regex.replace(@html_comment_pattern, html, "")
-      Regex.match?(@clickable_unsubscribe_pattern, stripped)
-    else
-      Regex.match?(@unsubscribe_placeholder_pattern, text || "")
-    end
-  end
-
-  defp present_string?(value), do: is_binary(value) and value != ""
-
-  defp has_copies?(body) do
-    Enum.any?(["cc", "bcc"], fn field ->
-      is_list(body[field]) and body[field] != []
-    end)
-  end
-
-  defp queue(store, key) do
-    Agent.update(store, &%{&1 | queued: [key | &1.queued]})
-    accept()
-  end
-
-  defp well_formed?(%{"key" => key, "type" => type, "name" => name} = category)
-       when is_binary(key) and type in ["marketing", "transactional"] and is_binary(name),
-       do:
-         Map.keys(category) -- @category_keys == [] and
-           (not Map.has_key?(category, "description") or is_binary(category["description"]))
-
-  defp well_formed?(_category), do: false
-
-  defp create_or_keep(store, %{"key" => key, "type" => type} = category) do
-    Agent.get_and_update(store, fn %{categories: categories} = state ->
-      case categories[key] do
-        %{"type" => stored} when stored != type ->
-          {refuse("category_mismatch", "category"), state}
-
-        stored ->
-          fields = stored || Map.merge(%{"description" => ""}, Map.delete(category, "key"))
-
-          {accept(),
-           %{state | categories: Map.put(categories, key, fields), queued: [key | state.queued]}}
-      end
-    end)
-  end
-
-  defp accept, do: {202, %{"message_id" => @message_id}}
-
-  defp refuse(code, attr),
-    do: {400, %{"type" => "validation_error", "code" => code, "detail" => code, "attr" => attr}}
-end
-
 defmodule PostHog.EmailsTest.HeaderedClient do
   @moduledoc false
   # The default client with Req.Test in place of the network, set up as an app might: its own
@@ -616,9 +448,7 @@ defmodule PostHog.EmailsTest do
   alias PostHog.API
   alias PostHog.Emails
   alias PostHog.Emails.Error
-  alias PostHog.Emails.MessageCategory
   alias PostHog.EmailsTest.FakePostHog
-  alias PostHog.EmailsTest.FakeSendEndpoint
 
   setup :verify_on_exit!
 
@@ -674,31 +504,6 @@ defmodule PostHog.EmailsTest do
     Jason.decode!(opts[:body])
   end
 
-  defp send_with_category(name, category, content \\ [text: "Thanks"]) do
-    Emails.send(
-      name,
-      [to: "user@example.com", template_key: "receipt", subject: "Hi", category: category] ++
-        content
-    )
-  end
-
-  defp start_with_template(template_key, category_key, type, transactional? \\ true) do
-    FakeSendEndpoint.start(
-      __MODULE__.ReqTestClient,
-      %{category_key => %{"type" => type, "name" => category_key, "description" => ""}},
-      %{template_key => %{category_key: category_key, transactional: transactional?}}
-    )
-  end
-
-  defp stub_recording_http do
-    test_pid = self()
-
-    Req.Test.stub(__MODULE__.ReqTestClient, fn conn ->
-      send(test_pid, {:http_request, conn.method, conn.request_path})
-      Plug.Conn.send_resp(conn, 500, "")
-    end)
-  end
-
   defp header(opts, name) do
     Enum.find_value(opts[:headers], fn {key, value} -> if key == name, do: value end)
   end
@@ -749,11 +554,9 @@ defmodule PostHog.EmailsTest do
           subject: "Hi",
           tracking: false,
           sensitive: true,
-          category: Emails.transactional_category()
+          category: "newsletter"
         ] do
-      @tag config: [api_client_module: PostHog.EmailsTest.ReqTestClient]
       test "refuses the code form field #{field}", %{name: name} do
-        stub_recording_http()
         field_name = Atom.to_string(unquote(field))
 
         assert {:error,
@@ -766,7 +569,7 @@ defmodule PostHog.EmailsTest do
 
         assert error.fix =~ "template_key"
         assert error.why =~ "template made in PostHog"
-        refute_received {:http_request, _, _}
+        refute_requested()
       end
     end
 
@@ -840,7 +643,8 @@ defmodule PostHog.EmailsTest do
                  text: "Thanks",
                  reply_to: ["a@example.com", "b@example.com"],
                  capture_engagement: false,
-                 html: nil
+                 html: nil,
+                 category: nil
                )
 
       assert sent_body() == %{
@@ -965,6 +769,42 @@ defmodule PostHog.EmailsTest do
       refute_requested()
     end
 
+    test "sends category as the key string", %{name: name} do
+      expect_reply(accepted())
+
+      assert {:ok, _} =
+               Emails.send(name,
+                 to: "user@example.com",
+                 template_key: "newsletter-2026-11",
+                 subject: "What's new",
+                 html: "<p>What's new.</p>",
+                 category: "newsletter"
+               )
+
+      assert sent_body() == %{
+               "to" => "user@example.com",
+               "template_key" => "newsletter-2026-11",
+               "subject" => "What's new",
+               "html" => "<p>What's new.</p>",
+               "category" => "newsletter"
+             }
+    end
+
+    test "refuses a category that is not a string", %{name: name} do
+      for category <- [:newsletter, %{key: "newsletter"}] do
+        assert {:error, %Error{code: "invalid_form", field: "category"}} =
+                 Emails.send(name,
+                   to: "user@example.com",
+                   template_key: "receipt",
+                   subject: "Hi",
+                   html: "<p/>",
+                   category: category
+                 )
+      end
+
+      refute_requested()
+    end
+
     test "refuses a reply_to that is not addresses", %{name: name} do
       assert {:error, %Error{code: "invalid_form", field: "reply_to"}} =
                Emails.send(name,
@@ -976,58 +816,6 @@ defmodule PostHog.EmailsTest do
                )
 
       refute_requested()
-    end
-
-    @tag config: [api_client_module: PostHog.EmailsTest.ReqTestClient]
-    test "refuses a category that is neither the shorthand nor a MessageCategory", %{name: name} do
-      stub_recording_http()
-      category = %MessageCategory{key: "newsletter", type: :marketing, name: "Newsletter"}
-
-      for invalid <- [
-            "newsletter",
-            :transactional,
-            %{key: "newsletter", type: :marketing, name: "Newsletter"},
-            %{category | type: "marketing"},
-            %{category | type: :bulk},
-            %{category | key: nil},
-            %{category | name: :newsletter},
-            %{category | description: 1}
-          ] do
-        assert {:error, %Error{code: "invalid_form", field: "category"}} =
-                 Emails.send(name,
-                   to: "user@example.com",
-                   template_key: "receipt",
-                   subject: "Hi",
-                   html: "<p/>",
-                   category: invalid
-                 )
-      end
-
-      refute_received {:http_request, _, _}
-    end
-
-    @tag config: [api_client_module: PostHog.EmailsTest.ReqTestClient]
-    test "refuses malformed UTF-8 in MessageCategory fields with field category", %{name: name} do
-      stub_recording_http()
-      category = %MessageCategory{key: "newsletter", type: :marketing, name: "Newsletter"}
-      bad_utf8 = <<0xFF, 0xFE>>
-
-      for invalid <- [
-            %{category | key: bad_utf8},
-            %{category | name: bad_utf8},
-            %{category | description: bad_utf8}
-          ] do
-        assert {:error, %Error{code: "invalid_form", field: "category"}} =
-                 Emails.send(name,
-                   to: "user@example.com",
-                   template_key: "receipt",
-                   subject: "Hi",
-                   html: "<p/>",
-                   category: invalid
-                 )
-      end
-
-      refute_received {:http_request, _, _}
     end
 
     for {field, value} <- [
@@ -2461,249 +2249,6 @@ defmodule PostHog.EmailsTest do
 
   describe "through the default Req client" do
     @describetag config: [api_client_module: PostHog.EmailsTest.ReqTestClient]
-
-    test "a category defined in code is created on its first send", %{name: name} do
-      store = FakeSendEndpoint.start(__MODULE__.ReqTestClient)
-
-      newsletter = %MessageCategory{
-        key: "newsletter",
-        type: :marketing,
-        name: "Newsletter",
-        description: "Monthly product news"
-      }
-
-      assert {:ok, _} =
-               send_with_category(name, newsletter,
-                 html: ~s(<a href="{{ unsubscribe_url }}">Unsubscribe</a>)
-               )
-
-      assert FakeSendEndpoint.categories(store) == %{
-               "newsletter" => %{
-                 "type" => "marketing",
-                 "name" => "Newsletter",
-                 "description" => "Monthly product news"
-               }
-             }
-
-      assert [%{"html" => ~s(<a href="{{ unsubscribe_url }}">Unsubscribe</a>)}] =
-               FakeSendEndpoint.requests(store)
-    end
-
-    test "an empty description is sent as empty while a nil description is omitted", %{name: name} do
-      store = FakeSendEndpoint.start(__MODULE__.ReqTestClient)
-      receipts = %MessageCategory{key: "receipts", type: :transactional, name: "Receipts"}
-
-      assert {:ok, _} = send_with_category(name, %{receipts | description: ""})
-      assert {:ok, _} = send_with_category(name, receipts)
-
-      assert [first, second] = FakeSendEndpoint.requests(store)
-      assert Map.fetch!(first["category"], "description") == ""
-      refute Map.has_key?(second["category"], "description")
-    end
-
-    test "a later send with the same key leaves the category as the first send created it", %{
-      name: name
-    } do
-      store = FakeSendEndpoint.start(__MODULE__.ReqTestClient)
-
-      newsletter = %MessageCategory{
-        key: "newsletter",
-        type: :marketing,
-        name: "Newsletter",
-        description: "Monthly product news"
-      }
-
-      renamed = %{newsletter | name: "Weekly digest", description: "Weekly product news"}
-
-      for category <- [newsletter, renamed] do
-        assert {:ok, _} =
-                 send_with_category(name, category,
-                   html: ~s(<a href="{{ unsubscribe_url }}">Unsubscribe</a>)
-                 )
-      end
-
-      assert FakeSendEndpoint.queued(store) == ["newsletter", "newsletter"]
-
-      assert FakeSendEndpoint.categories(store) == %{
-               "newsletter" => %{
-                 "type" => "marketing",
-                 "name" => "Newsletter",
-                 "description" => "Monthly product news"
-               }
-             }
-
-      assert [
-               %{"html" => ~s(<a href="{{ unsubscribe_url }}">Unsubscribe</a>)},
-               %{"html" => ~s(<a href="{{ unsubscribe_url }}">Unsubscribe</a>)}
-             ] = FakeSendEndpoint.requests(store)
-    end
-
-    test "a category the server refuses comes back as a validation_error, not retried", %{
-      name: name
-    } do
-      store = FakeSendEndpoint.start(__MODULE__.ReqTestClient)
-      receipts = %MessageCategory{key: "receipts", type: :transactional, name: "Receipts"}
-
-      assert {:ok, _} = send_with_category(name, receipts)
-
-      assert {:error,
-              %Error{
-                name: :validation_error,
-                code: "category_mismatch",
-                status_code: 400,
-                field: "category"
-              }} =
-               send_with_category(name, %{receipts | type: :marketing},
-                 html: ~s(<a href="{{ unsubscribe_url }}">Unsubscribe</a>)
-               )
-
-      assert FakeSendEndpoint.sends(store) == 2
-      assert FakeSendEndpoint.categories(store)["receipts"]["type"] == "transactional"
-
-      assert [_first, %{"html" => ~s(<a href="{{ unsubscribe_url }}">Unsubscribe</a>)}] =
-               FakeSendEndpoint.requests(store)
-    end
-
-    test "the transactional shorthand sends without defining a category", %{name: name} do
-      store = FakeSendEndpoint.start(__MODULE__.ReqTestClient)
-
-      assert {:ok, _} = send_with_category(name, Emails.transactional_category())
-      assert FakeSendEndpoint.categories(store) == %{}
-      assert FakeSendEndpoint.queued(store) == [nil]
-    end
-
-    test "a send for a template in a category follows its category when category is left out",
-         %{name: name} do
-      store = start_with_template("order-receipt", "receipts", "transactional")
-
-      for options <- [[], [category: nil]] do
-        assert {:ok, _} =
-                 Emails.send(
-                   name,
-                   [
-                     to: "user@example.com",
-                     template_key: "order-receipt",
-                     subject: "Your receipt",
-                     text: "Thanks"
-                   ] ++ options
-                 )
-      end
-
-      assert FakeSendEndpoint.queued(store) == ["receipts", "receipts"]
-
-      for request <- FakeSendEndpoint.requests(store) do
-        refute Map.has_key?(request, "category")
-      end
-    end
-
-    test "the transactional shorthand for a template in a category is category_mismatch", %{
-      name: name
-    } do
-      store = start_with_template("order-receipt", "receipts", "transactional")
-
-      assert {:error,
-              %Error{
-                name: :validation_error,
-                code: "category_mismatch",
-                status_code: 400,
-                field: "category"
-              }} =
-               Emails.send(name,
-                 to: "user@example.com",
-                 template_key: "order-receipt",
-                 subject: "Your receipt",
-                 text: "Thanks",
-                 category: Emails.transactional_category()
-               )
-
-      assert FakeSendEndpoint.queued(store) == []
-    end
-
-    test "a send for a transactional-enabled template in a marketing category is marketing_template",
-         %{name: name} do
-      store = start_with_template("november-digest", "newsletter", "marketing", true)
-
-      assert {:error,
-              %Error{name: :validation_error, code: "marketing_template", status_code: 400}} =
-               Emails.send(name,
-                 to: "user@example.com",
-                 template_key: "november-digest",
-                 subject: "What's new",
-                 html: ~s(<a href="{{ unsubscribe_url }}">Unsubscribe</a>)
-               )
-
-      assert FakeSendEndpoint.queued(store) == []
-    end
-
-    test "a send for a marketing template not enabled for transactional sends is template_not_transactional",
-         %{name: name} do
-      store = start_with_template("november-digest", "newsletter", "marketing", false)
-
-      assert {:error,
-              %Error{
-                name: :validation_error,
-                code: "template_not_transactional",
-                status_code: 400
-              }} =
-               Emails.send(name,
-                 to: "user@example.com",
-                 template_key: "november-digest",
-                 subject: "What's new",
-                 html: ~s(<a href="{{ unsubscribe_url }}">Unsubscribe</a>)
-               )
-
-      assert FakeSendEndpoint.queued(store) == []
-    end
-
-    test "a pre-category server accepts uncategorized sends and refuses categorized sends", %{
-      name: name
-    } do
-      Req.Test.stub(__MODULE__.ReqTestClient, fn conn ->
-        {:ok, raw, conn} = Plug.Conn.read_body(conn)
-        body = Jason.decode!(raw)
-
-        if Map.has_key?(body, "category") do
-          conn
-          |> Plug.Conn.put_resp_content_type("application/json")
-          |> Plug.Conn.send_resp(
-            400,
-            Jason.encode!(%{
-              "type" => "validation_error",
-              "code" => "invalid_input",
-              "detail" => "Unknown field category.",
-              "attr" => "category"
-            })
-          )
-        else
-          conn
-          |> Plug.Conn.put_resp_content_type("application/json")
-          |> Plug.Conn.send_resp(202, Jason.encode!(%{"message_id" => @message_id}))
-        end
-      end)
-
-      assert {:ok, %Emails.SendResult{id: @message_id}} =
-               Emails.send(name,
-                 to: "user@example.com",
-                 template_key: "receipt",
-                 subject: "Your receipt",
-                 text: "Thanks"
-               )
-
-      newsletter = %MessageCategory{key: "newsletter", type: :marketing, name: "Newsletter"}
-
-      for category <- [Emails.transactional_category(), newsletter] do
-        assert {:error,
-                %Error{
-                  name: :validation_error,
-                  code: "invalid_input",
-                  status_code: 400,
-                  field: "category"
-                }} =
-                 send_with_category(name, category,
-                   html: ~s(<a href="{{ unsubscribe_url }}">Unsubscribe</a>)
-                 )
-      end
-    end
 
     test "an acceptance with malformed JSON is api_error with its status, not retried", %{
       name: name

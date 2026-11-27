@@ -8,13 +8,13 @@ defmodule PostHog.Emails.Error do
   ## Fields
 
   - `:name` - the category, one of `t:name/0`.
-  - `:code` - PostHog's error code, such as `"quota_limited"`, `"recipient_suppressed"` or
-    `"category_mismatch"`, or an SDK code: `"missing_secret_key"`, `"missing_app_host"`,
-    `"client_disabled"`, `"client_closed"`, `"network_error"`, `"api_error"` (an answer without
-    a code), `"unexpected_error"`, `"too_many_attachments"` or `"message_too_large"` for files
-    that make the email too large, which the SDK checks before any request and PostHog checks
-    again, `"attachment_upload_failed"` when the storage refused an upload, or an `"invalid_*"`
-    code for an option the SDK refused before any request.
+  - `:code` - PostHog's error code, such as `"quota_limited"` or `"recipient_suppressed"`, or an
+    SDK code: `"missing_secret_key"`, `"missing_app_host"`, `"client_disabled"`,
+    `"client_closed"`, `"network_error"`, `"api_error"` (an answer without a code),
+    `"unexpected_error"`, `"too_many_attachments"` or `"message_too_large"` for files that
+    make the email too large, which the SDK checks before any request and PostHog checks again,
+    `"attachment_upload_failed"` when the storage refused an upload, or an `"invalid_*"` code
+    for an option the SDK refused before any request.
   - `:message` - human-readable message.
   - `:status_code` - the HTTP status, when PostHog answered, or the storage's for
     `"attachment_upload_failed"`.
